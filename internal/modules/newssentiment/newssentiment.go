@@ -1,12 +1,16 @@
-// Package newssentiment 实现 news_sentiment 信号模块。
+// Package newssentiment implements the news_sentiment signal module.
 //
-// 对回看窗口内与该标的相关的新闻标题打分，按新近程度线性衰减加权，聚合成一个
-// [-1, 1] 的情绪得分；得分越过阈值时输出方向信号，方向跟随情绪（正面→看多，
-// 负面→看空）。
+// Scores news headlines relevant to the symbol within a lookback window,
+// weights them by recency with linear decay, and aggregates them into a
+// sentiment score in [-1, 1]; when the score crosses a threshold it emits a
+// directional signal, with direction following sentiment (positive -> long,
+// negative -> short).
 //
-// 情绪打分通过 SentimentProvider 接口注入，便于后续替换为真实的 NLP/LLM 打分服务；
-// 当前默认实现是关键词占位打分，精度有限，信号里会显式标注 is_heuristic，
-// 下游可据此拒绝其进入实盘。
+// Sentiment scoring is injected via the SentimentProvider interface, so it
+// can later be swapped for a real NLP/LLM scoring service; the current
+// default implementation is a keyword-based placeholder scorer with limited
+// accuracy — the signal explicitly tags is_heuristic so downstream code can
+// refuse to let it go live.
 package newssentiment
 
 import (
@@ -21,15 +25,15 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// ModuleName 是该模块在策略配置中的标识。
+// ModuleName is this module's identifier in strategy configs.
 const ModuleName = "news_sentiment"
 
-// Module 实现 news_sentiment 信号模块。
+// Module implements the news_sentiment signal module.
 type Module struct {
 	provider SentimentProvider
 }
 
-// New 用指定的情绪打分数据源构造模块。
+// New builds the module with the given sentiment-scoring data source.
 func New(p SentimentProvider) *Module {
 	if p == nil {
 		p = KeywordSentimentProvider{}
@@ -37,21 +41,21 @@ func New(p SentimentProvider) *Module {
 	return &Module{provider: p}
 }
 
-// NewDefault 用关键词占位打分构造模块。
+// NewDefault builds the module using the keyword-based placeholder scorer.
 func NewDefault() *Module { return New(KeywordSentimentProvider{}) }
 
-// Provider 返回当前使用的情绪打分数据源。
+// Provider returns the sentiment-scoring data source currently in use.
 func (m *Module) Provider() SentimentProvider { return m.provider }
 
-// Name 实现 modules.SignalModule。
+// Name implements modules.SignalModule.
 func (m *Module) Name() string { return ModuleName }
 
-// Description 实现 modules.SignalModule。
+// Description implements modules.SignalModule.
 func (m *Module) Description() string {
 	return "对回看窗口内与该标的相关的新闻标题打分，按新近程度加权聚合成情绪得分，得分越过阈值时输出方向信号。"
 }
 
-// RequiredParams 实现 modules.SignalModule。
+// RequiredParams implements modules.SignalModule.
 func (m *Module) RequiredParams() []types.ParamSpec {
 	return []types.ParamSpec{
 		{
@@ -72,7 +76,7 @@ func (m *Module) RequiredParams() []types.ParamSpec {
 	}
 }
 
-// Evaluate 实现 modules.SignalModule。
+// Evaluate implements modules.SignalModule.
 func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[string]any) (types.Signal, error) {
 	p, err := types.ResolveParams(ModuleName, m.RequiredParams(), params)
 	if err != nil {
@@ -189,9 +193,10 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 	return s, nil
 }
 
-// newsApplies 判断一条新闻是否与该标的相关：未标注标的的新闻视为全市场新闻，
-// 对所有标的都生效；标注了的新闻要求标签与标的完全匹配，或是标的的前缀
-// （如标签 "BTC" 匹配标的 "BTCUSDT"）。
+// newsApplies determines whether a news item is relevant to the symbol: an
+// item with no symbol tags is treated as market-wide news and applies to
+// every symbol; a tagged item requires a tag that exactly matches the symbol,
+// or is a prefix of it (e.g. tag "BTC" matches symbol "BTCUSDT").
 func newsApplies(symbol string, tags []string) bool {
 	if len(tags) == 0 {
 		return true
@@ -206,8 +211,8 @@ func newsApplies(symbol string, tags []string) bool {
 	return false
 }
 
-// confidence 把情绪得分超过阈值的幅度映射到 [0.5, 0.95]。
-// 只有一条新闻支撑时缺乏交叉印证，置信度打七折。
+// confidence maps how far the sentiment score exceeds the threshold into [0.5, 0.95].
+// With only one news item backing it there's no cross-confirmation, so confidence is scaled down by 30%.
 func confidence(score, threshold float64, count int) float64 {
 	base := 0.5
 	if threshold < 1 {

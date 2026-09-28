@@ -1,12 +1,15 @@
-// Package supportresistance 实现 support_resistance 信号模块。
+// Package supportresistance implements the support_resistance signal module.
 //
-// 算法分三步：
-//  1. 在回看窗口内识别摆动高低点（pivot）
-//  2. 把相近的 pivot 按相对容差聚成"关键位"，被触及次数越多的位越显著
-//  3. 判断最新一根 K 线相对这些关键位发生了什么：突破、跌破、还是回踩测试
+// The algorithm has three steps:
+//  1. Identify swing highs and lows (pivots) within the lookback window
+//  2. Cluster nearby pivots by relative tolerance into "key levels" — a level
+//     touched more times is more significant
+//  3. Determine what the latest candle did relative to these key levels:
+//     broke out, broke down, or retested
 //
-// 关键位一律用"不含最新一根 K 线"的历史数据计算，避免当前这根自己定义
-// 自己的支撑阻力位——那样任何一根 K 线都会永远贴着自己造出来的位。
+// Key levels are always computed from history that excludes the latest
+// candle, to avoid the current candle defining its own support/resistance —
+// that would make every candle permanently sit right on a level it invented itself.
 package supportresistance
 
 import (
@@ -20,24 +23,24 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// ModuleName 是该模块在策略配置中的标识。
+// ModuleName is this module's identifier in strategy configs.
 const ModuleName = "support_resistance"
 
-// Module 实现 support_resistance 信号模块。零值可用。
+// Module implements the support_resistance signal module. The zero value is usable.
 type Module struct{}
 
-// New 返回模块实例。
+// New returns a module instance.
 func New() *Module { return &Module{} }
 
-// Name 实现 modules.SignalModule。
+// Name implements modules.SignalModule.
 func (m *Module) Name() string { return ModuleName }
 
-// Description 实现 modules.SignalModule。
+// Description implements modules.SignalModule.
 func (m *Module) Description() string {
 	return "基于回看窗口内摆动高低点的聚类，计算支撑位与阻力位，并在价格突破、跌破或回踩关键位时输出信号。"
 }
 
-// RequiredParams 实现 modules.SignalModule。
+// RequiredParams implements modules.SignalModule.
 func (m *Module) RequiredParams() []types.ParamSpec {
 	return []types.ParamSpec{
 		{
@@ -73,28 +76,29 @@ func (m *Module) RequiredParams() []types.ParamSpec {
 	}
 }
 
-// Level 是一个聚类得到的关键位。
+// Level is one key level produced by clustering.
 type Level struct {
-	// Price 是该类中所有摆动点价格的均值。
+	// Price is the mean price of all swing points in this cluster.
 	Price decimal.Decimal `json:"price"`
-	// Touches 是构成该关键位的摆动点数量。
+	// Touches is the number of swing points that make up this level.
 	Touches int `json:"touches"`
-	// Kind 为 "high"（由摆动高点构成）或 "low"（由摆动低点构成）。
+	// Kind is "high" (formed from swing highs) or "low" (formed from swing lows).
 	Kind string `json:"kind"`
-	// LastIndex 是构成该位的最后一个摆动点在回看窗口中的下标，越大表示越新。
+	// LastIndex is the index, within the lookback window, of the most recent
+	// swing point forming this level — a larger value means more recent.
 	LastIndex int `json:"last_index"`
 }
 
-// 事件类型，写入 Signal.Raw["event"]。
+// Event types, written to Signal.Raw["event"].
 const (
-	eventBreakout   = "breakout"        // 向上突破阻力
-	eventBreakdown  = "breakdown"       // 向下跌破支撑
-	eventTestSupp   = "test_support"    // 回踩支撑
-	eventTestResist = "test_resistance" // 上测阻力
+	eventBreakout   = "breakout"        // broke above resistance
+	eventBreakdown  = "breakdown"       // broke below support
+	eventTestSupp   = "test_support"    // retested support
+	eventTestResist = "test_resistance" // tested resistance from below
 	eventNone       = "none"
 )
 
-// Evaluate 实现 modules.SignalModule。
+// Evaluate implements modules.SignalModule.
 func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[string]any) (types.Signal, error) {
 	p, err := types.ResolveParams(ModuleName, m.RequiredParams(), params)
 	if err != nil {
@@ -111,8 +115,9 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 	confirm := decimal.NewFromFloat(types.MustFloat(p, "breakout_confirm"))
 	proximity := decimal.NewFromFloat(types.MustFloat(p, "proximity"))
 
-	// neutral 统一构造中性信号，并带上参考价——即便没有信号，
-	// 下游审计也需要知道"当时的价格是多少"。
+	// neutral is the single place that builds neutral signals, carrying the
+	// reference price along — even with no signal, downstream audit still
+	// needs to know "what was the price at the time".
 	neutral := func(reason string) types.Signal {
 		s := types.NeutralSignal(ModuleName, md.Symbol, reason, md.Time())
 		if last, ok := md.Last(); ok {
@@ -121,7 +126,7 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 		return s
 	}
 
-	// 至少要有：一个完整的回看窗口够识别 pivot（2*strength+1 根），外加当前和上一根。
+	// Need at least: enough candles to identify a pivot (2*strength+1), plus the current and previous candle.
 	minCandles := 2*strength + 3
 	if len(md.Candles) < minCandles {
 		return neutral(fmt.Sprintf("K 线不足：需要至少 %d 根，实际 %d 根", minCandles, len(md.Candles))), nil
@@ -133,13 +138,15 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 		return neutral("最新收盘价非正，数据异常"), nil
 	}
 
-	// 关键位只用历史数据算，排除最新一根。
+	// Key levels are computed from history only, excluding the latest candle.
 	history := md.Candles[:len(md.Candles)-1]
 	if len(history) > lookback {
 		history = history[len(history)-lookback:]
 	}
-	// 不管找不找得到关键位，都把回看窗口的起点带出去——画板要用它在图上标出
-	// "系统正在看这一段历史"，跟 fakeout/poc 模块的 window_start 是同一个用途。
+	// Carry the lookback window's start out regardless of whether any key
+	// levels were found — the chart uses it to mark "this is the history the
+	// system is looking at", the same purpose as window_start in the
+	// fakeout/poc modules.
 	windowStart := history[0].OpenTime.Format(time.RFC3339)
 
 	highs, lows := findPivots(history, strength)
@@ -160,9 +167,11 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 	return sig, nil
 }
 
-// detect 判断最新一根 K 线相对关键位发生了什么，并给出方向与置信度。
+// detect determines what the latest candle did relative to key levels, and
+// returns a direction and confidence.
 //
-// 优先级：突破/跌破 > 回踩测试。同时满足多个关键位时取最显著的（触及次数最多）。
+// Priority: breakout/breakdown > retest. When multiple key levels qualify at
+// once, the most significant one (most touches) wins.
 func (m *Module) detect(
 	symbol string, cur, prev types.Candle, levels []Level,
 	confirm, proximity decimal.Decimal,
@@ -174,7 +183,8 @@ func (m *Module) detect(
 	var bestDir types.Direction
 
 	consider := func(l Level, event string, dir types.Direction) {
-		// 同优先级内比触及次数；突破类事件优先于测试类事件。
+		// Within the same priority, compare touch counts; breakout-type
+		// events outrank test-type events.
 		if best == nil ||
 			(rank(event) > rank(bestEvent)) ||
 			(rank(event) == rank(bestEvent) && l.Touches > best.Touches) {
@@ -187,19 +197,22 @@ func (m *Module) detect(
 		if !l.Price.IsPositive() {
 			continue
 		}
-		upTrigger := l.Price.Mul(one.Add(confirm))   // 向上突破需要越过的价
-		downTrigger := l.Price.Mul(one.Sub(confirm)) // 向下跌破需要跌穿的价
+		upTrigger := l.Price.Mul(one.Add(confirm))   // price that must be exceeded for an upward breakout
+		downTrigger := l.Price.Mul(one.Sub(confirm)) // price that must be broken for a downward breakdown
 
 		switch {
-		// 上一根还在关键位下方（或位上），本根收盘决定性地站上去 → 突破。
+		// The previous candle was still at or below the level, and this
+		// candle's close decisively moved above it -> breakout.
 		case prev.Close.LessThanOrEqual(l.Price) && cur.Close.GreaterThan(upTrigger):
 			consider(l, eventBreakout, types.DirectionLong)
 
-		// 上一根还在关键位上方（或位上），本根收盘决定性地跌穿 → 跌破。
+		// The previous candle was still at or above the level, and this
+		// candle's close decisively broke below it -> breakdown.
 		case prev.Close.GreaterThanOrEqual(l.Price) && cur.Close.LessThan(downTrigger):
 			consider(l, eventBreakdown, types.DirectionShort)
 
-		// 没有突破，但收盘价贴着关键位 → 测试。位在价下方为支撑测试，反之为阻力测试。
+		// No breakout, but the close is sitting right at the level -> a
+		// retest. Level below price is a support test, above is a resistance test.
 		case relDist(cur.Close, l.Price).LessThanOrEqual(proximity):
 			if l.Price.LessThanOrEqual(cur.Close) {
 				consider(l, eventTestSupp, types.DirectionLong)
@@ -252,8 +265,9 @@ func rank(event string) int {
 	}
 }
 
-// confidenceFor 把事件类型和触及次数映射为 [0,1] 的置信度。
-// 突破事件的基准高于测试事件；触及次数每多一次加一点，并设上限防止无限增长。
+// confidenceFor maps an event type and touch count to a [0,1] confidence.
+// Breakout events have a higher baseline than test events; each additional
+// touch adds a bit more, capped to prevent unbounded growth.
 func confidenceFor(event string, touches int) float64 {
 	base := 0.35
 	if rank(event) == 2 {
@@ -285,10 +299,13 @@ func reasonFor(event string, l Level, close decimal.Decimal) string {
 	}
 }
 
-// findPivots 识别摆动高点与低点。
+// findPivots identifies swing highs and swing lows.
 //
-// 一根 K 线是摆动高点，当且仅当它的最高价严格高于左右各 strength 根的最高价。
-// 严格不等号是有意的：连续相等的高点不构成"摆动"，把它们都算进去会让聚类虚增触及次数。
+// A candle is a swing high if and only if its high is strictly greater than
+// the high of each of the `strength` candles on both sides. The strict
+// inequality is deliberate: consecutive equal highs don't constitute a
+// "swing", and counting them all would artificially inflate the touch count
+// during clustering.
 func findPivots(candles []types.Candle, strength int) (highs, lows []pivot) {
 	for i := strength; i < len(candles)-strength; i++ {
 		isHigh, isLow := true, true
@@ -321,10 +338,14 @@ type pivot struct {
 	Index int
 }
 
-// clusterLevels 把摆动点按相对容差聚类。
+// clusterLevels clusters swing points by relative tolerance.
 //
-// 做法是价格升序后线性扫描：只要当前点与本簇首个点的相对距离仍在容差内就并入，
-// 否则另起一簇。相对容差（而非绝对价差）保证同一套参数在 BTC 和某个低价币上行为一致。
+// It works by sorting prices ascending and scanning linearly: a point is
+// merged into the current cluster as long as its relative distance from the
+// cluster's first point is still within tolerance, otherwise a new cluster
+// starts. Using relative tolerance (rather than an absolute price
+// difference) ensures the same parameter set behaves consistently on BTC and
+// on some low-priced coin.
 func clusterLevels(pivots []pivot, tolerance decimal.Decimal, kind string) []Level {
 	if len(pivots) == 0 {
 		return nil
@@ -365,16 +386,19 @@ func clusterLevels(pivots []pivot, tolerance decimal.Decimal, kind string) []Lev
 	return out
 }
 
-// FindLevels 是本模块"摆动点聚类出关键位"算法的导出入口，供其它需要同一套关键位
-// 定义的模块复用，避免出现两份可能互相漂移的实现——"关键位是什么"全平台只有这一份
-// 定义。（fakeout 模块现在改用更粗粒度的"盘整区间高低点"，不再依赖这份逐点聚类。）
+// FindLevels is the exported entry point to this module's "cluster swing
+// points into key levels" algorithm, for reuse by other modules that need
+// the same key-level definition, avoiding two implementations that could
+// drift apart — there is exactly one platform-wide definition of "what a key
+// level is". (The fakeout module now uses a coarser-grained "consolidation
+// range high/low" instead and no longer depends on this point-by-point clustering.)
 func FindLevels(history []types.Candle, pivotStrength int, tolerance decimal.Decimal, minTouches int) []Level {
 	highs, lows := findPivots(history, pivotStrength)
 	return findLevelsFromPivots(highs, lows, tolerance, minTouches)
 }
 
-// findLevelsFromPivots 是 FindLevels 去掉找摆动点那一步的版本，Evaluate 内部用它，
-// 避免重复扫描一遍摆动点。
+// findLevelsFromPivots is FindLevels with the pivot-finding step removed;
+// Evaluate uses it internally to avoid scanning for pivots twice.
 func findLevelsFromPivots(highs, lows []pivot, tolerance decimal.Decimal, minTouches int) []Level {
 	levels := append(
 		clusterLevels(highs, tolerance, "high"),
@@ -393,7 +417,8 @@ func filterByTouches(levels []Level, min int) []Level {
 	return out
 }
 
-// nearest 返回最靠近当前价的支撑（价下方最高的位）与阻力（价上方最低的位）。
+// nearest returns the support closest to the current price (the highest
+// level below it) and the resistance closest to it (the lowest level above it).
 func nearest(levels []Level, price decimal.Decimal) (support, resistance *Level) {
 	for i := range levels {
 		l := levels[i]
@@ -411,7 +436,8 @@ func nearest(levels []Level, price decimal.Decimal) (support, resistance *Level)
 	return support, resistance
 }
 
-// relDist 返回两个价格的相对距离 |a-b|/b。b 为零时返回一个必然超出任何容差的大值。
+// relDist returns the relative distance |a-b|/b between two prices. When b is
+// zero, it returns a large value guaranteed to exceed any tolerance.
 func relDist(a, b decimal.Decimal) decimal.Decimal {
 	if b.IsZero() {
 		return decimal.NewFromInt(1 << 30)

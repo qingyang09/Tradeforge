@@ -23,7 +23,7 @@ func dec(s string) decimal.Decimal { return decimal.RequireFromString(s) }
 
 var base = time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 
-// btcStrategy 是"BTC 用 A 组合"的策略。
+// btcStrategy is the "BTC uses combination A" strategy.
 func btcStrategy() types.StrategyConfig {
 	return types.StrategyConfig{
 		ID: "aaaaaaaa-1111-4111-8111-111111111111", Name: "BTC 三模块",
@@ -41,7 +41,7 @@ func btcStrategy() types.StrategyConfig {
 	}
 }
 
-// ethStrategy 是"ETH 用 B 组合"的策略：模块、参数、风控全都不同。
+// ethStrategy is the "ETH uses combination B" strategy: modules, params, and risk control are all different.
 func ethStrategy() types.StrategyConfig {
 	return types.StrategyConfig{
 		ID: "bbbbbbbb-2222-4222-8222-222222222222", Name: "ETH 单模块",
@@ -52,7 +52,7 @@ func ethStrategy() types.StrategyConfig {
 		},
 		Risk: types.RiskConfig{
 			MaxPositionSizeQuote: dec("500"),
-			MaxDailyLossQuote:    dec("10000"), // 刻意设得很宽，用来验证隔离
+			MaxDailyLossQuote:    dec("10000"), // deliberately set very wide, to verify isolation
 		},
 		State: types.StatePaperTrading,
 	}
@@ -70,7 +70,7 @@ func decision(cfg types.StrategyConfig, dir types.Direction, price string) types
 	}
 }
 
-// ---------- 支撑/阻力位止损止盈 ----------
+// ---------- support/resistance stop-loss and take-profit ----------
 
 func TestOpenPositionResolvesSupportResistanceStopLoss(t *testing.T) {
 	cfg := btcStrategy()
@@ -90,14 +90,15 @@ func TestOpenPositionResolvesSupportResistanceStopLoss(t *testing.T) {
 
 	pos := w.Position()
 	if !pos.IsOpen() {
-		t.Fatal("应当已开仓")
+		t.Fatal("should have opened a position")
 	}
 	if !pos.StopLossPrice.Equal(dec("95")) {
-		t.Errorf("止损价应等于开仓时的支撑位 95，实际 %s", pos.StopLossPrice)
+		t.Errorf("stop-loss price should equal the support level 95 at open time, got %s", pos.StopLossPrice)
 	}
 }
 
-// 附近没有探测到支撑位时，不应该在没有止损保护的情况下开仓——用户明确要求了止损。
+// When no support level is detected nearby, the position must not be opened
+// without stop-loss protection — the user explicitly asked for a stop-loss.
 func TestOpenPositionRejectsWhenSupportResistanceLevelUnavailable(t *testing.T) {
 	cfg := btcStrategy()
 	cfg.Risk.StopLossMode = types.RiskLevelModeSupportResistance
@@ -109,22 +110,26 @@ func TestOpenPositionRejectsWhenSupportResistanceLevelUnavailable(t *testing.T) 
 	}
 
 	d := decision(cfg, types.DirectionLong, "100")
-	d.Signals = []types.Signal{supportResistanceSignal("", "110", false)} // 附近没有支撑位
+	d.Signals = []types.Signal{supportResistanceSignal("", "110", false)} // no support level nearby
 	if err := w.Handle(context.Background(), d); err != nil {
 		t.Fatal(err)
 	}
 
 	if w.Position().IsOpen() {
-		t.Error("算不出止损价时不应该开仓")
+		t.Error("should not open a position when the stop-loss price can't be resolved")
 	}
 	if w.Stats().OrdersRejected == 0 {
-		t.Error("应当记为一次被拒绝的开仓")
+		t.Error("should be counted as one rejected open")
 	}
 }
 
-// 止盈不是安全机制，跟止损不对称：算不出止盈价（比如突破型入场附近还没有新的阻力位）
-// 不该拒绝这笔交易，只是这一笔没有止盈线——真实回测数据验证过这正是突破策略最常见的
-// 情形（价格刚突破的阻力位本身变成了新的支撑，上方暂时没有阻力位）。
+// Take-profit is not a safety mechanism, unlike stop-loss, so the two are
+// asymmetric: failing to resolve a take-profit price (e.g. a breakout entry
+// with no new resistance level nearby yet) should not reject the trade —
+// this trade simply has no take-profit line. Real backtest data has
+// confirmed this is precisely the most common case for breakout strategies
+// (the resistance level price just broke through becomes the new support,
+// with no resistance level above it yet).
 func TestOpenPositionOpensWithoutTakeProfitWhenResistanceUnavailable(t *testing.T) {
 	cfg := btcStrategy()
 	cfg.Risk.StopLossMode = types.RiskLevelModeSupportResistance
@@ -137,24 +142,24 @@ func TestOpenPositionOpensWithoutTakeProfitWhenResistanceUnavailable(t *testing.
 	}
 
 	d := decision(cfg, types.DirectionLong, "100")
-	d.Signals = []types.Signal{supportResistanceSignal("95", "", false)} // 有支撑、没有阻力
+	d.Signals = []types.Signal{supportResistanceSignal("95", "", false)} // support present, resistance absent
 	if err := w.Handle(context.Background(), d); err != nil {
 		t.Fatal(err)
 	}
 
 	pos := w.Position()
 	if !pos.IsOpen() {
-		t.Fatal("止盈算不出来不应该拦下这笔开仓")
+		t.Fatal("failing to resolve a take-profit price should not block this open")
 	}
 	if !pos.StopLossPrice.Equal(dec("95")) {
-		t.Errorf("止损价应该正常设置为支撑位 95，实际 %s", pos.StopLossPrice)
+		t.Errorf("stop-loss price should be set normally to the support level 95, got %s", pos.StopLossPrice)
 	}
 	if !pos.TakeProfitPrice.IsZero() {
-		t.Errorf("止盈价应为零值（未设置），实际 %s", pos.TakeProfitPrice)
+		t.Errorf("take-profit price should be the zero value (unset), got %s", pos.TakeProfitPrice)
 	}
 }
 
-// ---------- 按风险百分比计算仓位（PositionSizingMode = risk_pct） ----------
+// ---------- position sizing by risk percentage (PositionSizingMode = risk_pct) ----------
 
 func riskPctStrategy(equity string, riskPct float64, maxCap string) types.StrategyConfig {
 	cfg := btcStrategy()
@@ -163,13 +168,13 @@ func riskPctStrategy(equity string, riskPct float64, maxCap string) types.Strate
 		PositionSizingMode:   types.PositionSizingModeRiskPct,
 		AccountEquityQuote:   dec(equity),
 		RiskPerTradePct:      riskPct,
-		StopLossPct:          0.05, // 入场 100、止损距离 5%
+		StopLossPct:          0.05, // entry 100, stop-loss distance 5%
 	}
 	return cfg
 }
 
-// 权益 10000、风险 1%（=100）、止损距离 5% → 仓位 = 100 / 0.05 = 2000，
-// 数量 = 2000 / 100 = 20。
+// Equity 10000, risk 1% (=100), stop-loss distance 5% -> position = 100 / 0.05
+// = 2000, quantity = 2000 / 100 = 20.
 func TestOpenPositionRiskPctSizing(t *testing.T) {
 	cfg := riskPctStrategy("10000", 0.01, "1000000")
 	broker := NewPaperBroker()
@@ -185,20 +190,22 @@ func TestOpenPositionRiskPctSizing(t *testing.T) {
 
 	pos := w.Position()
 	if !pos.IsOpen() {
-		t.Fatal("应当已开仓")
+		t.Fatal("should have opened a position")
 	}
 	if !pos.Quantity.Equal(dec("20")) {
-		t.Errorf("按风险百分比算出的数量 = %s，期望 20（仓位 2000 / 开仓价 100）", pos.Quantity)
+		t.Errorf("quantity computed from risk percentage = %s, want 20 (position 2000 / entry price 100)", pos.Quantity)
 	}
 	if !pos.StopLossPrice.Equal(dec("95")) {
-		t.Errorf("止损价 = %s，期望 95", pos.StopLossPrice)
+		t.Errorf("stop-loss price = %s, want 95", pos.StopLossPrice)
 	}
 }
 
-// 算出来的仓位一旦超过硬上限就整笔拒绝，不做静默缩小——静默缩小会破坏"这笔交易只
-// 承担 N% 权益风险"这个用户明确要的语义。
+// Once the computed position exceeds the hard cap, the whole trade is
+// rejected outright, never silently shrunk — silently shrinking would break
+// the "this trade only takes on N% equity risk" semantics the user explicitly asked for.
 func TestOpenPositionRiskPctSizingRejectedWhenExceedsMaxPositionCap(t *testing.T) {
-	// 同样的权益/风险比例/止损距离，本该算出仓位 2000，但硬上限只给 500。
+	// Same equity/risk percentage/stop-loss distance, which should compute a
+	// position of 2000, but the hard cap only allows 500.
 	cfg := riskPctStrategy("10000", 0.01, "500")
 	broker := NewPaperBroker()
 	w, err := NewWorker(cfg, broker, WithWorkerLogger(quietLogger()))
@@ -212,16 +219,18 @@ func TestOpenPositionRiskPctSizingRejectedWhenExceedsMaxPositionCap(t *testing.T
 	}
 
 	if w.Position().IsOpen() {
-		t.Fatal("算出的仓位超过硬上限时不应该开仓（更不应该被静默缩小到上限）")
+		t.Fatal("should not open a position when the computed size exceeds the hard cap (and must never be silently shrunk to the cap)")
 	}
 	if w.Stats().OrdersRejected == 0 {
-		t.Error("应当记为一次被拒绝的开仓")
+		t.Error("should be counted as one rejected open")
 	}
 }
 
-// 风险百分比仓位模式配合 support_resistance 止损：验证 openPosition 里"先解析止损、
-// 再算仓位"的顺序调整确实生效——止损价来自探测到的支撑位（距离 5，即 5%），
-// 而不是某个写死的百分比。
+// Risk-percentage position sizing combined with support_resistance
+// stop-loss: verifies that the "resolve stop-loss first, then compute
+// position size" ordering change in openPosition actually took effect — the
+// stop-loss price comes from the detected support level (distance 5, i.e.
+// 5%), not some hard-coded percentage.
 func TestOpenPositionRiskPctSizingUsesResolvedSupportResistanceStopLoss(t *testing.T) {
 	cfg := btcStrategy()
 	cfg.Risk = types.RiskConfig{
@@ -238,27 +247,30 @@ func TestOpenPositionRiskPctSizingUsesResolvedSupportResistanceStopLoss(t *testi
 	}
 
 	d := decision(cfg, types.DirectionLong, "100")
-	d.Signals = []types.Signal{supportResistanceSignal("95", "110", false)} // 距离 5%
+	d.Signals = []types.Signal{supportResistanceSignal("95", "110", false)} // distance 5%
 	if err := w.Handle(context.Background(), d); err != nil {
 		t.Fatal(err)
 	}
 
 	pos := w.Position()
 	if !pos.IsOpen() {
-		t.Fatal("应当已开仓")
+		t.Fatal("should have opened a position")
 	}
 	if !pos.StopLossPrice.Equal(dec("95")) {
-		t.Errorf("止损价应取探测到的支撑位 95，实际 %s", pos.StopLossPrice)
+		t.Errorf("stop-loss price should take the detected support level 95, got %s", pos.StopLossPrice)
 	}
-	// 权益 10000 × 1% = 100，距离 5% → 仓位 2000，数量 20（跟固定百分比止损场景
-	// 算出同样的数字，因为两边的止损距离恰好都是 5%）。
+	// Equity 10000 x 1% = 100, distance 5% -> position 2000, quantity 20 (the
+	// same numbers as the fixed-percentage stop-loss scenario, because both
+	// sides happen to have a 5% stop-loss distance).
 	if !pos.Quantity.Equal(dec("20")) {
-		t.Errorf("数量 = %s，期望 20", pos.Quantity)
+		t.Errorf("quantity = %s, want 20", pos.Quantity)
 	}
 }
 
-// 止损算不出来时，风险百分比仓位模式应该跟固定金额模式一样拒绝开仓——这一步的拒绝
-// 发生在"解析止损"阶段，比"算仓位"更早，顺序调整不应该改变这个既有行为。
+// When the stop-loss can't be resolved, risk-percentage sizing mode should
+// reject the open just like fixed-amount mode — this rejection happens at
+// the "resolve stop-loss" stage, earlier than "compute position size", and
+// the ordering change must not alter this pre-existing behavior.
 func TestOpenPositionRiskPctSizingSkipsWhenStopUnresolvable(t *testing.T) {
 	cfg := btcStrategy()
 	cfg.Risk = types.RiskConfig{
@@ -275,20 +287,21 @@ func TestOpenPositionRiskPctSizingSkipsWhenStopUnresolvable(t *testing.T) {
 	}
 
 	d := decision(cfg, types.DirectionLong, "100")
-	d.Signals = []types.Signal{supportResistanceSignal("", "110", false)} // 附近没有支撑位
+	d.Signals = []types.Signal{supportResistanceSignal("", "110", false)} // no support level nearby
 	if err := w.Handle(context.Background(), d); err != nil {
 		t.Fatal(err)
 	}
 
 	if w.Position().IsOpen() {
-		t.Error("止损算不出来时不应该开仓")
+		t.Error("should not open a position when the stop-loss can't be resolved")
 	}
 	if w.Stats().OrdersRejected == 0 {
-		t.Error("应当记为一次被拒绝的开仓")
+		t.Error("should be counted as one rejected open")
 	}
 }
 
-// 触发止损时，实际强平价应该在解析出的支撑位附近触发，而不是固定百分比。
+// When the stop-loss triggers, the actual forced-close price should trigger
+// around the resolved support level, not a fixed percentage.
 func TestSupportResistanceStopLossForcesClose(t *testing.T) {
 	cfg := btcStrategy()
 	cfg.Risk.StopLossMode = types.RiskLevelModeSupportResistance
@@ -307,22 +320,24 @@ func TestSupportResistanceStopLossForcesClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !w.Position().IsOpen() {
-		t.Fatal("应当已开仓")
+		t.Fatal("should have opened a position")
 	}
 
-	// 价格跌到支撑位以下：4% 跌幅（比 btcStrategy 原本默认的 5% pct 止损更浅），
-	// 只有支撑位模式（止损价 95）会在这里触发，验证走的确实是新逻辑而不是残留的 pct。
+	// Price drops below the support level: a 4% drop (shallower than
+	// btcStrategy's original default 5% pct stop-loss) — only the
+	// support-level mode (stop-loss price 95) would trigger here, verifying
+	// this really goes through the new logic and not a leftover pct check.
 	if err := w.Handle(ctx, decision(cfg, types.DirectionNeutral, "94")); err != nil {
 		t.Fatal(err)
 	}
 	if w.Position().IsOpen() {
-		t.Error("跌破支撑位后应当已平仓")
+		t.Error("should have closed the position after breaking below the support level")
 	}
 }
 
-// ---------- 订单溯源 ----------
+// ---------- order provenance ----------
 
-// 每笔订单都要能回答"是哪个模块的哪个信号、什么参数触发的"。
+// Every order must be able to answer "which module's which signal, with what parameters, triggered this".
 func TestOrderCarriesFullProvenance(t *testing.T) {
 	cfg := btcStrategy()
 	broker := NewPaperBroker()
@@ -337,45 +352,46 @@ func TestOrderCarriesFullProvenance(t *testing.T) {
 
 	orders := broker.Orders()
 	if len(orders) != 1 {
-		t.Fatalf("订单数 = %d，期望 1", len(orders))
+		t.Fatalf("order count = %d, want 1", len(orders))
 	}
 	p := orders[0].Provenance
 	if p.DecisionID == "" {
-		t.Error("缺少决策 ID，无法反查触发依据")
+		t.Error("missing decision ID, can't trace back what triggered this")
 	}
 	if len(p.Signals) == 0 {
-		t.Error("缺少模块信号明细")
+		t.Error("missing module signal detail")
 	}
 	if p.Combine != types.CombineAll {
-		t.Errorf("组合方式 = %s，期望 ALL", p.Combine)
+		t.Errorf("combine mode = %s, want ALL", p.Combine)
 	}
-	// 参数必须是快照，不能只存模块名。
+	// Params must be a snapshot, not just the module name.
 	params, ok := p.ModuleParams["volume_breakout"]
 	if !ok {
-		t.Fatalf("缺少 volume_breakout 的参数快照，实际：%v", p.ModuleParams)
+		t.Fatalf("missing param snapshot for volume_breakout, got: %v", p.ModuleParams)
 	}
 	if params["multiplier"] != 2.0 {
-		t.Errorf("参数快照 = %v，期望包含 multiplier=2.0", params)
+		t.Errorf("param snapshot = %v, want it to include multiplier=2.0", params)
 	}
 }
 
-// 参数快照必须与策略配置解耦：事后改配置不该改写历史订单的溯源。
+// The param snapshot must be decoupled from the strategy config: editing the
+// config afterward must not rewrite a historical order's provenance.
 func TestProvenanceSnapshotIsIndependentOfLaterConfigEdits(t *testing.T) {
 	cfg := btcStrategy()
 	broker := NewPaperBroker()
 	w, _ := NewWorker(cfg, broker, WithWorkerLogger(quietLogger()))
 	_ = w.Handle(context.Background(), decision(cfg, types.DirectionLong, "100"))
 
-	// 事后修改策略配置里的参数 map。
+	// Edit the params map in the strategy config after the fact.
 	cfg.Modules[1].Params["multiplier"] = 99.0
 
 	got := broker.Orders()[0].Provenance.ModuleParams["volume_breakout"]["multiplier"]
 	if got != 2.0 {
-		t.Errorf("订单溯源里的参数被后续配置改动污染了：%v", got)
+		t.Errorf("the order provenance's params were polluted by a later config edit: %v", got)
 	}
 }
 
-// ---------- 状态机闸门 ----------
+// ---------- state-machine gate ----------
 
 func TestLiveBrokerRejectsNonLiveStrategy(t *testing.T) {
 	cfg := btcStrategy()
@@ -383,7 +399,7 @@ func TestLiveBrokerRejectsNonLiveStrategy(t *testing.T) {
 
 	_, err := NewWorker(cfg, &fakeLiveBroker{}, WithWorkerLogger(quietLogger()))
 	if !errors.Is(err, ErrLiveBrokerRequiresLiveState) {
-		t.Fatalf("非 LIVE 状态不得接实盘通道，期望 ErrLiveBrokerRequiresLiveState，得到：%v", err)
+		t.Fatalf("a non-LIVE strategy must not accept a live channel, want ErrLiveBrokerRequiresLiveState, got: %v", err)
 	}
 }
 
@@ -392,7 +408,7 @@ func TestDraftStrategyCannotTradeAtAll(t *testing.T) {
 	cfg.State = types.StateDraft
 
 	if _, err := NewWorker(cfg, NewPaperBroker(), WithWorkerLogger(quietLogger())); err == nil {
-		t.Fatal("DRAFT 状态的策略不应产生任何交易")
+		t.Fatal("a strategy in DRAFT state should not be able to trade at all")
 	}
 }
 
@@ -404,12 +420,13 @@ func (fakeLiveBroker) PlaceOrder(context.Context, OrderRequest) (types.Order, er
 	return types.Order{}, nil
 }
 
-// ---------- 风控 ----------
+// ---------- risk control ----------
 
 func TestStopLossForcesClose(t *testing.T) {
 	cfg := btcStrategy()
-	// 把日亏上限放宽，让止损成为唯一会触发的规则——
-	// 否则 1000 仓位跌 6% 亏掉 60，会先撞上 50 的日亏上限（那是另一条用例）。
+	// Widen the daily-loss cap so stop-loss is the only rule that can trigger
+	// — otherwise a 1000 position dropping 6% loses 60, which would hit the
+	// 50 daily-loss cap first (that's a different test case).
 	cfg.Risk.MaxDailyLossQuote = dec("10000")
 	broker := NewPaperBroker()
 	w, _ := NewWorker(cfg, broker, WithWorkerLogger(quietLogger()))
@@ -419,54 +436,54 @@ func TestStopLossForcesClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !w.Position().IsOpen() {
-		t.Fatal("应当已开仓")
+		t.Fatal("should have opened a position")
 	}
 
-	// 跌 6%，超过 5% 止损线。
+	// Drops 6%, past the 5% stop-loss line.
 	if err := w.Handle(ctx, decision(cfg, types.DirectionNeutral, "94")); err != nil {
 		t.Fatal(err)
 	}
 	if w.Position().IsOpen() {
-		t.Error("触发止损后应当已平仓")
+		t.Error("should have closed the position after the stop-loss triggered")
 	}
 	if w.Stats().RiskEvents == 0 {
-		t.Error("风控触发应当被计入统计")
+		t.Error("a risk-control trigger should be counted in stats")
 	}
-	// 止损只是单笔交易的正常退出，不该暂停整个标的。
+	// Stop-loss is just a single trade's normal exit; it must not suspend the whole symbol.
 	if w.Suspended() {
-		t.Error("止损不应导致该标的被暂停")
+		t.Error("a stop-loss should not cause this symbol to be suspended")
 	}
 }
 
 func TestDailyLossLimitSuspendsSymbol(t *testing.T) {
 	cfg := btcStrategy()
-	cfg.Risk.StopLossPct = 0 // 关掉止损，让浮亏直接撞上单日亏损上限
+	cfg.Risk.StopLossPct = 0 // disable the stop-loss so the unrealized loss hits the daily-loss cap directly
 	broker := NewPaperBroker()
 	w, _ := NewWorker(cfg, broker, WithWorkerLogger(quietLogger()))
 	ctx := context.Background()
 
 	_ = w.Handle(ctx, decision(cfg, types.DirectionLong, "100"))
-	// 1000 USDT 仓位跌 10% ≈ 亏 100，超过 50 的日亏上限。
+	// A 1000 USDT position dropping 10% is roughly a 100 loss, past the 50 daily-loss cap.
 	_ = w.Handle(ctx, decision(cfg, types.DirectionNeutral, "90"))
 
 	if w.Position().IsOpen() {
-		t.Error("触发单日亏损上限后应当强制平仓")
+		t.Error("should have force-closed once the daily-loss cap triggered")
 	}
 	if !w.Suspended() {
-		t.Fatal("触发单日亏损上限后该标的应当被暂停")
+		t.Fatal("this symbol should be suspended once the daily-loss cap triggered")
 	}
 	if !strings.Contains(w.Stats().SuspendReason, "上限") {
-		t.Errorf("暂停原因应当说明是哪条规则：%q", w.Stats().SuspendReason)
+		t.Errorf("suspend reason should state which rule triggered: %q", w.Stats().SuspendReason)
 	}
 
-	// 暂停后不再开新仓。
+	// No new positions after being suspended.
 	before := w.Stats().OrdersPlaced
 	_ = w.Handle(ctx, decision(cfg, types.DirectionLong, "100"))
 	if w.Stats().OrdersPlaced != before {
-		t.Error("暂停后不应继续开新仓")
+		t.Error("should not keep opening new positions after being suspended")
 	}
 	if w.Stats().OrdersRejected == 0 {
-		t.Error("被拒绝的开仓应当计入统计")
+		t.Error("a rejected open should be counted in stats")
 	}
 }
 
@@ -485,14 +502,14 @@ func TestMaxHoldingPeriodForcesClose(t *testing.T) {
 
 	_ = w.Handle(ctx, decision(cfg, types.DirectionLong, "100"))
 	if !w.Position().IsOpen() {
-		t.Fatal("应当已开仓")
+		t.Fatal("should have opened a position")
 	}
 
 	now = base.Add(3 * time.Hour)
 	_ = w.Handle(ctx, decision(cfg, types.DirectionNeutral, "100"))
 
 	if w.Position().IsOpen() {
-		t.Error("超过最大持仓时间后应当强制平仓")
+		t.Error("should have force-closed after exceeding the max holding period")
 	}
 }
 
@@ -500,14 +517,15 @@ func TestPositionSizeCapRejectsOversizedOrder(t *testing.T) {
 	r := NewRiskManager("BTCUSDT", types.RiskConfig{MaxPositionSizeQuote: dec("100")})
 	v := r.CheckOpen(base, dec("500"))
 	if v.Allowed() {
-		t.Fatal("超过单笔上限的开仓应当被拒绝")
+		t.Fatal("an open exceeding the per-trade cap should be rejected")
 	}
 	if v.Rule != "max_position_size" {
-		t.Errorf("规则名 = %q", v.Rule)
+		t.Errorf("rule name = %q", v.Rule)
 	}
 }
 
-// 跨日重置亏损统计，但不自动解除暂停——触发过风控的标的必须人工确认。
+// A new day resets the loss stats but does not auto-lift the suspension —
+// a symbol that tripped risk control must be confirmed by a human.
 func TestNewDayResetsLossButNotSuspension(t *testing.T) {
 	r := NewRiskManager("BTCUSDT", types.RiskConfig{
 		MaxPositionSizeQuote: dec("1000"), MaxDailyLossQuote: dec("50"),
@@ -518,19 +536,19 @@ func TestNewDayResetsLossButNotSuspension(t *testing.T) {
 	next := base.Add(24 * time.Hour)
 	v := r.CheckOpen(next, dec("100"))
 	if !r.DayRealizedLoss().IsZero() {
-		t.Errorf("跨日后当日亏损应重置，实际 %s", r.DayRealizedLoss())
+		t.Errorf("the day's loss should reset after rolling to a new day, got %s", r.DayRealizedLoss())
 	}
 	if v.Allowed() {
-		t.Error("跨日不应自动解除风控暂停")
+		t.Error("rolling to a new day should not auto-lift the risk-control suspension")
 	}
 
 	r.Resume()
 	if !r.CheckOpen(next, dec("100")).Allowed() {
-		t.Error("人工解除暂停后应当恢复交易")
+		t.Error("trading should resume after a manual suspension lift")
 	}
 }
 
-// ---------- 反向信号 ----------
+// ---------- opposite signal ----------
 
 func TestOppositeSignalClosesThenReverses(t *testing.T) {
 	cfg := btcStrategy()
@@ -544,32 +562,33 @@ func TestOppositeSignalClosesThenReverses(t *testing.T) {
 
 	pos := w.Position()
 	if !pos.IsOpen() || pos.Direction != types.DirectionShort {
-		t.Fatalf("反向信号后应当持有空头，实际：%+v", pos)
+		t.Fatalf("should be holding a short after the opposite signal, got: %+v", pos)
 	}
 	if len(broker.Orders()) != 3 {
-		t.Errorf("订单数 = %d，期望 3（开多、平多、开空）", len(broker.Orders()))
+		t.Errorf("order count = %d, want 3 (open long, close long, open short)", len(broker.Orders()))
 	}
 }
 
-// ---------- 隔离 ----------
+// ---------- isolation ----------
 
-// 决策被路由到错的标的必须报错，绝不能拿 ETH 的信号去动 BTC 的仓位。
+// A decision routed to the wrong symbol must error — an ETH signal must never
+// be allowed to touch a BTC position.
 func TestWorkerRejectsForeignSymbol(t *testing.T) {
 	cfg := btcStrategy()
 	w, _ := NewWorker(cfg, NewPaperBroker(), WithWorkerLogger(quietLogger()))
 
 	d := decision(ethStrategy(), types.DirectionLong, "2000")
-	d.StrategyID = cfg.ID // 策略 ID 对上了，但标的不对
+	d.StrategyID = cfg.ID // strategy ID matches, but the symbol doesn't
 	err := w.Handle(context.Background(), d)
 	if err == nil {
-		t.Fatal("标的不一致的决策必须被拒绝")
+		t.Fatal("a decision with a mismatched symbol must be rejected")
 	}
 	if !strings.Contains(err.Error(), "隔离") {
-		t.Errorf("错误信息应点明标的隔离要求：%v", err)
+		t.Errorf("error message should call out the symbol-isolation requirement: %v", err)
 	}
 }
 
-// 一个标的的下单通道持续报错，不得影响另一个标的。
+// A broker channel that keeps erroring for one symbol must not affect another symbol.
 func TestBrokerFailureIsIsolatedToOneSymbol(t *testing.T) {
 	ctx := context.Background()
 	sup := NewSupervisor(quietLogger())
@@ -593,17 +612,17 @@ func TestBrokerFailureIsIsolatedToOneSymbol(t *testing.T) {
 
 	stats := sup.StatsByStrategy()
 	if stats[btc.ID].Stats.Errors == 0 {
-		t.Error("BTC 的下单失败应当被记录")
+		t.Error("BTC's order failures should be recorded")
 	}
 	if stats[eth.ID].Stats.Errors != 0 {
-		t.Errorf("ETH 不应受 BTC 故障影响，实际错误数 %d", stats[eth.ID].Stats.Errors)
+		t.Errorf("ETH should not be affected by BTC's failure, got error count %d", stats[eth.ID].Stats.Errors)
 	}
 	if len(ethBroker.Orders()) == 0 {
-		t.Error("ETH 应当照常成交")
+		t.Error("ETH should have filled normally")
 	}
 }
 
-// 一个标的 panic，其它标的必须继续工作。
+// A panic in one symbol; every other symbol must keep working.
 func TestPanicInOneSymbolDoesNotAffectOthers(t *testing.T) {
 	ctx := context.Background()
 	sup := NewSupervisor(quietLogger())
@@ -626,10 +645,10 @@ func TestPanicInOneSymbolDoesNotAffectOthers(t *testing.T) {
 	sup.Drain()
 
 	if sup.StatsByStrategy()[btc.ID].Stats.Errors == 0 {
-		t.Error("panic 应当被捕获并计入 BTC 的错误统计")
+		t.Error("the panic should have been caught and counted in BTC's error stats")
 	}
 	if len(ethBroker.Orders()) == 0 {
-		t.Fatal("ETH 应当完全不受 BTC panic 的影响")
+		t.Fatal("ETH should be completely unaffected by BTC's panic")
 	}
 }
 
@@ -638,7 +657,7 @@ type failingBroker struct{}
 func (failingBroker) Name() string            { return "failing" }
 func (failingBroker) Mode() types.TradingMode { return types.ModePaper }
 func (failingBroker) PlaceOrder(context.Context, OrderRequest) (types.Order, error) {
-	return types.Order{}, errors.New("交易所连接超时")
+	return types.Order{}, errors.New("exchange connection timed out")
 }
 
 type panickingBroker struct{}
@@ -646,13 +665,14 @@ type panickingBroker struct{}
 func (panickingBroker) Name() string            { return "panicking" }
 func (panickingBroker) Mode() types.TradingMode { return types.ModePaper }
 func (panickingBroker) PlaceOrder(context.Context, OrderRequest) (types.Order, error) {
-	panic("下单通道内部崩溃")
+	panic("internal order-channel crash")
 }
 
-// ---------- 集成：两个标的、不同组合、独立风控 ----------
+// ---------- integration: two symbols, different combinations, independent risk control ----------
 
-// 这是阶段 6 要求的集成测试：BTC 用 A 组合、ETH 用 B 组合同时运行，
-// 验证两者互相隔离、风控各自独立生效。
+// This is the integration test required by stage 6: BTC runs combination A
+// and ETH runs combination B simultaneously, verifying the two are isolated
+// from each other and their risk controls each take effect independently.
 func TestIntegrationTwoSymbolsRunIndependently(t *testing.T) {
 	ctx := context.Background()
 	sup := NewSupervisor(quietLogger())
@@ -662,7 +682,8 @@ func TestIntegrationTwoSymbolsRunIndependently(t *testing.T) {
 	btcBroker, ethBroker := NewPaperBroker(), NewPaperBroker()
 	orders := &recordingOrders{}
 
-	// 两个标的关掉止损，让日亏上限成为唯一的强平规则，便于观察隔离。
+	// Turn off stop-loss for both symbols so the daily-loss cap is the only
+	// force-close rule, making isolation easier to observe.
 	btc.Risk.StopLossPct = 0
 
 	if err := sup.Register(ctx, btc, btcBroker, WithOrderRecorder(orders)); err != nil {
@@ -672,7 +693,7 @@ func TestIntegrationTwoSymbolsRunIndependently(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 两个标的同时开仓。
+	// Both symbols open a position at the same time.
 	_ = sup.Dispatch(decision(btc, types.DirectionLong, "100"))
 	_ = sup.Dispatch(decision(eth, types.DirectionLong, "2000"))
 	sup.Drain()
@@ -680,54 +701,55 @@ func TestIntegrationTwoSymbolsRunIndependently(t *testing.T) {
 	btcW, _ := sup.Worker(btc.ID)
 	ethW, _ := sup.Worker(eth.ID)
 	if !btcW.Position().IsOpen() || !ethW.Position().IsOpen() {
-		t.Fatal("两个标的都应当已开仓")
+		t.Fatal("both symbols should have opened a position")
 	}
 
-	// BTC 暴跌撞上它自己的日亏上限（50 USDT）；ETH 同幅下跌但上限是 10000，不受影响。
+	// BTC crashes into its own daily-loss cap (50 USDT); ETH drops the same
+	// amount but its cap is 10000, so it's unaffected.
 	_ = sup.Dispatch(decision(btc, types.DirectionNeutral, "90"))
 	_ = sup.Dispatch(decision(eth, types.DirectionNeutral, "1800"))
 	sup.Drain()
 
 	if !btcW.Suspended() {
-		t.Error("BTC 应当因触发自己的日亏上限而暂停")
+		t.Error("BTC should be suspended for tripping its own daily-loss cap")
 	}
 	if btcW.Position().IsOpen() {
-		t.Error("BTC 应当已被强制平仓")
+		t.Error("BTC should have been force-closed")
 	}
 
 	if ethW.Suspended() {
-		t.Error("ETH 的风控额度宽松得多，不应被 BTC 的风控牵连")
+		t.Error("ETH's risk allowance is far more generous and should not be caught up in BTC's risk control")
 	}
 	if !ethW.Position().IsOpen() {
-		t.Error("ETH 的持仓不应被 BTC 的强平影响")
+		t.Error("ETH's position should not be affected by BTC's forced close")
 	}
 
-	// BTC 暂停后，ETH 仍能正常开新仓。
+	// After BTC is suspended, ETH can still open new positions normally.
 	_ = sup.Dispatch(decision(btc, types.DirectionLong, "100"))
 	_ = sup.Dispatch(decision(eth, types.DirectionShort, "1800"))
 	sup.Drain()
 
 	if btcW.Position().IsOpen() {
-		t.Error("暂停中的 BTC 不该再开仓")
+		t.Error("suspended BTC should not open a new position")
 	}
 	if ethW.Position().Direction != types.DirectionShort {
-		t.Errorf("ETH 应当已反手做空，实际方向 %s", ethW.Position().Direction)
+		t.Errorf("ETH should have flipped to short, got direction %s", ethW.Position().Direction)
 	}
 
-	// 全部订单都要带上正确的标的与溯源。
+	// Every order must carry the correct symbol and provenance.
 	for _, o := range orders.all() {
 		if o.Symbol != "BTCUSDT" && o.Symbol != "ETHUSDT" {
-			t.Errorf("出现了未知标的的订单：%s", o.Symbol)
+			t.Errorf("found an order for an unknown symbol: %s", o.Symbol)
 		}
 		if o.Provenance.DecisionID == "" {
-			t.Errorf("订单 %s 缺少溯源信息", o.ID)
+			t.Errorf("order %s is missing provenance", o.ID)
 		}
 		if o.Mode != types.ModePaper {
-			t.Errorf("订单 %s 的模式 = %s，期望 PAPER", o.ID, o.Mode)
+			t.Errorf("order %s mode = %s, want PAPER", o.ID, o.Mode)
 		}
 	}
-	t.Logf("BTC 统计：%+v", btcW.Stats())
-	t.Logf("ETH 统计：%+v", ethW.Stats())
+	t.Logf("BTC stats: %+v", btcW.Stats())
+	t.Logf("ETH stats: %+v", ethW.Stats())
 }
 
 type recordingOrders struct {
@@ -758,7 +780,7 @@ func TestDispatchToUnknownStrategy(t *testing.T) {
 
 	err := sup.Dispatch(decision(btcStrategy(), types.DirectionLong, "100"))
 	if !errors.Is(err, ErrUnknownStrategy) {
-		t.Fatalf("期望 ErrUnknownStrategy，得到：%v", err)
+		t.Fatalf("want ErrUnknownStrategy, got: %v", err)
 	}
 }
 
@@ -772,7 +794,7 @@ func TestDuplicateRegistrationRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := sup.Register(ctx, cfg, NewPaperBroker()); err == nil {
-		t.Fatal("同一策略不应被重复注册")
+		t.Fatal("the same strategy should not be registered twice")
 	}
 }
 
@@ -789,18 +811,18 @@ func TestUnregisterStopsWorker(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, ok := sup.Worker(cfg.ID); ok {
-		t.Error("注销后不应还能取到执行实例")
+		t.Error("should not be able to fetch the execution instance after unregistering")
 	}
 	if err := sup.Dispatch(decision(cfg, types.DirectionLong, "100")); !errors.Is(err, ErrUnknownStrategy) {
-		t.Errorf("注销后投递应当报未知策略，实际：%v", err)
+		t.Errorf("dispatching after unregistering should report unknown strategy, got: %v", err)
 	}
 }
 
-// ---------- 模拟盘通道 ----------
+// ---------- paper trading channel ----------
 
 func TestPaperBrokerNeverClaimsToBeLive(t *testing.T) {
 	if NewPaperBroker().Mode() != types.ModePaper {
-		t.Fatal("模拟通道必须始终标记为 PAPER，否则实盘闸门会失效")
+		t.Fatal("the paper channel must always report as PAPER, or the live gate would be defeated")
 	}
 }
 
@@ -825,10 +847,10 @@ func TestPaperBrokerSlippageAlwaysHurts(t *testing.T) {
 	}
 
 	if !buy.FilledPrice.Equal(dec("101")) {
-		t.Errorf("买入成交价 = %s，期望 101（滑点上浮）", buy.FilledPrice)
+		t.Errorf("buy fill price = %s, want 101 (slippage pushed up)", buy.FilledPrice)
 	}
 	if !sell.FilledPrice.Equal(dec("99")) {
-		t.Errorf("卖出成交价 = %s，期望 99（滑点下压）", sell.FilledPrice)
+		t.Errorf("sell fill price = %s, want 99 (slippage pushed down)", sell.FilledPrice)
 	}
 }
 
@@ -837,7 +859,7 @@ func TestBinanceBrokerRefusesNonTestnetURL(t *testing.T) {
 		BaseURL: "https://api.binance.com", APIKey: "k", APISecret: "s",
 	})
 	if err == nil {
-		t.Fatal("必须拒绝指向生产环境的地址")
+		t.Fatal("must reject an address pointing at production")
 	}
 }
 
@@ -847,6 +869,6 @@ func TestBinanceBrokerIsTreatedAsPaper(t *testing.T) {
 		t.Fatal(err)
 	}
 	if b.Mode() != types.ModePaper {
-		t.Error("测试网用的是模拟资金，必须按模拟盘对待")
+		t.Error("the testnet trades with simulated funds and must be treated as paper")
 	}
 }

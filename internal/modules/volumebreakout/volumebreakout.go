@@ -1,10 +1,14 @@
-// Package volumebreakout 实现 volume_breakout 信号模块。
+// Package volumebreakout implements the volume_breakout signal module.
 //
-// 逻辑：把最新一根 K 线的成交量与之前 window 根的均量相比，
-// 倍数超过阈值即认为出现放量，方向由 K 线自身决定（收阳看多、收阴看空）。
+// Logic: compare the latest candle's volume against the average of the
+// preceding `window` candles; a ratio above the threshold counts as a volume
+// surge, and direction comes from the candle itself (bullish close -> long,
+// bearish close -> short).
 //
-// 均量刻意不含最新一根：把当前这根算进均值会稀释它自己的倍数，
-// window 越小稀释越严重，会让阈值的实际含义随参数漂移。
+// The average deliberately excludes the latest candle: folding it into the
+// average would dilute its own ratio, and the smaller window is, the worse
+// the dilution — which would make the threshold's effective meaning drift
+// with the parameter.
 package volumebreakout
 
 import (
@@ -16,32 +20,33 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// ModuleName 是该模块在策略配置中的标识。
+// ModuleName is this module's identifier in strategy configs.
 const ModuleName = "volume_breakout"
 
-// 方向判定来源。
+// Direction-detection sources.
 const (
-	// SourceCandle 用 K 线收盘价相对开盘价的涨跌判定方向。
+	// SourceCandle determines direction from the candle's close vs. open.
 	SourceCandle = "candle"
-	// SourceTaker 用主动买卖量的净差判定方向，需要数据源提供 TakerBuyVolume。
+	// SourceTaker determines direction from the net difference between taker
+	// buy/sell volume; requires the data source to supply TakerBuyVolume.
 	SourceTaker = "taker"
 )
 
-// Module 实现 volume_breakout 信号模块。零值可用。
+// Module implements the volume_breakout signal module. The zero value is usable.
 type Module struct{}
 
-// New 返回模块实例。
+// New returns a module instance.
 func New() *Module { return &Module{} }
 
-// Name 实现 modules.SignalModule。
+// Name implements modules.SignalModule.
 func (m *Module) Name() string { return ModuleName }
 
-// Description 实现 modules.SignalModule。
+// Description implements modules.SignalModule.
 func (m *Module) Description() string {
 	return "计算最新一根 K 线成交量相对近期均量的倍数，倍数超过阈值时输出信号，方向由 K 线涨跌或主动买卖量净差决定。"
 }
 
-// RequiredParams 实现 modules.SignalModule。
+// RequiredParams implements modules.SignalModule.
 func (m *Module) RequiredParams() []types.ParamSpec {
 	return []types.ParamSpec{
 		{
@@ -67,7 +72,7 @@ func (m *Module) RequiredParams() []types.ParamSpec {
 	}
 }
 
-// Evaluate 实现 modules.SignalModule。
+// Evaluate implements modules.SignalModule.
 func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[string]any) (types.Signal, error) {
 	p, err := types.ResolveParams(ModuleName, m.RequiredParams(), params)
 	if err != nil {
@@ -82,7 +87,7 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 	source := types.MustString(p, "direction_source")
 	minBody := decimal.NewFromFloat(types.MustFloat(p, "min_body_ratio"))
 
-	// 需要 window 根做基准 + 1 根当前。
+	// Needs `window` candles as the baseline plus 1 current candle.
 	if len(md.Candles) < window+1 {
 		return types.NeutralSignal(ModuleName, md.Symbol,
 			fmt.Sprintf("K 线不足：需要至少 %d 根，实际 %d 根", window+1, len(md.Candles)),
@@ -106,8 +111,9 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 		"direction_source": source,
 	}
 
-	// 均量为零通常意味着这段行情根本没有成交（停牌、数据缺口），
-	// 此时任何倍数都是无穷大，不能当成有效放量。
+	// A zero average usually means there was no trading in this window at all
+	// (a halt, a data gap). Any ratio computed against it is effectively
+	// infinite, so it can't be treated as a genuine volume surge.
 	if !avg.IsPositive() {
 		s := types.NeutralSignal(ModuleName, md.Symbol, "基准窗口内均量为零，无法计算放量倍数", cur.CloseTime)
 		s.Price, s.Raw = cur.Close, raw
@@ -125,7 +131,8 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 		return s, nil
 	}
 
-	// 实体占比过滤：长影线小实体的放量往往是双向厮杀，方向不明确。
+	// Body-ratio filter: a volume surge on a candle with long wicks and a tiny
+	// body is usually a two-way fight, so direction is unclear.
 	if minBody.IsPositive() {
 		rng := cur.Range()
 		if !rng.IsPositive() {
@@ -167,7 +174,8 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 	}, nil
 }
 
-// direction 按配置的来源判定方向，同时返回一句可读的判定依据。
+// direction determines direction using the configured source, returning a
+// human-readable reason for the determination alongside it.
 func direction(c types.Candle, source string) (types.Direction, string) {
 	switch source {
 	case SourceTaker:
@@ -175,8 +183,10 @@ func direction(c types.Candle, source string) (types.Direction, string) {
 			return types.DirectionNeutral, "成交量为零"
 		}
 		buy, sell := c.TakerBuyVolume, c.TakerSellVolume()
-		// 数据源未提供主动买入量时 TakerBuyVolume 为零，此时净差恒为负，
-		// 会造出一个纯属虚构的看空信号。必须显式识别这种情况。
+		// When the data source doesn't supply taker buy volume, TakerBuyVolume
+		// is zero, making the net difference always negative — which would
+		// fabricate a purely artificial short signal. This case must be
+		// detected explicitly.
 		if buy.IsZero() {
 			return types.DirectionNeutral, "数据源未提供主动买入量"
 		}
@@ -201,10 +211,12 @@ func direction(c types.Candle, source string) (types.Direction, string) {
 	}
 }
 
-// confidence 把放量倍数映射到 [0.5, 0.95]。
+// confidence maps the volume ratio into [0.5, 0.95].
 //
-// 刚好达到阈值给 0.5，达到阈值两倍时接近上限，之后增长趋缓：
-// 成交量是长尾分布，10 倍和 20 倍的信息量差别远小于 2 倍和 4 倍。
+// Just reaching the threshold gives 0.5, reaching twice the threshold gets
+// close to the upper bound, and growth tapers off after that: volume follows
+// a long-tailed distribution, so the informational difference between 10x
+// and 20x is much smaller than between 2x and 4x.
 func confidence(ratio, threshold float64) float64 {
 	if threshold <= 0 {
 		return 0.5

@@ -2,33 +2,38 @@ package execution
 
 import "fmt"
 
-// BrokerKind 标识执行层可以对接的下单通道。
+// BrokerKind identifies an order channel the execution layer can connect to.
 //
-// 新增一个交易所只需要在 brokerSpecs 里登记一行、实现对应的 Broker——调用方
-// （cmd/executor、设置页面）都只依赖这个注册表，不需要各自维护一份交易所列表。
+// Adding a new exchange only requires registering one entry in brokerSpecs
+// and implementing the corresponding Broker — callers (cmd/executor, the
+// settings page) depend only on this registry, so nobody needs to maintain
+// their own separate list of exchanges.
 type BrokerKind string
 
 const (
-	// BrokerKindPaper 是纯内存模拟盘，不接任何交易所，不需要任何凭据。
+	// BrokerKindPaper is a pure in-memory paper channel: no exchange
+	// connection, no credentials needed.
 	BrokerKindPaper BrokerKind = "paper"
-	// BrokerKindBinanceTestnet 是币安测试网。
+	// BrokerKindBinanceTestnet is the Binance testnet.
 	BrokerKindBinanceTestnet BrokerKind = "binance-testnet"
-	// BrokerKindOKXDemo 是 OKX 模拟盘。
+	// BrokerKindOKXDemo is OKX demo trading.
 	BrokerKindOKXDemo BrokerKind = "okx-demo"
-	// BrokerKindBybitTestnet 是 Bybit 测试网。
+	// BrokerKindBybitTestnet is the Bybit testnet.
 	BrokerKindBybitTestnet BrokerKind = "bybit-testnet"
-	// BrokerKindBitgetDemo 是 Bitget 模拟盘。
+	// BrokerKindBitgetDemo is Bitget demo trading.
 	BrokerKindBitgetDemo BrokerKind = "bitget-demo"
 )
 
-// Kinds 列出全部下单通道（含 paper），顺序即命令行帮助文本的展示顺序。
+// Kinds lists every order channel (including paper); the order is the order
+// shown in CLI help text.
 var Kinds = []BrokerKind{
 	BrokerKindPaper, BrokerKindBinanceTestnet, BrokerKindOKXDemo,
 	BrokerKindBybitTestnet, BrokerKindBitgetDemo,
 }
 
-// CredentialedKinds 列出需要交易所凭据的下单通道（不含 paper）——设置页面新增
-// 交易所配置时的下拉框只该列出这些，paper 没有 key/secret 可填。
+// CredentialedKinds lists the order channels that need exchange credentials
+// (excludes paper) — the dropdown for adding an exchange config on the
+// settings page should only list these; paper has no key/secret to fill in.
 var CredentialedKinds = []BrokerKind{
 	BrokerKindBinanceTestnet, BrokerKindOKXDemo, BrokerKindBybitTestnet, BrokerKindBitgetDemo,
 }
@@ -46,13 +51,13 @@ var brokerSpecs = map[BrokerKind]brokerSpec{
 	BrokerKindBitgetDemo:     {label: "Bitget 模拟盘", requiresPassphrase: true},
 }
 
-// Valid 报告是否为已支持的下单通道。
+// Valid reports whether this is a supported order channel.
 func (k BrokerKind) Valid() bool {
 	_, ok := brokerSpecs[k]
 	return ok
 }
 
-// Label 返回人类可读名称，供界面展示。
+// Label returns the human-readable name, for display in the UI.
 func (k BrokerKind) Label() string {
 	if s, ok := brokerSpecs[k]; ok {
 		return s.label
@@ -60,14 +65,16 @@ func (k BrokerKind) Label() string {
 	return string(k)
 }
 
-// RequiresPassphrase 报告该下单通道除 API key/secret 外是否还需要密码短语
-// （目前只有 OKX：它的鉴权是 key + secret + passphrase 三件套，币安只要两件）。
+// RequiresPassphrase reports whether this order channel needs a passphrase in
+// addition to the API key/secret (currently only OKX: its auth is the
+// key+secret+passphrase trio, while Binance only needs the first two).
 func (k BrokerKind) RequiresPassphrase() bool {
 	return brokerSpecs[k].requiresPassphrase
 }
 
-// NewBroker 按 kind 构造对应的下单通道。paper 不需要任何凭据；其余通道
-// 缺凭据时报错（具体规则见各自的 New*Broker 构造函数）。
+// NewBroker constructs the order channel for the given kind. paper needs no
+// credentials at all; the other channels error when credentials are missing
+// (see the specific rules in each New*Broker constructor).
 func NewBroker(kind BrokerKind, apiKey, apiSecret, passphrase string) (Broker, error) {
 	switch kind {
 	case BrokerKindPaper:

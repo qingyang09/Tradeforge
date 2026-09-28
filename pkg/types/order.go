@@ -6,17 +6,18 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// OrderSide 是订单方向。
+// OrderSide is the order's direction.
 type OrderSide string
 
 const (
-	// SideBuy 买入。
+	// SideBuy is a buy order.
 	SideBuy OrderSide = "BUY"
-	// SideSell 卖出。
+	// SideSell is a sell order.
 	SideSell OrderSide = "SELL"
 )
 
-// SideFor 把信号方向映射为开仓方向。中性方向没有对应的开仓动作。
+// SideFor maps a signal direction to an order side to open a position.
+// Neutral has no corresponding open action.
 func SideFor(d Direction) (OrderSide, bool) {
 	switch d {
 	case DirectionLong:
@@ -28,17 +29,17 @@ func SideFor(d Direction) (OrderSide, bool) {
 	}
 }
 
-// OrderType 是订单类型。MVP 阶段只支持市价单。
+// OrderType is the order type. Only market orders are supported in the MVP stage.
 type OrderType string
 
 const (
-	// OrderMarket 市价单。
+	// OrderMarket is a market order.
 	OrderMarket OrderType = "MARKET"
-	// OrderLimit 限价单。
+	// OrderLimit is a limit order.
 	OrderLimit OrderType = "LIMIT"
 )
 
-// OrderStatus 是订单状态。
+// OrderStatus is the order's status.
 type OrderStatus string
 
 const (
@@ -48,22 +49,24 @@ const (
 	OrderCanceled OrderStatus = "CANCELED"
 )
 
-// TradingMode 区分订单是模拟盘还是实盘产生的。
+// TradingMode distinguishes whether an order came from paper trading or live trading.
 //
-// 这个字段必须随订单一路带到底：模拟盘订单绝不能走到真实下单通道。
+// This field must travel with the order all the way through: a paper-trading
+// order must never reach the real order-placement channel.
 type TradingMode string
 
 const (
-	// ModePaper 模拟盘，不下真实单。
+	// ModePaper is paper trading — no real orders are placed.
 	ModePaper TradingMode = "PAPER"
-	// ModeLive 实盘。
+	// ModeLive is live trading.
 	ModeLive TradingMode = "LIVE"
 )
 
-// Order 是一次下单请求及其执行结果。
+// Order is a single order request and its execution result.
 //
-// Provenance 是强制字段：每笔订单都必须能回答"是哪个模块的哪个信号、
-// 什么参数触发的"，这是平台的可解释性底线。
+// Provenance is a mandatory field: every order must be able to answer "which
+// module's which signal, with what parameters, triggered this" — that's the
+// platform's baseline for explainability.
 type Order struct {
 	ID         string      `json:"id"`
 	StrategyID string      `json:"strategy_id"`
@@ -72,19 +75,19 @@ type Order struct {
 	Type       OrderType   `json:"type"`
 	Mode       TradingMode `json:"mode"`
 
-	// Quantity 是基础货币数量（如 BTC 的个数）。
+	// Quantity is the base-currency amount (e.g. number of BTC).
 	Quantity decimal.Decimal `json:"quantity"`
-	// Price 是限价单的委托价；市价单为零值。
+	// Price is the limit order's order price; zero for a market order.
 	Price decimal.Decimal `json:"price,omitempty"`
-	// FilledPrice 是实际成交均价。
+	// FilledPrice is the actual average fill price.
 	FilledPrice decimal.Decimal `json:"filled_price,omitempty"`
-	// Fee 是本笔手续费，以计价货币计。
+	// Fee is this order's fee, denominated in the quote currency.
 	Fee decimal.Decimal `json:"fee,omitempty"`
 
 	Status OrderStatus `json:"status"`
-	// ExchangeOrderID 是交易所返回的订单号，模拟盘为空。
+	// ExchangeOrderID is the order ID returned by the exchange; empty for paper trading.
 	ExchangeOrderID string `json:"exchange_order_id,omitempty"`
-	// RejectReason 在 Status 为 REJECTED 时说明原因（含风控拒绝）。
+	// RejectReason explains why when Status is REJECTED (including risk-control rejections).
 	RejectReason string `json:"reject_reason,omitempty"`
 
 	Provenance OrderProvenance `json:"provenance"`
@@ -93,26 +96,28 @@ type Order struct {
 	FilledAt  time.Time `json:"filled_at,omitempty"`
 }
 
-// OrderProvenance 记录一笔订单的完整触发溯源，可直接展示给用户。
+// OrderProvenance records the full trigger trail for an order, suitable for
+// displaying to the user directly.
 type OrderProvenance struct {
-	// DecisionID 关联到组合引擎写入审计表的那条决策。
+	// DecisionID links back to the decision the combination engine wrote to the audit table.
 	DecisionID string `json:"decision_id"`
-	// Combine 是当时使用的聚合方式。
+	// Combine is the aggregation mode in effect at the time.
 	Combine CombineMode `json:"combine"`
-	// Score 是当时的聚合强度。
+	// Score is the aggregated strength at the time.
 	Score float64 `json:"score"`
-	// Threshold 是当时的触发阈值（WEIGHTED 模式）。
+	// Threshold is the trigger threshold at the time (WEIGHTED mode).
 	Threshold float64 `json:"threshold,omitempty"`
-	// Signals 是当时各模块的信号。
+	// Signals are each module's signal at the time.
 	Signals []Signal `json:"signals"`
-	// ModuleParams 是当时各模块生效的参数快照，键为模块名。
-	// 保存快照而不是引用策略配置，因为配置可能被后续修改。
+	// ModuleParams is a snapshot of the effective parameters for each module at the
+	// time, keyed by module name. A snapshot is stored rather than a reference to the
+	// strategy config, because the config may be edited afterward.
 	ModuleParams map[string]map[string]any `json:"module_params"`
-	// Note 是纯事实性的补充说明（如"风控触发的强制平仓"）。
+	// Note is a purely factual annotation (e.g. "forced close triggered by risk control").
 	Note string `json:"note,omitempty"`
 }
 
-// Position 是某个标的上的当前持仓。
+// Position is the current holding on a given symbol.
 type Position struct {
 	StrategyID string          `json:"strategy_id"`
 	Symbol     string          `json:"symbol"`
@@ -120,22 +125,26 @@ type Position struct {
 	Quantity   decimal.Decimal `json:"quantity"`
 	EntryPrice decimal.Decimal `json:"entry_price"`
 	OpenedAt   time.Time       `json:"opened_at"`
-	// EntryOrderID 关联开仓订单，据此可以追到 Provenance。
+	// EntryOrderID links to the order that opened this position, from which Provenance
+	// can be traced.
 	EntryOrderID string `json:"entry_order_id"`
-	// StopLossPrice/TakeProfitPrice 是开仓那一刻算好的绝对止损/止盈价格，零值表示未设置。
-	// 不管 RiskConfig 用的是固定百分比还是 support_resistance 模式，一旦开仓都会换算成
-	// 绝对价格存在这里——后续每根 K 线只需要拿当前价跟这两个价格比较，不需要知道当初
-	// 是按哪种模式算出来的（见 internal/execution/risk.go 的 ResolveStopLossPrice）。
+	// StopLossPrice/TakeProfitPrice are the absolute stop-loss/take-profit prices
+	// computed at the moment the position was opened; zero means unset. Regardless
+	// of whether RiskConfig uses a fixed percentage or the support_resistance mode,
+	// once opened these are converted to and stored as absolute prices — every
+	// subsequent candle only needs to compare the current price against these two
+	// values, without needing to know which mode originally produced them (see
+	// ResolveStopLossPrice in internal/execution/risk.go).
 	StopLossPrice   decimal.Decimal `json:"stop_loss_price,omitempty"`
 	TakeProfitPrice decimal.Decimal `json:"take_profit_price,omitempty"`
 }
 
-// IsOpen 报告是否持有非零仓位。
+// IsOpen reports whether the position holds a nonzero quantity.
 func (p Position) IsOpen() bool {
 	return p.Direction != DirectionNeutral && p.Quantity.IsPositive()
 }
 
-// UnrealizedPnL 按给定价格计算浮动盈亏，以计价货币计。
+// UnrealizedPnL computes floating P&L at the given price, denominated in the quote currency.
 func (p Position) UnrealizedPnL(price decimal.Decimal) decimal.Decimal {
 	if !p.IsOpen() {
 		return decimal.Zero

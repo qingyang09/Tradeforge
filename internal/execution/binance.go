@@ -19,35 +19,38 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// BinanceTestnetBaseURL 是币安现货测试网地址。
+// BinanceTestnetBaseURL is Binance's spot testnet address.
 //
-// 刻意把测试网写成默认值：MVP 阶段绝不该出现"改一个环境变量就打到实盘"的可能。
-// 接真实资金账户是一个需要单独评审的动作，不是配置项。
+// The testnet is deliberately hard-coded as the default: the MVP stage must
+// never allow "flip an env var and it hits live trading". Connecting a real
+// funded account is an action that needs its own separate review, not a
+// config toggle.
 const BinanceTestnetBaseURL = "https://testnet.binance.vision"
 
-// BinanceBroker 通过币安 REST API 下单。
+// BinanceBroker places orders through the Binance REST API.
 //
-// 当前只支持测试网。Mode() 恒返回 ModePaper——因为测试网用的是模拟资金，
-// 把它当实盘看待会让"实盘前必须人工解锁"这道闸门形同虚设。
+// Currently testnet-only. Mode() always returns ModePaper — because the
+// testnet trades with simulated funds, treating it as live would render the
+// "manual unlock required before going live" gate meaningless.
 type BinanceBroker struct {
 	baseURL   string
 	apiKey    string
 	apiSecret string
 	client    *http.Client
-	// recvWindow 是币安要求的请求有效期（毫秒）。
+	// recvWindow is Binance's required request validity window, in milliseconds.
 	recvWindow int64
 }
 
-// BinanceConfig 是币安通道的配置。
+// BinanceConfig configures the Binance channel.
 type BinanceConfig struct {
-	// BaseURL 留空则使用测试网。
+	// BaseURL defaults to the testnet when left empty.
 	BaseURL   string
 	APIKey    string
 	APISecret string
 	Timeout   time.Duration
 }
 
-// NewBinanceTestnetBroker 创建币安测试网下单通道。
+// NewBinanceTestnetBroker creates a Binance testnet order channel.
 func NewBinanceTestnetBroker(cfg BinanceConfig) (*BinanceBroker, error) {
 	if cfg.APIKey == "" || cfg.APISecret == "" {
 		return nil, fmt.Errorf("缺少币安测试网 API 密钥（TF_BINANCE_API_KEY / TF_BINANCE_API_SECRET）")
@@ -57,8 +60,9 @@ func NewBinanceTestnetBroker(cfg BinanceConfig) (*BinanceBroker, error) {
 		base = BinanceTestnetBaseURL
 	}
 	if !strings.Contains(base, "testnet") {
-		// 明确拒绝指向生产环境的地址。真要接实盘，应当是一次显式的代码改动
-		// 加一轮评审，而不是改个配置就生效。
+		// Explicitly reject anything pointing at production. Actually going
+		// live should be a deliberate code change plus a review round, not
+		// something a config edit can trigger.
 		return nil, fmt.Errorf("BaseURL %q 不是测试网地址；当前版本只允许对接测试网", base)
 	}
 	timeout := cfg.Timeout
@@ -74,16 +78,17 @@ func NewBinanceTestnetBroker(cfg BinanceConfig) (*BinanceBroker, error) {
 	}, nil
 }
 
-// Name 实现 Broker。
+// Name implements Broker.
 func (b *BinanceBroker) Name() string { return "binance-testnet" }
 
-// Mode 实现 Broker。测试网用的是模拟资金，一律按模拟盘对待。
+// Mode implements Broker. The testnet trades with simulated funds, so it is
+// always treated as paper.
 func (b *BinanceBroker) Mode() types.TradingMode { return types.ModePaper }
 
-// PlaceOrder 实现 Broker：下市价单。
+// PlaceOrder implements Broker: places a market order.
 func (b *BinanceBroker) PlaceOrder(ctx context.Context, req OrderRequest) (types.Order, error) {
 	if !req.Quantity.IsPositive() {
-		return types.Order{}, fmt.Errorf("下单数量 %s 非正", req.Quantity)
+		return types.Order{}, fmt.Errorf("order quantity %s is not positive", req.Quantity)
 	}
 
 	params := url.Values{}
@@ -99,22 +104,22 @@ func (b *BinanceBroker) PlaceOrder(ctx context.Context, req OrderRequest) (types
 	endpoint := b.baseURL + "/api/v3/order?" + params.Encode()
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
 	if err != nil {
-		return types.Order{}, fmt.Errorf("构造请求失败：%w", err)
+		return types.Order{}, fmt.Errorf("failed to build request: %w", err)
 	}
 	httpReq.Header.Set("X-MBX-APIKEY", b.apiKey)
 
 	resp, err := b.client.Do(httpReq)
 	if err != nil {
-		return types.Order{}, fmt.Errorf("调用币安接口失败：%w", err)
+		return types.Order{}, fmt.Errorf("call to Binance API failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	var raw binanceOrderResponse
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		return types.Order{}, fmt.Errorf("解析币安响应失败（HTTP %d）：%w", resp.StatusCode, err)
+		return types.Order{}, fmt.Errorf("failed to parse Binance response (HTTP %d): %w", resp.StatusCode, err)
 	}
 	if resp.StatusCode != http.StatusOK || raw.Code != 0 {
-		return types.Order{}, fmt.Errorf("币安拒绝了订单（HTTP %d，code %d）：%s",
+		return types.Order{}, fmt.Errorf("Binance rejected the order (HTTP %d, code %d): %s",
 			resp.StatusCode, raw.Code, raw.Msg)
 	}
 
@@ -124,14 +129,15 @@ func (b *BinanceBroker) PlaceOrder(ctx context.Context, req OrderRequest) (types
 func (b *BinanceBroker) toOrder(req OrderRequest, raw binanceOrderResponse) (types.Order, error) {
 	filledQty, err := decimalOrZero(raw.ExecutedQty)
 	if err != nil {
-		return types.Order{}, fmt.Errorf("解析成交数量失败：%w", err)
+		return types.Order{}, fmt.Errorf("failed to parse filled quantity: %w", err)
 	}
 	quote, err := decimalOrZero(raw.CummulativeQuoteQty)
 	if err != nil {
-		return types.Order{}, fmt.Errorf("解析成交金额失败：%w", err)
+		return types.Order{}, fmt.Errorf("failed to parse filled amount: %w", err)
 	}
 
-	// 市价单没有委托价，成交均价要用成交额除以成交量算出来。
+	// A market order has no limit price, so the average fill price has to be
+	// computed as filled amount divided by filled quantity.
 	avg := decimal.Zero
 	if filledQty.IsPositive() {
 		avg = quote.Div(filledQty)
@@ -141,7 +147,7 @@ func (b *BinanceBroker) toOrder(req OrderRequest, raw binanceOrderResponse) (typ
 	for _, f := range raw.Fills {
 		v, err := decimalOrZero(f.Commission)
 		if err != nil {
-			return types.Order{}, fmt.Errorf("解析手续费失败：%w", err)
+			return types.Order{}, fmt.Errorf("failed to parse fee: %w", err)
 		}
 		fee = fee.Add(v)
 	}
@@ -174,7 +180,7 @@ func (b *BinanceBroker) toOrder(req OrderRequest, raw binanceOrderResponse) (typ
 	}, nil
 }
 
-// sign 用 HMAC-SHA256 对查询串签名，这是币安的鉴权要求。
+// sign signs the query string with HMAC-SHA256, as required by Binance's auth scheme.
 func (b *BinanceBroker) sign(query string) string {
 	mac := hmac.New(sha256.New, []byte(b.apiSecret))
 	mac.Write([]byte(query))

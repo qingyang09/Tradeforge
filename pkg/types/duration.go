@@ -6,27 +6,29 @@ import (
 	"time"
 )
 
-// Duration 包装 time.Duration，使其在 JSON 中表现为人类可读的字符串（"24h"、"7d" 等价的 "168h"）。
+// Duration wraps time.Duration so it serializes to JSON as a human-readable
+// string ("24h", or "168h" for the equivalent of "7d").
 //
-// 标准库的 time.Duration 会被序列化成纳秒整数，写进策略配置里既不可读、
-// 也容易让 LLM 生成出量级完全错误的值。
+// The standard library's time.Duration marshals to an integer of nanoseconds,
+// which is unreadable in a strategy config and makes it easy for an LLM to
+// generate a value that's off by orders of magnitude.
 type Duration time.Duration
 
-// D 是构造 Duration 的语法糖。
+// D is sugar for constructing a Duration.
 func D(d time.Duration) Duration { return Duration(d) }
 
-// Std 返回底层的 time.Duration。
+// Std returns the underlying time.Duration.
 func (d Duration) Std() time.Duration { return time.Duration(d) }
 
-// String 实现 fmt.Stringer。
+// String implements fmt.Stringer.
 func (d Duration) String() string { return time.Duration(d).String() }
 
-// MarshalJSON 把时长写成字符串。
+// MarshalJSON writes the duration as a string.
 func (d Duration) MarshalJSON() ([]byte, error) {
 	return json.Marshal(time.Duration(d).String())
 }
 
-// UnmarshalJSON 接受字符串形式（"90m"）或纳秒整数形式。
+// UnmarshalJSON accepts either the string form ("90m") or a raw nanosecond integer.
 func (d *Duration) UnmarshalJSON(b []byte) error {
 	var v any
 	if err := json.Unmarshal(b, &v); err != nil {
@@ -36,7 +38,7 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 	case string:
 		parsed, err := time.ParseDuration(x)
 		if err != nil {
-			return fmt.Errorf("无法解析时长 %q：%w", x, err)
+			return fmt.Errorf("could not parse duration %q: %w", x, err)
 		}
 		*d = Duration(parsed)
 		return nil
@@ -47,6 +49,6 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 		*d = 0
 		return nil
 	default:
-		return fmt.Errorf("时长字段期望字符串或数字，得到 %T", v)
+		return fmt.Errorf("duration field expected a string or number, got %T", v)
 	}
 }

@@ -546,7 +546,7 @@ func TestRejectsInvalidModelOutput(t *testing.T) {
 				}},
 				"risk": risk("1000"),
 			}),
-			wantErr: "不存在此参数",
+			wantErr: "no such parameter",
 		},
 		{
 			name: "参数超出范围",
@@ -558,7 +558,7 @@ func TestRejectsInvalidModelOutput(t *testing.T) {
 				}},
 				"risk": risk("1000"),
 			}),
-			wantErr: "大于允许的最大值",
+			wantErr: "above the allowed maximum",
 		},
 		{
 			name: "周期不受支持",

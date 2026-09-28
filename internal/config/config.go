@@ -1,6 +1,7 @@
-// Package config 集中管理各服务的配置读取。
+// Package config centralizes configuration loading for all services.
 //
-// 所有配置都可以被环境变量覆盖，本地开发时的默认值指向 docker-compose 起的服务。
+// Every setting can be overridden by an environment variable; the local
+// development defaults point at the services started by docker-compose.
 package config
 
 import (
@@ -11,7 +12,7 @@ import (
 	"time"
 )
 
-// Config 是平台的完整配置。
+// Config is the platform's complete configuration.
 type Config struct {
 	Postgres       PostgresConfig
 	Redis          RedisConfig
@@ -24,7 +25,7 @@ type Config struct {
 	Notification   NotificationConfig
 }
 
-// PostgresConfig 是 Postgres 连接配置。
+// PostgresConfig is the Postgres connection configuration.
 type PostgresConfig struct {
 	Host     string
 	Port     int
@@ -34,90 +35,103 @@ type PostgresConfig struct {
 	SSLMode  string
 }
 
-// DSN 返回 pgx 可用的连接串。
+// DSN returns a connection string usable by pgx.
 func (p PostgresConfig) DSN() string {
 	return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
 		p.User, p.Password, p.Host, p.Port, p.Database, p.SSLMode)
 }
 
-// RedisConfig 是 Redis 连接配置。
+// RedisConfig is the Redis connection configuration.
 type RedisConfig struct {
 	Addr     string
 	Password string
 	DB       int
 }
 
-// KafkaConfig 是 Kafka 连接配置。
+// KafkaConfig is the Kafka connection configuration.
 type KafkaConfig struct {
 	Brokers []string
-	// DecisionTopic 承载组合引擎输出的最终决策。
+	// DecisionTopic carries the final decisions produced by the combination engine.
 	DecisionTopic string
-	// SignalTopic 承载各模块的原始信号（用于调试与回放）。
+	// SignalTopic carries each module's raw signals (for debugging and replay).
 	SignalTopic string
 }
 
-// AgentConfig 是 AI Agent 翻译层配置。
+// AgentConfig is the AI Agent translation layer configuration.
 type AgentConfig struct {
-	// APIKey 是 LLM API 密钥。为空时 Agent 只能以离线/桩模式运行。
+	// APIKey is the LLM API key. When empty, the Agent can only run in
+	// offline/stub mode.
 	APIKey string
-	// Model 是使用的模型 ID。
+	// Model is the model ID to use.
 	Model string
-	// BaseURL 允许指向自建网关。
+	// BaseURL allows pointing at a self-hosted gateway.
 	BaseURL string
-	// Timeout 是单次翻译请求的超时。
+	// Timeout is the timeout for a single translation request.
 	Timeout time.Duration
-	// MaxRetries 是 schema 校验失败后允许重试的次数。
-	// 重试是"让模型重新生成"，不是"帮模型修补输出"。
+	// MaxRetries is how many retries are allowed after a schema validation
+	// failure. A retry means "have the model regenerate it," never
+	// "patch up the model's output for it."
 	MaxRetries int
 }
 
-// EngineConfig 是组合引擎配置。
+// EngineConfig is the combination engine configuration.
 type EngineConfig struct {
-	// ModuleTimeout 是单个模块 Evaluate 的超时，超时后该模块降级为中性信号。
+	// ModuleTimeout is the timeout for a single module's Evaluate; on
+	// timeout, that module degrades to a neutral signal.
 	ModuleTimeout time.Duration
 }
 
-// BacktestRunnerConfig 配置 cmd/webui"运行回测"按钮怎么拉起 Python 撮合引擎子进程。
+// BacktestRunnerConfig configures how cmd/webui's "run backtest" button
+// shells out to the Python matching-engine subprocess.
 type BacktestRunnerConfig struct {
-	// PythonExe 是 python 解释器名字/路径，某些系统上需要覆盖成 "python3"。
+	// PythonExe is the python interpreter's name/path; some systems need
+	// this overridden to "python3".
 	PythonExe string
-	// PythonDir 是 python/backtest 的路径，子进程以它为工作目录。
+	// PythonDir is the path to python/backtest, used as the subprocess's working directory.
 	PythonDir string
-	// DefaultLookback 是没在界面上指定回看根数时，默认往回拉多少根K线。
+	// DefaultLookback is how many candles to pull by default when the UI
+	// doesn't specify a lookback count.
 	DefaultLookback int
-	// Timeout 是子进程的最长运行时间。
+	// Timeout is the subprocess's maximum run time.
 	Timeout time.Duration
 }
 
-// HTTPConfig 是 Web 界面（cmd/webui）的配置。
+// HTTPConfig is the web interface's (cmd/webui) configuration.
 type HTTPConfig struct {
-	// Addr 是监听地址，如 ":8080"。
+	// Addr is the listen address, e.g. ":8080".
 	Addr string
 }
 
-// SecurityConfig 是加解密全部用户凭据用的服务端主密钥配置。多用户 SaaS 改造之后
-// 登录鉴权是每个用户自己的邮箱+密码（bcrypt 哈希，见 internal/webui/handlers_auth.go），
-// 不再是这里配的一个共享密码——MasterKey 纯粹是 internal/secretcrypto 的加密材料，
-// 跟任何用户的登录口令无关，见 internal/webui/server.go 的 Server.masterKey 注释。
+// SecurityConfig is the server-side master key configuration used to
+// encrypt/decrypt every user's credentials. After the multi-user SaaS
+// rework, login auth is each user's own email+password (bcrypt hash, see
+// internal/webui/handlers_auth.go) rather than the single shared password
+// configured here — MasterKey is purely keying material for
+// internal/secretcrypto and has nothing to do with any user's login
+// password; see the Server.masterKey comment in internal/webui/server.go.
 type SecurityConfig struct {
-	// MasterKey 没有默认值：丢失它等于永久锁死全部用户已存的交易所/LLM 凭据，
-	// 后果跟"忘了一次性登录密码"完全不对等，不能像旧的 AdminPassword 那样
-	// "没配就随机生成一个"，cmd/webui/main.go、cmd/executor/main.go 的启动路径
-	// 都要求它显式设置且足够长，否则直接拒绝启动。
+	// MasterKey has no default: losing it permanently locks every user out
+	// of their stored exchange/LLM credentials, a consequence far more
+	// severe than "forgot a one-time login password," so unlike the old
+	// AdminPassword it can't just "generate a random one if unset." The
+	// startup paths in cmd/webui/main.go and cmd/executor/main.go all
+	// require it to be set explicitly and be long enough, or they refuse to start.
 	MasterKey string
 }
 
-// NotificationConfig 是提醒渠道里"部署级"共享的那部分配置——SMTP 服务器、Telegram
-// bot token、VAPID 密钥对都是整个部署共用一份（不是每用户各自的密钥），跟
-// TF_MASTER_KEY 是同一类东西：用户各自的部分（收件地址/chat_id/webhook URL/推送
-// 订阅）存在 notification_channels 表里，见 internal/storage/notification_channels.go。
+// NotificationConfig is the "deployment-level" shared portion of the alert
+// channel configuration — the SMTP server, Telegram bot token, and VAPID
+// key pair are each shared by the whole deployment (not a per-user key),
+// the same category of thing as TF_MASTER_KEY: each user's own part
+// (recipient address/chat_id/webhook URL/push subscription) is stored in
+// the notification_channels table, see internal/storage/notification_channels.go.
 type NotificationConfig struct {
 	SMTP     SMTPConfig
 	Telegram TelegramConfig
 	WebPush  WebPushConfig
 }
 
-// SMTPConfig 是发送提醒邮件用的服务端 SMTP 配置。
+// SMTPConfig is the server-side SMTP configuration used to send alert emails.
 type SMTPConfig struct {
 	Host     string
 	Port     string
@@ -126,23 +140,27 @@ type SMTPConfig struct {
 	From     string
 }
 
-// TelegramConfig 是 Telegram 渠道的部署级配置——BotToken 是这个部署唯一的一个
-// Telegram bot，所有用户共用同一个 bot，各自的 chat_id 存在
-// notification_channels 表里区分身份。
+// TelegramConfig is the deployment-level configuration for the Telegram
+// channel — BotToken is this deployment's single Telegram bot, shared by
+// all users, whose identities are distinguished by their own chat_id
+// stored in the notification_channels table.
 type TelegramConfig struct {
 	BotToken string
 }
 
-// WebPushConfig 是 web push 渠道的 VAPID（RFC 8292）密钥对，整个部署生成一次、
-// 长期不变——浏览器按这对密钥信任来自这个部署的推送。VAPIDSubject 是 RFC 8292
-// 要求的联系方式，形如 "mailto:ops@example.com"，推送服务用它在滥用时联系部署方。
+// WebPushConfig is the web push channel's VAPID (RFC 8292) key pair,
+// generated once per deployment and kept stable long-term — browsers trust
+// pushes from this deployment based on this key pair. VAPIDSubject is the
+// contact info RFC 8292 requires, of the form "mailto:ops@example.com",
+// used by push services to reach the deployment operator in case of abuse.
 type WebPushConfig struct {
 	VAPIDPublicKey  string
 	VAPIDPrivateKey string
 	VAPIDSubject    string
 }
 
-// Load 从环境变量读取配置，缺失项使用本地开发默认值。
+// Load reads configuration from environment variables, falling back to
+// local development defaults for anything missing.
 func Load() Config {
 	return Config{
 		Postgres: PostgresConfig{

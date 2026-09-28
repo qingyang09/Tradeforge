@@ -9,36 +9,41 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// Delta 是一根 K 线上的主动买卖净差（taker buy - taker sell）。
+// Delta is the taker buy/sell net difference (taker buy - taker sell) on one candle.
 type Delta struct {
-	// Net 为正表示主动买入占优，为负表示主动卖出占优。
+	// Net positive means taker buying dominates; negative means taker selling dominates.
 	Net decimal.Decimal
-	// Total 是该根 K 线的总成交量，用于把 Net 归一化成 [-1, 1] 的失衡度。
+	// Total is this candle's total volume, used to normalize Net into an
+	// imbalance ratio in [-1, 1].
 	Total decimal.Decimal
 }
 
-// FlowProvider 是订单流数据的来源抽象。
+// FlowProvider abstracts the source of order-flow data.
 //
-// 这是后续接入 Coinglass 等真实订单流数据源的扩展点：
-// 只要实现这个接口并在构造模块时注入，模块算法本身完全不用改。
+// This is the extension point for later plugging in a real order-flow data
+// source such as Coinglass: implement this interface and inject it when
+// constructing the module, and the module's algorithm itself needs no changes.
 type FlowProvider interface {
-	// Name 返回数据源标识，会写进 Signal.Raw，让人一眼看出信号是基于哪种数据算的。
+	// Name returns the data source's identifier; it's written into Signal.Raw
+	// so it's immediately clear which kind of data a signal was computed from.
 	Name() string
-	// Deltas 返回与 md.Candles 一一对应、等长的净差序列。
-	// 长度不匹配会被模块视为数据源故障。
+	// Deltas returns a net-difference series aligned one-to-one with
+	// md.Candles. A length mismatch is treated by the module as a data source
+	// failure.
 	Deltas(ctx context.Context, md types.MarketData) ([]Delta, error)
 }
 
-// CandleFlowProvider 从 K 线自带的主动买入量推导净差。
+// CandleFlowProvider derives the net difference from the candle's own taker buy volume.
 //
-// Binance 等交易所的 K 线接口直接提供 takerBuyBaseVolume，这是当前默认的数据来源，
-// 精度低于逐笔订单流但无需额外数据源。
+// Exchanges like Binance provide takerBuyBaseVolume directly in their candle
+// endpoint; this is the current default data source — lower precision than
+// tick-by-tick order flow, but needs no extra data source.
 type CandleFlowProvider struct{}
 
-// Name 实现 FlowProvider。
+// Name implements FlowProvider.
 func (CandleFlowProvider) Name() string { return "candle_taker_volume" }
 
-// Deltas 实现 FlowProvider。
+// Deltas implements FlowProvider.
 func (CandleFlowProvider) Deltas(_ context.Context, md types.MarketData) ([]Delta, error) {
 	out := make([]Delta, len(md.Candles))
 	missing := 0
@@ -51,8 +56,10 @@ func (CandleFlowProvider) Deltas(_ context.Context, md types.MarketData) ([]Delt
 			Total: c.Volume,
 		}
 	}
-	// 有成交量却没有主动买入量，说明数据源根本没填这个字段。
-	// 此时净差恒等于 -Volume，会造出一串纯属虚构的看空失衡，必须报错而不是照算。
+	// Having volume but no taker buy volume means the data source simply never
+	// populated that field. In that case the net difference is always
+	// -Volume, which would fabricate a string of purely fictitious bearish
+	// imbalances — this must error rather than be computed as if valid.
 	if missing > 0 && missing == countWithVolume(md.Candles) {
 		return nil, fmt.Errorf("行情数据缺少主动买入量字段（%d 根 K 线），无法计算 CVD", missing)
 	}
@@ -69,17 +76,21 @@ func countWithVolume(candles []types.Candle) int {
 	return n
 }
 
-// SyntheticFlowProvider 在缺少真实主动买卖量时，用 K 线形态推导一个占位净差。
+// SyntheticFlowProvider derives a placeholder net difference from candle shape
+// when real taker buy/sell volume isn't available.
 //
-// 净差 = 成交量 × (收 - 开) / (高 - 低)，即按 K 线实体方向和强度分配成交量。
-// 这只是让链路能在没有订单流数据时跑起来的占位实现，绝不能当作真实订单流用于实盘决策，
-// 因此它会在信号里显式标注数据源，下游可据此拒绝放行。
+// Net = volume × (close - open) / (high - low), i.e. volume is allocated by
+// the candle body's direction and strength. This is only a placeholder
+// implementation to keep the pipeline running when order-flow data isn't
+// available, and must never be used as real order flow for live decisions —
+// it therefore explicitly tags its data source in the signal, so downstream
+// code can refuse to let it through.
 type SyntheticFlowProvider struct{}
 
-// Name 实现 FlowProvider。
+// Name implements FlowProvider.
 func (SyntheticFlowProvider) Name() string { return "synthetic_from_candles" }
 
-// Deltas 实现 FlowProvider。
+// Deltas implements FlowProvider.
 func (SyntheticFlowProvider) Deltas(_ context.Context, md types.MarketData) ([]Delta, error) {
 	out := make([]Delta, len(md.Candles))
 	for i, c := range md.Candles {
@@ -94,7 +105,8 @@ func (SyntheticFlowProvider) Deltas(_ context.Context, md types.MarketData) ([]D
 	return out, nil
 }
 
-// IsSynthetic 报告某个数据源是否为占位实现。执行层可据此拒绝让实盘策略使用。
+// IsSynthetic reports whether a data source is a placeholder implementation.
+// The execution layer can use this to refuse to let a live strategy use it.
 func IsSynthetic(p FlowProvider) bool {
 	_, ok := p.(SyntheticFlowProvider)
 	return ok

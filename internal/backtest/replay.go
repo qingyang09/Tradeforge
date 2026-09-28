@@ -1,16 +1,22 @@
-// Package backtest 实现信号重放：把一份 StrategyConfig 在历史 K 线上逐根跑一遍
-// internal/engine，产出决策流。
+// Package backtest implements signal replay: it runs a StrategyConfig
+// candle-by-candle over historical data through internal/engine, producing
+// a stream of decisions.
 //
-// 为什么信号重放放在 Go 而不是 Python：回测和实盘必须用同一套信号逻辑。如果
-// Python 里再实现一遍支撑阻力、CVD 等模块，两份实现迟早会漂移——那时回测结果就
-// 成了对另一个策略的评估，比没有回测更危险。这里直接复用 internal/engine，
-// Python 侧（python/backtest）只负责它真正擅长的部分：撮合模拟、手续费滑点建模
-// 与绩效统计。
+// Why replay lives in Go instead of Python: backtesting and live trading
+// must share the exact same signal logic. Re-implementing support/resistance,
+// CVD, etc. a second time in Python would inevitably drift from the Go
+// version over time — and at that point the backtest results would be
+// evaluating a different strategy, which is more dangerous than having no
+// backtest at all. This reuses internal/engine directly; the Python side
+// (python/backtest) only handles what it's actually good at: matching
+// simulation, fee/slippage modeling, and performance statistics.
 //
-// 这份逻辑原本直接写在 cmd/backtest-runner 里，只有 CLI 一个调用方；画板加了
-// "运行回测"按钮后（internal/webui），webui 进程需要在内存里直接跑一遍重放，
-// 而不是先落盘再拉起子进程去读——所以把它提出来做成一个包，CLI 和 webui
-// 共用同一份实现，不允许出现第二份重放循环。
+// This logic originally lived directly in cmd/backtest-runner, with the CLI
+// as its only caller. Once the builder got a "run backtest" button
+// (internal/webui), the webui process needed to run a replay in-process,
+// rather than writing to disk first and shelling out to a subprocess to
+// read it back — so this was pulled out into its own package, shared by the
+// CLI and webui. There must never be a second replay loop.
 package backtest
 
 import (
@@ -24,17 +30,20 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// EngineVersion 标注决策流由哪一版信号逻辑产出，会写进回测结果——CLI 和 webui
-// 触发的回测现在共用同一份 Replay 实现，理应共用同一个版本号。
+// EngineVersion tags which version of the signal logic produced a decision
+// stream, and gets written into the backtest result — since CLI-triggered
+// and webui-triggered backtests now share the same Replay implementation,
+// they should rightly share the same version number.
 const EngineVersion = "signal-replay/1.0.0"
 
-// DefaultWindow 是喂给模块的最大历史长度。
+// DefaultWindow is the maximum amount of history fed to modules.
 //
-// 逐根重放时若每次都传入全部历史，复杂度是 O(n²)；
-// 而模块的回看窗口有上限（当前最大 1000），给出足够裕量即可。
+// Passing the entire history on every candle would make candle-by-candle
+// replay O(n²); modules' lookback windows have an upper bound (currently
+// 1000 max), so giving them ample headroom beyond that is enough.
 const DefaultWindow = 1200
 
-// Meta 是一次重放的头部元信息。
+// Meta is the header metadata for one replay run.
 type Meta struct {
 	Type          string    `json:"type"`
 	EngineVersion string    `json:"engine_version"`
@@ -48,9 +57,10 @@ type Meta struct {
 	GeneratedAt   time.Time `json:"generated_at"`
 }
 
-// DecisionLine 是重放过程中某一根K线产出的决策，字段形状与
-// python/backtest/tradeforge_backtest/loaders.py 认得的 JSONL 一行完全对应
-// （decision_from_iter 按这些字段名解析），不能改。
+// DecisionLine is the decision produced for one candle during replay. Its
+// field shape corresponds exactly to one JSONL line as understood by
+// python/backtest/tradeforge_backtest/loaders.py (decision_from_iter parses
+// by these field names) — do not change it.
 type DecisionLine struct {
 	Type      string         `json:"type"`
 	Index     int            `json:"index"`
@@ -63,19 +73,23 @@ type DecisionLine struct {
 	Signals   []types.Signal `json:"signals"`
 }
 
-// Replay 按触发周期逐根 K 线重放，返回头部元信息与每一根的决策。
+// Replay walks candle-by-candle over the trigger timeframe, returning the
+// header metadata and each candle's decision.
 //
-// 关键点：第 i 根触发周期 K 线的决策只使用 candles[:i+1]；contextFeeds 里其它
-// （更慢）周期的行情同样只暴露"到这一刻为止真实已收盘"的部分——用
-// types.AlignAsOf 按当前这根触发 K 线的收盘时间裁剪，绝不触碰任何周期的未来数据。
-// 这是回测能不能信的根本前提，比任何指标都重要。
+// The critical property: the decision for trigger-timeframe candle i only
+// ever uses candles[:i+1]; the other (slower) timeframes in contextFeeds
+// likewise only ever expose the portion that's genuinely closed "as of this
+// moment" — trimmed with types.AlignAsOf to the current trigger candle's
+// close time, never touching future data on any timeframe. This is the
+// fundamental precondition for a backtest to be trustworthy at all, more
+// important than any single metric.
 func Replay(
 	ctx context.Context, cfg types.StrategyConfig, md types.MarketData,
 	contextFeeds map[types.Timeframe]types.MarketData,
 	window int, logger *slog.Logger,
 ) (Meta, []DecisionLine, error) {
 	if len(md.Candles) == 0 {
-		return Meta{}, nil, fmt.Errorf("没有K线数据")
+		return Meta{}, nil, fmt.Errorf("no candle data")
 	}
 	e := engine.New(modules.NewDefaultRegistry(), engine.WithLogger(logger))
 
@@ -116,7 +130,7 @@ func Replay(
 
 		d, err := e.Evaluate(ctx, cfg, feeds)
 		if err != nil {
-			return Meta{}, nil, fmt.Errorf("第 %d 根 K 线评估失败：%w", i+1, err)
+			return Meta{}, nil, fmt.Errorf("evaluation failed for candle %d: %w", i+1, err)
 		}
 
 		decisions = append(decisions, DecisionLine{

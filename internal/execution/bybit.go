@@ -17,38 +17,42 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// BybitTestnetBaseURL 是 Bybit 现货测试网地址。
+// BybitTestnetBaseURL is Bybit's spot testnet address.
 const BybitTestnetBaseURL = "https://api-testnet.bybit.com"
 
-// BybitBroker 通过 Bybit REST API v5 下单。
+// BybitBroker places orders through the Bybit REST API v5.
 //
-// 当前只支持测试网。Mode() 恒返回 ModePaper——理由跟 BinanceBroker/OKXBroker 一致：
-// 测试网用的是模拟资金，把它当实盘看待会让"实盘前必须人工解锁"这道闸门形同虚设。
+// Currently testnet-only. Mode() always returns ModePaper — same rationale as
+// BinanceBroker/OKXBroker: the testnet trades with simulated funds, and
+// treating it as live would render the "manual unlock required before going
+// live" gate meaningless.
 //
-// Bybit 的标的写法（"BTCUSDT"）跟项目内部约定一致，不需要像 OKX 那样做符号转换。
+// Bybit's symbol format ("BTCUSDT") matches this project's internal
+// convention, so no symbol conversion is needed the way OKX requires.
 type BybitBroker struct {
 	baseURL    string
 	apiKey     string
 	apiSecret  string
 	recvWindow string
 	client     *http.Client
-	// pollInterval/pollTimeout：Bybit 下单接口只返回订单号，不返回成交明细
-	// （跟 OKX 一样，不像币安一次响应就带回 FULL 成交信息），要另外查询订单
-	// 详情才能拿到成交均价和手续费。
+	// pollInterval/pollTimeout: Bybit's order-placement endpoint only returns
+	// an order ID, not fill details (like OKX, unlike Binance which returns
+	// FULL fill info in one response); a separate order-detail query is
+	// needed to get the average fill price and fee.
 	pollInterval time.Duration
 	pollTimeout  time.Duration
 }
 
-// BybitConfig 是 Bybit 通道的配置。
+// BybitConfig configures the Bybit channel.
 type BybitConfig struct {
-	// BaseURL 留空则使用测试网。
+	// BaseURL defaults to the testnet when left empty.
 	BaseURL   string
 	APIKey    string
 	APISecret string
 	Timeout   time.Duration
 }
 
-// NewBybitTestnetBroker 创建 Bybit 测试网下单通道。
+// NewBybitTestnetBroker creates a Bybit testnet order channel.
 func NewBybitTestnetBroker(cfg BybitConfig) (*BybitBroker, error) {
 	if cfg.APIKey == "" || cfg.APISecret == "" {
 		return nil, fmt.Errorf("缺少 Bybit 测试网 API 密钥（TF_BYBIT_API_KEY / TF_BYBIT_API_SECRET）")
@@ -58,7 +62,7 @@ func NewBybitTestnetBroker(cfg BybitConfig) (*BybitBroker, error) {
 		base = BybitTestnetBaseURL
 	}
 	if !strings.Contains(base, "testnet") {
-		// 明确拒绝指向生产环境的地址，跟 BinanceBroker 是同一条安全约定。
+		// Explicitly reject anything pointing at production — the same safety rule as BinanceBroker.
 		return nil, fmt.Errorf("BaseURL %q 不是测试网地址；当前版本只允许对接测试网", base)
 	}
 	timeout := cfg.Timeout
@@ -76,16 +80,18 @@ func NewBybitTestnetBroker(cfg BybitConfig) (*BybitBroker, error) {
 	}, nil
 }
 
-// Name 实现 Broker。
+// Name implements Broker.
 func (b *BybitBroker) Name() string { return "bybit-testnet" }
 
-// Mode 实现 Broker。测试网用的是模拟资金，一律按模拟盘对待。
+// Mode implements Broker. The testnet trades with simulated funds, so it is
+// always treated as paper.
 func (b *BybitBroker) Mode() types.TradingMode { return types.ModePaper }
 
-// PlaceOrder 实现 Broker：下现货市价单，然后轮询订单详情拿到实际成交结果。
+// PlaceOrder implements Broker: places a spot market order, then polls the
+// order detail to get the actual fill result.
 func (b *BybitBroker) PlaceOrder(ctx context.Context, req OrderRequest) (types.Order, error) {
 	if !req.Quantity.IsPositive() {
-		return types.Order{}, fmt.Errorf("下单数量 %s 非正", req.Quantity)
+		return types.Order{}, fmt.Errorf("order quantity %s is not positive", req.Quantity)
 	}
 
 	side := "Buy"
@@ -98,23 +104,25 @@ func (b *BybitBroker) PlaceOrder(ctx context.Context, req OrderRequest) (types.O
 		"side":      side,
 		"orderType": "Market",
 		"qty":       req.Quantity.String(),
-		// 不指定 marketUnit 的话，Bybit 现货市价单里买单的 qty 默认按计价货币
-		// 解读、卖单默认按基础货币解读——跟 OKX 不指定 tgtCcy 时的默认行为是
-		// 同一类问题。强制两边都按基础货币解读，保证 qty 的含义跟
-		// OrderRequest.Quantity（基础货币数量）一致，不因买卖方向变化。
+		// Without marketUnit, Bybit spot market orders interpret qty as the
+		// quote currency by default for buys and as the base currency by
+		// default for sells — the same class of problem as OKX's default
+		// behavior when tgtCcy is unset. Forcing both sides to interpret it
+		// as the base currency keeps qty's meaning consistent with
+		// OrderRequest.Quantity (a base-currency amount), independent of side.
 		"marketUnit": "baseCoin",
 	}
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
-		return types.Order{}, fmt.Errorf("构造下单请求体失败：%w", err)
+		return types.Order{}, fmt.Errorf("failed to build order request body: %w", err)
 	}
 
 	var placeResp bybitPlaceOrderResponse
 	if err := b.doSigned(ctx, http.MethodPost, "/v5/order/create", nil, bodyBytes, &placeResp); err != nil {
-		return types.Order{}, fmt.Errorf("Bybit 下单失败：%w", err)
+		return types.Order{}, fmt.Errorf("Bybit order placement failed: %w", err)
 	}
 	if placeResp.RetCode != 0 {
-		return types.Order{}, fmt.Errorf("Bybit 拒绝了订单（retCode %d）：%s", placeResp.RetCode, placeResp.RetMsg)
+		return types.Order{}, fmt.Errorf("Bybit rejected the order (retCode %d): %s", placeResp.RetCode, placeResp.RetMsg)
 	}
 	orderID := placeResp.Result.OrderID
 
@@ -125,20 +133,20 @@ func (b *BybitBroker) PlaceOrder(ctx context.Context, req OrderRequest) (types.O
 	return b.toOrder(req, orderID, detail)
 }
 
-// pollOrderDetail 反复查询订单详情，直到订单进入终态或超时。
+// pollOrderDetail repeatedly queries the order detail until the order reaches a terminal state or the poll times out.
 func (b *BybitBroker) pollOrderDetail(ctx context.Context, symbol, orderID string) (bybitOrderDetail, error) {
 	deadline := time.Now().Add(b.pollTimeout)
 	for {
 		var resp bybitGetOrderResponse
 		q := url.Values{"category": {"spot"}, "symbol": {symbol}, "orderId": {orderID}}
 		if err := b.doSigned(ctx, http.MethodGet, "/v5/order/realtime", q, nil, &resp); err != nil {
-			return bybitOrderDetail{}, fmt.Errorf("查询 Bybit 订单详情失败：%w", err)
+			return bybitOrderDetail{}, fmt.Errorf("failed to query Bybit order detail: %w", err)
 		}
 		if resp.RetCode != 0 {
-			return bybitOrderDetail{}, fmt.Errorf("查询 Bybit 订单详情出错（retCode %d）：%s", resp.RetCode, resp.RetMsg)
+			return bybitOrderDetail{}, fmt.Errorf("error querying Bybit order detail (retCode %d): %s", resp.RetCode, resp.RetMsg)
 		}
 		if len(resp.Result.List) == 0 {
-			return bybitOrderDetail{}, fmt.Errorf("查询 Bybit 订单详情失败：响应里没有这笔订单")
+			return bybitOrderDetail{}, fmt.Errorf("failed to query Bybit order detail: order not present in the response")
 		}
 		detail := resp.Result.List[0]
 		switch detail.OrderStatus {
@@ -146,7 +154,8 @@ func (b *BybitBroker) pollOrderDetail(ctx context.Context, symbol, orderID strin
 			return detail, nil
 		}
 		if time.Now().After(deadline) {
-			// 超时仍未到终态：如实按"当前查到的状态"返回，不假装它已经成交。
+			// Still not terminal by the deadline: return the status as
+			// currently observed, rather than pretending it filled.
 			return detail, nil
 		}
 		select {
@@ -160,15 +169,15 @@ func (b *BybitBroker) pollOrderDetail(ctx context.Context, symbol, orderID strin
 func (b *BybitBroker) toOrder(req OrderRequest, orderID string, detail bybitOrderDetail) (types.Order, error) {
 	filledQty, err := decimalOrZero(detail.CumExecQty)
 	if err != nil {
-		return types.Order{}, fmt.Errorf("解析成交数量失败：%w", err)
+		return types.Order{}, fmt.Errorf("failed to parse filled quantity: %w", err)
 	}
 	avg, err := decimalOrZero(detail.AvgPrice)
 	if err != nil {
-		return types.Order{}, fmt.Errorf("解析成交均价失败：%w", err)
+		return types.Order{}, fmt.Errorf("failed to parse average fill price: %w", err)
 	}
 	feeRaw, err := decimalOrZero(detail.CumExecFee)
 	if err != nil {
-		return types.Order{}, fmt.Errorf("解析手续费失败：%w", err)
+		return types.Order{}, fmt.Errorf("failed to parse fee: %w", err)
 	}
 	fee := feeRaw.Abs()
 
@@ -202,7 +211,7 @@ func (b *BybitBroker) toOrder(req OrderRequest, orderID string, detail bybitOrde
 	}, nil
 }
 
-// doSigned 发送一个带 Bybit v5 签名的请求并把响应体解码进 out。
+// doSigned sends a request signed per Bybit v5 rules and decodes the response body into out.
 func (b *BybitBroker) doSigned(ctx context.Context, method, path string, query url.Values, body []byte, out any) error {
 	requestPath := path
 	queryStr := ""
@@ -221,11 +230,12 @@ func (b *BybitBroker) doSigned(ctx context.Context, method, path string, query u
 
 	httpReq, err := http.NewRequestWithContext(ctx, method, endpoint, bodyReader)
 	if err != nil {
-		return fmt.Errorf("构造请求失败：%w", err)
+		return fmt.Errorf("failed to build request: %w", err)
 	}
 
 	timestamp := fmt.Sprintf("%d", time.Now().UnixMilli())
-	// Bybit v5 的签名负载：GET 用查询串，POST 用请求体，二选一，不能都带上。
+	// Bybit v5's signature payload: GET uses the query string, POST uses the
+	// request body — pick one, never both.
 	payload := queryStr
 	if method == http.MethodPost {
 		payload = bodyStr
@@ -240,17 +250,17 @@ func (b *BybitBroker) doSigned(ctx context.Context, method, path string, query u
 
 	resp, err := b.client.Do(httpReq)
 	if err != nil {
-		return fmt.Errorf("调用 Bybit 接口失败：%w", err)
+		return fmt.Errorf("call to Bybit API failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return fmt.Errorf("解析 Bybit 响应失败（HTTP %d）：%w", resp.StatusCode, err)
+		return fmt.Errorf("failed to parse Bybit response (HTTP %d): %w", resp.StatusCode, err)
 	}
 	return nil
 }
 
-// sign 按 Bybit v5 的签名规则：hex(HMAC-SHA256(secret, timestamp+apiKey+recvWindow+payload))。
+// sign follows Bybit v5's signing rule: hex(HMAC-SHA256(secret, timestamp+apiKey+recvWindow+payload)).
 func (b *BybitBroker) sign(timestamp, payload string) string {
 	mac := hmac.New(sha256.New, []byte(b.apiSecret))
 	mac.Write([]byte(timestamp + b.apiKey + b.recvWindow + payload))

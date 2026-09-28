@@ -15,27 +15,27 @@ var base = time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 
 func builder() *synth.Builder { return synth.New("BTCUSDT", types.TF1h, base) }
 
-// 持续的主动买入占优 → 多头失衡。
+// Sustained aggressive buying dominance -> bullish imbalance.
 func TestBullishImbalance(t *testing.T) {
 	b := builder()
 	for i := 0; i < 60; i++ {
-		b.AddBar(100, 100.1, 1000, 0.8) // 主动买 80%，卖 20%，净差 +60%
+		b.AddBar(100, 100.1, 1000, 0.8) // 80% taker buy, 20% taker sell, net +60%
 	}
 
 	sig, err := NewDefault().Evaluate(context.Background(), b.Build(), map[string]any{
 		"window": 50, "imbalance_threshold": 0.25, "detect": DetectImbalance,
 	})
 	if err != nil {
-		t.Fatalf("意外错误：%v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if sig.Direction != types.DirectionLong {
-		t.Fatalf("方向 = %s，期望 LONG（原因：%s）", sig.Direction, sig.Reason)
+		t.Fatalf("Direction = %s, want LONG (reason: %s)", sig.Direction, sig.Reason)
 	}
 	if sig.Raw["event"] != eventImbalance {
-		t.Errorf("event = %v，期望 %s", sig.Raw["event"], eventImbalance)
+		t.Errorf("event = %v, want %s", sig.Raw["event"], eventImbalance)
 	}
 	if imb := sig.Raw["imbalance"].(float64); imb < 0.59 || imb > 0.61 {
-		t.Errorf("失衡度 = %v，期望约 0.6", imb)
+		t.Errorf("imbalance = %v, want approximately 0.6", imb)
 	}
 }
 
@@ -48,14 +48,14 @@ func TestBearishImbalance(t *testing.T) {
 		"window": 50, "detect": DetectImbalance,
 	})
 	if err != nil {
-		t.Fatalf("意外错误：%v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if sig.Direction != types.DirectionShort {
-		t.Fatalf("方向 = %s，期望 SHORT（原因：%s）", sig.Direction, sig.Reason)
+		t.Fatalf("Direction = %s, want SHORT (reason: %s)", sig.Direction, sig.Reason)
 	}
 }
 
-// 买卖大致均衡时不应触发。
+// Roughly balanced buying and selling should not trigger.
 func TestBalancedFlowIsNeutral(t *testing.T) {
 	b := builder()
 	for i := 0; i < 60; i++ {
@@ -63,33 +63,33 @@ func TestBalancedFlowIsNeutral(t *testing.T) {
 	}
 	sig, err := NewDefault().Evaluate(context.Background(), b.Build(), map[string]any{"window": 50})
 	if err != nil {
-		t.Fatalf("意外错误：%v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if sig.Direction != types.DirectionNeutral {
-		t.Errorf("方向 = %s，期望 NEUTRAL（原因：%s）", sig.Direction, sig.Reason)
+		t.Errorf("Direction = %s, want NEUTRAL (reason: %s)", sig.Direction, sig.Reason)
 	}
 }
 
-// 价格在涨但主动买盘净流出 → 顶背离，方向跟随 CVD 取空。
+// Price rising but taker buy volume net outflow -> bearish (top) divergence, direction follows CVD to short.
 func TestBearishDivergence(t *testing.T) {
-	b := builder().Trend(60, 100, 120, 1000, 0.35) // 价格上行，主动买入仅 35%
+	b := builder().Trend(60, 100, 120, 1000, 0.35) // price rising, only 35% taker buy
 
 	sig, err := NewDefault().Evaluate(context.Background(), b.Build(), map[string]any{
 		"window": 50, "detect": DetectDivergence,
 		"divergence_threshold": 0.15, "min_price_move": 0.005,
 	})
 	if err != nil {
-		t.Fatalf("意外错误：%v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if sig.Direction != types.DirectionShort {
-		t.Fatalf("方向 = %s，期望 SHORT（原因：%s，raw=%v）", sig.Direction, sig.Reason, sig.Raw)
+		t.Fatalf("Direction = %s, want SHORT (reason: %s, raw=%v)", sig.Direction, sig.Reason, sig.Raw)
 	}
 	if sig.Raw["event"] != eventDivergence {
-		t.Errorf("event = %v，期望 %s", sig.Raw["event"], eventDivergence)
+		t.Errorf("event = %v, want %s", sig.Raw["event"], eventDivergence)
 	}
 }
 
-// 价格在跌但主动买盘净流入 → 底背离，方向取多。
+// Price falling but taker buy volume net inflow -> bullish (bottom) divergence, direction taken as long.
 func TestBullishDivergence(t *testing.T) {
 	b := builder().Trend(60, 120, 100, 1000, 0.65)
 
@@ -97,33 +97,33 @@ func TestBullishDivergence(t *testing.T) {
 		"window": 50, "detect": DetectDivergence,
 	})
 	if err != nil {
-		t.Fatalf("意外错误：%v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if sig.Direction != types.DirectionLong {
-		t.Fatalf("方向 = %s，期望 LONG（原因：%s，raw=%v）", sig.Direction, sig.Reason, sig.Raw)
+		t.Fatalf("Direction = %s, want LONG (reason: %s, raw=%v)", sig.Direction, sig.Reason, sig.Raw)
 	}
 }
 
-// 价格与订单流同向不是背离，只检测背离时应给出中性。
+// Price and order flow moving the same direction is not a divergence; detecting divergence only should give neutral.
 func TestSameDirectionIsNotDivergence(t *testing.T) {
-	b := builder().Trend(60, 100, 120, 1000, 0.8) // 价涨 + 买盘强，同向
+	b := builder().Trend(60, 100, 120, 1000, 0.8) // price rising + strong buy flow, same direction
 
 	sig, err := NewDefault().Evaluate(context.Background(), b.Build(), map[string]any{
 		"window": 50, "detect": DetectDivergence,
 	})
 	if err != nil {
-		t.Fatalf("意外错误：%v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if sig.Direction != types.DirectionNeutral {
-		t.Errorf("方向 = %s，期望 NEUTRAL（同向不构成背离）", sig.Direction)
+		t.Errorf("Direction = %s, want NEUTRAL (same direction isn't a divergence)", sig.Direction)
 	}
 }
 
-// 价格几乎没动时的"背离"是噪声，min_price_move 应拦住它。
+// A "divergence" when price barely moved is noise; min_price_move should suppress it.
 func TestFlatPriceSuppressesDivergence(t *testing.T) {
 	b := builder()
 	for i := 0; i < 60; i++ {
-		b.AddBar(100, 100.001, 1000, 0.2) // 价格几乎不动，买盘极弱
+		b.AddBar(100, 100.001, 1000, 0.2) // price barely moves, very weak buy flow
 	}
 	sig, err := NewDefault().Evaluate(context.Background(), b.Build(), map[string]any{
 		"window": 50, "detect": DetectDivergence, "min_price_move": 0.01,
@@ -132,7 +132,7 @@ func TestFlatPriceSuppressesDivergence(t *testing.T) {
 		t.Fatal(err)
 	}
 	if sig.Raw["event"] == eventDivergence {
-		t.Errorf("价格几乎没动却报了背离：%s", sig.Reason)
+		t.Errorf("reported divergence despite price barely moving: %s", sig.Reason)
 	}
 }
 
@@ -143,15 +143,15 @@ func TestInsufficientDataReturnsNeutral(t *testing.T) {
 	}
 	sig, err := NewDefault().Evaluate(context.Background(), b.Build(), map[string]any{"window": 50})
 	if err != nil {
-		t.Fatalf("数据不足不应报错，得到：%v", err)
+		t.Fatalf("insufficient data should not error, got: %v", err)
 	}
 	if sig.Direction != types.DirectionNeutral {
-		t.Errorf("方向 = %s，期望 NEUTRAL", sig.Direction)
+		t.Errorf("Direction = %s, want NEUTRAL", sig.Direction)
 	}
 }
 
-// 行情数据完全没有主动买入量字段时必须报错：
-// 照算下去净差恒为负，会凭空造出一串看空信号。
+// Must error when market data has no taker buy volume field at all:
+// computing anyway would leave the net difference always negative, fabricating a string of bearish signals out of nothing.
 func TestMissingTakerDataIsAnError(t *testing.T) {
 	b := builder()
 	for i := 0; i < 60; i++ {
@@ -159,14 +159,14 @@ func TestMissingTakerDataIsAnError(t *testing.T) {
 	}
 	_, err := NewDefault().Evaluate(context.Background(), b.Build(), map[string]any{"window": 50})
 	if err == nil {
-		t.Fatal("期望在缺少主动买入量时报错")
+		t.Fatal("expected an error when taker buy volume is missing")
 	}
 	if !strings.Contains(err.Error(), "主动买入量") {
-		t.Errorf("错误信息应说明缺失的是主动买入量，得到：%v", err)
+		t.Errorf("error message should explain that taker buy volume is missing, got: %v", err)
 	}
 }
 
-// 占位数据源让链路在没有真实订单流时也能跑，但必须在信号里明确标注。
+// The placeholder data source lets the pipeline run without real order flow, but must be explicitly labeled in the signal.
 func TestSyntheticProviderIsLabelled(t *testing.T) {
 	b := builder()
 	for i := 0; i < 60; i++ {
@@ -175,17 +175,17 @@ func TestSyntheticProviderIsLabelled(t *testing.T) {
 	m := New(SyntheticFlowProvider{})
 	sig, err := m.Evaluate(context.Background(), b.Build(), map[string]any{"window": 50})
 	if err != nil {
-		t.Fatalf("占位数据源下不应报错，得到：%v", err)
+		t.Fatalf("should not error with the placeholder data source, got: %v", err)
 	}
 	if sig.Raw["is_synthetic"] != true {
-		t.Error("使用占位数据源时 raw.is_synthetic 必须为 true，否则下游无法拒绝它进入实盘")
+		t.Error("raw.is_synthetic must be true when using the placeholder data source, otherwise downstream can't refuse to let it go live")
 	}
 	if sig.Raw["provider"] != "synthetic_from_candles" {
-		t.Errorf("raw.provider = %v，期望标注为占位数据源", sig.Raw["provider"])
+		t.Errorf("raw.provider = %v, expected it to be labeled as the placeholder data source", sig.Raw["provider"])
 	}
 }
 
-// 数据源返回长度不匹配是故障，不能静默按短的那个算。
+// A length mismatch from the data source is a failure; it must not be silently computed against the shorter length.
 func TestProviderLengthMismatchIsAnError(t *testing.T) {
 	b := builder()
 	for i := 0; i < 60; i++ {
@@ -193,7 +193,7 @@ func TestProviderLengthMismatchIsAnError(t *testing.T) {
 	}
 	m := New(shortProvider{})
 	if _, err := m.Evaluate(context.Background(), b.Build(), map[string]any{"window": 50}); err == nil {
-		t.Fatal("期望在数据源长度不匹配时报错")
+		t.Fatal("expected an error on a data source length mismatch")
 	}
 }
 
@@ -204,7 +204,7 @@ func (shortProvider) Deltas(context.Context, types.MarketData) ([]Delta, error) 
 	return []Delta{{}}, nil
 }
 
-// 数据源报错必须冒泡，不能被吞成中性信号——那会掩盖真实故障。
+// A data source error must propagate, not be swallowed into a neutral signal — that would mask a real failure.
 func TestProviderErrorPropagates(t *testing.T) {
 	b := builder()
 	for i := 0; i < 60; i++ {
@@ -213,11 +213,11 @@ func TestProviderErrorPropagates(t *testing.T) {
 	m := New(failingProvider{})
 	_, err := m.Evaluate(context.Background(), b.Build(), map[string]any{"window": 50})
 	if !errors.Is(err, errProvider) {
-		t.Fatalf("期望数据源错误冒泡，得到：%v", err)
+		t.Fatalf("expected the data source error to propagate, got: %v", err)
 	}
 }
 
-var errProvider = errors.New("数据源不可用")
+var errProvider = errors.New("data source unavailable")
 
 type failingProvider struct{}
 
@@ -235,15 +235,15 @@ func TestInvalidParamsRejected(t *testing.T) {
 		name   string
 		params map[string]any
 	}{
-		{"失衡阈值超过 1", map[string]any{"imbalance_threshold": 1.5}},
-		{"窗口小于下限", map[string]any{"window": 2}},
-		{"检测模式非法", map[string]any{"detect": "everything"}},
-		{"未知参数", map[string]any{"lookback": 50}},
+		{"imbalance threshold above 1", map[string]any{"imbalance_threshold": 1.5}},
+		{"window below minimum", map[string]any{"window": 2}},
+		{"invalid detect mode", map[string]any{"detect": "everything"}},
+		{"unknown parameter", map[string]any{"lookback": 50}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := NewDefault().Evaluate(context.Background(), b.Build(), tc.params); err == nil {
-				t.Fatalf("期望拒绝 %v，实际通过了", tc.params)
+				t.Fatalf("expected %v to be rejected, but it passed", tc.params)
 			}
 		})
 	}
@@ -257,13 +257,13 @@ func TestContextCancellationRespected(t *testing.T) {
 		b.AddBar(100, 101, 1000, 0.6)
 	}
 	if _, err := NewDefault().Evaluate(ctx, b.Build(), nil); !errors.Is(err, context.Canceled) {
-		t.Fatalf("期望 context.Canceled，得到：%v", err)
+		t.Fatalf("expected context.Canceled, got: %v", err)
 	}
 }
 
-// 背离的信息量高于单纯失衡，both 模式下应优先报背离。
+// Divergence carries more information than plain imbalance; in "both" mode divergence should take priority.
 func TestDivergenceTakesPrecedenceOverImbalance(t *testing.T) {
-	b := builder().Trend(60, 100, 120, 1000, 0.2) // 价涨 + 强烈卖压：两个条件同时成立
+	b := builder().Trend(60, 100, 120, 1000, 0.2) // price rising + strong sell pressure: both conditions hold at once
 
 	sig, err := NewDefault().Evaluate(context.Background(), b.Build(), map[string]any{
 		"window": 50, "detect": DetectBoth,
@@ -272,6 +272,6 @@ func TestDivergenceTakesPrecedenceOverImbalance(t *testing.T) {
 		t.Fatal(err)
 	}
 	if sig.Raw["event"] != eventDivergence {
-		t.Errorf("event = %v，期望优先报 %s", sig.Raw["event"], eventDivergence)
+		t.Errorf("event = %v, want %s to take priority", sig.Raw["event"], eventDivergence)
 	}
 }

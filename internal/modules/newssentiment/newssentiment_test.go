@@ -13,8 +13,9 @@ import (
 
 var base = time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
 
-// flatMarketData 构造一段行情，最后一根 K 线的收盘时间等于 base，方便用相对偏移
-// 构造"发布于 N 小时前"的新闻。
+// flatMarketData builds a market with the last candle's close time equal to
+// base, making it easy to build news items "published N hours ago" using a
+// relative offset.
 func flatMarketData(symbol string, news ...types.NewsItem) types.MarketData {
 	c := types.Candle{
 		OpenTime: base.Add(-time.Hour), CloseTime: base,
@@ -33,7 +34,7 @@ func item(hoursAgo float64, headline string, symbols ...string) types.NewsItem {
 	}
 }
 
-// ---- KeywordSentimentProvider 打分本身的正确性。----
+// ---- Correctness of KeywordSentimentProvider's scoring itself. ----
 
 func TestKeywordProviderScoresKnownHeadlines(t *testing.T) {
 	p := KeywordSentimentProvider{}
@@ -50,16 +51,16 @@ func TestKeywordProviderScoresKnownHeadlines(t *testing.T) {
 		t.Run(tc.headline, func(t *testing.T) {
 			got, err := p.Score(context.Background(), types.NewsItem{Headline: tc.headline})
 			if err != nil {
-				t.Fatalf("意外错误：%v", err)
+				t.Fatalf("unexpected error: %v", err)
 			}
 			if diff := got - tc.want; diff > 1e-9 || diff < -1e-9 {
-				t.Errorf("Score(%q) = %v，期望 %v", tc.headline, got, tc.want)
+				t.Errorf("Score(%q) = %v, want %v", tc.headline, got, tc.want)
 			}
 		})
 	}
 }
 
-// ---- newsApplies：标的相关性过滤。----
+// ---- newsApplies: symbol relevance filtering. ----
 
 func TestNewsAppliesMatching(t *testing.T) {
 	cases := []struct {
@@ -68,22 +69,22 @@ func TestNewsAppliesMatching(t *testing.T) {
 		tags   []string
 		want   bool
 	}{
-		{"无标签视为全市场新闻", "BTCUSDT", nil, true},
-		{"完全匹配", "BTCUSDT", []string{"BTCUSDT"}, true},
-		{"基础资产前缀匹配", "BTCUSDT", []string{"BTC"}, true},
-		{"大小写不敏感", "btcusdt", []string{"BTC"}, true},
-		{"不相关标的", "BTCUSDT", []string{"ETH"}, false},
+		{"no tags treated as market-wide news", "BTCUSDT", nil, true},
+		{"exact match", "BTCUSDT", []string{"BTCUSDT"}, true},
+		{"base asset prefix match", "BTCUSDT", []string{"BTC"}, true},
+		{"case insensitive", "btcusdt", []string{"BTC"}, true},
+		{"unrelated symbol", "BTCUSDT", []string{"ETH"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := newsApplies(tc.symbol, tc.tags); got != tc.want {
-				t.Errorf("newsApplies(%q, %v) = %v，期望 %v", tc.symbol, tc.tags, got, tc.want)
+				t.Errorf("newsApplies(%q, %v) = %v, want %v", tc.symbol, tc.tags, got, tc.want)
 			}
 		})
 	}
 }
 
-// ---- Evaluate：端到端行为。----
+// ---- Evaluate: end-to-end behavior. ----
 
 func TestBullishNewsProducesLong(t *testing.T) {
 	md := flatMarketData("BTCUSDT",
@@ -92,16 +93,16 @@ func TestBullishNewsProducesLong(t *testing.T) {
 	)
 	sig, err := NewDefault().Evaluate(context.Background(), md, nil)
 	if err != nil {
-		t.Fatalf("意外错误：%v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if sig.Direction != types.DirectionLong {
-		t.Fatalf("方向 = %s，期望 LONG（原因：%s）", sig.Direction, sig.Reason)
+		t.Fatalf("Direction = %s, want LONG (reason: %s)", sig.Direction, sig.Reason)
 	}
 	if sig.Raw["news_count"] != 2 {
-		t.Errorf("news_count = %v，期望 2", sig.Raw["news_count"])
+		t.Errorf("news_count = %v, want 2", sig.Raw["news_count"])
 	}
 	if sig.Raw["is_heuristic"] != true {
-		t.Error("默认数据源应标注 is_heuristic=true")
+		t.Error("the default data source should be tagged is_heuristic=true")
 	}
 }
 
@@ -112,14 +113,14 @@ func TestBearishNewsProducesShort(t *testing.T) {
 	)
 	sig, err := NewDefault().Evaluate(context.Background(), md, nil)
 	if err != nil {
-		t.Fatalf("意外错误：%v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if sig.Direction != types.DirectionShort {
-		t.Fatalf("方向 = %s，期望 SHORT（原因：%s）", sig.Direction, sig.Reason)
+		t.Fatalf("Direction = %s, want SHORT (reason: %s)", sig.Direction, sig.Reason)
 	}
 }
 
-// 中性/矛盾标题应互相抵消，不触发方向信号。
+// Neutral/contradictory headlines should cancel each other out and not trigger a directional signal.
 func TestNeutralHeadlinesStayNeutral(t *testing.T) {
 	md := flatMarketData("BTCUSDT",
 		item(1, "Bitcoin price steady ahead of Fed meeting", "BTC"),
@@ -127,55 +128,55 @@ func TestNeutralHeadlinesStayNeutral(t *testing.T) {
 	)
 	sig, err := NewDefault().Evaluate(context.Background(), md, nil)
 	if err != nil {
-		t.Fatalf("意外错误：%v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if sig.Direction != types.DirectionNeutral {
-		t.Errorf("方向 = %s，期望 NEUTRAL", sig.Direction)
+		t.Errorf("Direction = %s, want NEUTRAL", sig.Direction)
 	}
 }
 
-// 不相关标的的新闻必须被过滤掉，即使标题情绪很极端。
+// News about an unrelated symbol must be filtered out, even with an extremely charged headline.
 func TestUnrelatedSymbolNewsIgnored(t *testing.T) {
 	md := flatMarketData("BTCUSDT",
 		item(1, "Ethereum ETF approval sparks massive rally", "ETH"),
 	)
 	sig, err := NewDefault().Evaluate(context.Background(), md, nil)
 	if err != nil {
-		t.Fatalf("意外错误：%v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if sig.Direction != types.DirectionNeutral {
-		t.Errorf("方向 = %s，期望 NEUTRAL（新闻与标的无关）", sig.Direction)
+		t.Errorf("Direction = %s, want NEUTRAL (news is unrelated to the symbol)", sig.Direction)
 	}
 	if sig.Raw["news_count"] != 0 {
-		t.Errorf("news_count = %v，期望 0", sig.Raw["news_count"])
+		t.Errorf("news_count = %v, want 0", sig.Raw["news_count"])
 	}
 }
 
-// 窗口外（发布时间早于 lookback_hours）的新闻必须被排除。
+// News outside the window (published before lookback_hours) must be excluded.
 func TestNewsOutsideWindowIgnored(t *testing.T) {
 	md := flatMarketData("BTCUSDT",
-		item(48, "Bitcoin ETF approval sparks massive rally", "BTC"), // 48 小时前，超出默认 24 小时窗口
+		item(48, "Bitcoin ETF approval sparks massive rally", "BTC"), // 48 hours ago, outside the default 24-hour window
 	)
 	sig, err := NewDefault().Evaluate(context.Background(), md, map[string]any{"lookback_hours": 24})
 	if err != nil {
-		t.Fatalf("意外错误：%v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if sig.Direction != types.DirectionNeutral {
-		t.Errorf("方向 = %s，期望 NEUTRAL（新闻已超出回看窗口）", sig.Direction)
+		t.Errorf("Direction = %s, want NEUTRAL (news is outside the lookback window)", sig.Direction)
 	}
 }
 
-// 未来时间戳的新闻（数据错误或时钟不同步）不应被计入，避免用到"未来信息"。
+// News with a future timestamp (bad data or clock skew) should not be counted, to avoid using "future information".
 func TestFutureDatedNewsIgnored(t *testing.T) {
 	md := flatMarketData("BTCUSDT",
-		item(-1, "Bitcoin ETF approval sparks massive rally", "BTC"), // 发布时间在 md.Time() 之后
+		item(-1, "Bitcoin ETF approval sparks massive rally", "BTC"), // published after md.Time()
 	)
 	sig, err := NewDefault().Evaluate(context.Background(), md, nil)
 	if err != nil {
-		t.Fatalf("意外错误：%v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if sig.Direction != types.DirectionNeutral {
-		t.Errorf("方向 = %s，期望 NEUTRAL（未来时间戳的新闻不应计入）", sig.Direction)
+		t.Errorf("Direction = %s, want NEUTRAL (future-dated news should not count)", sig.Direction)
 	}
 }
 
@@ -185,14 +186,14 @@ func TestMinNewsCountEnforced(t *testing.T) {
 	)
 	sig, err := NewDefault().Evaluate(context.Background(), md, map[string]any{"min_news_count": 2})
 	if err != nil {
-		t.Fatalf("意外错误：%v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if sig.Direction != types.DirectionNeutral {
-		t.Errorf("方向 = %s，期望 NEUTRAL（未达到 min_news_count）", sig.Direction)
+		t.Errorf("Direction = %s, want NEUTRAL (min_news_count not reached)", sig.Direction)
 	}
 }
 
-// 单条新闻支撑的信号置信度应低于两条同向新闻支撑的信号。
+// A signal backed by a single news item should have lower confidence than one backed by two agreeing items.
 func TestConfidenceLowerWithSingleHeadline(t *testing.T) {
 	single := flatMarketData("BTCUSDT", item(1, "Bitcoin ETF approval sparks massive rally", "BTC"))
 	double := flatMarketData("BTCUSDT",
@@ -208,10 +209,10 @@ func TestConfidenceLowerWithSingleHeadline(t *testing.T) {
 		t.Fatal(err)
 	}
 	if sigSingle.Direction != types.DirectionLong || sigDouble.Direction != types.DirectionLong {
-		t.Fatalf("期望两者都是 LONG，得到 single=%s double=%s", sigSingle.Direction, sigDouble.Direction)
+		t.Fatalf("expected both to be LONG, got single=%s double=%s", sigSingle.Direction, sigDouble.Direction)
 	}
 	if sigSingle.Confidence >= sigDouble.Confidence {
-		t.Errorf("单条新闻置信度 %v 应低于两条同向新闻的置信度 %v", sigSingle.Confidence, sigDouble.Confidence)
+		t.Errorf("single-headline confidence %v should be lower than the two-agreeing-headlines confidence %v", sigSingle.Confidence, sigDouble.Confidence)
 	}
 }
 
@@ -219,26 +220,26 @@ func TestNoNewsIsNeutral(t *testing.T) {
 	md := flatMarketData("BTCUSDT")
 	sig, err := NewDefault().Evaluate(context.Background(), md, nil)
 	if err != nil {
-		t.Fatalf("没有新闻不应报错，得到：%v", err)
+		t.Fatalf("no news should not error, got: %v", err)
 	}
 	if sig.Direction != types.DirectionNeutral {
-		t.Errorf("方向 = %s，期望 NEUTRAL", sig.Direction)
+		t.Errorf("Direction = %s, want NEUTRAL", sig.Direction)
 	}
 	if !sig.Price.Equal(decimal.NewFromInt(100)) {
-		t.Errorf("Price = %s，期望带上参考收盘价 100", sig.Price)
+		t.Errorf("Price = %s, want it to carry the reference close price of 100", sig.Price)
 	}
 	if sig.Timestamp.IsZero() {
-		t.Error("Timestamp 不能为零值")
+		t.Error("Timestamp must not be zero")
 	}
 }
 
 func TestEmptyMarketDataIsNeutral(t *testing.T) {
 	sig, err := NewDefault().Evaluate(context.Background(), types.MarketData{Symbol: "BTCUSDT"}, nil)
 	if err != nil {
-		t.Fatalf("空行情不应报错，得到：%v", err)
+		t.Fatalf("empty market data should not error, got: %v", err)
 	}
 	if sig.Direction != types.DirectionNeutral {
-		t.Errorf("方向 = %s，期望 NEUTRAL", sig.Direction)
+		t.Errorf("Direction = %s, want NEUTRAL", sig.Direction)
 	}
 }
 
@@ -248,15 +249,15 @@ func TestInvalidParamsRejected(t *testing.T) {
 		name   string
 		params map[string]any
 	}{
-		{"回看窗口越界", map[string]any{"lookback_hours": 9999}},
-		{"阈值越界", map[string]any{"sentiment_threshold": 1.5}},
-		{"最小新闻数非整数", map[string]any{"min_news_count": 2.5}},
-		{"未知参数", map[string]any{"decay": "linear"}},
+		{"lookback window out of range", map[string]any{"lookback_hours": 9999}},
+		{"threshold out of range", map[string]any{"sentiment_threshold": 1.5}},
+		{"min news count not an integer", map[string]any{"min_news_count": 2.5}},
+		{"unknown parameter", map[string]any{"decay": "linear"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := NewDefault().Evaluate(context.Background(), md, tc.params); err == nil {
-				t.Fatalf("期望拒绝 %v，实际通过了", tc.params)
+				t.Fatalf("expected %v to be rejected, but it passed", tc.params)
 			}
 		})
 	}
@@ -267,11 +268,13 @@ func TestContextCancellationRespected(t *testing.T) {
 	cancel()
 	md := flatMarketData("BTCUSDT")
 	if _, err := NewDefault().Evaluate(ctx, md, nil); !errors.Is(err, context.Canceled) {
-		t.Fatalf("期望 context.Canceled，得到：%v", err)
+		t.Fatalf("expected context.Canceled, got: %v", err)
 	}
 }
 
-// ScoreErrorProvider 用于验证打分数据源报错时模块如实透传，而不是吞掉或伪造中性信号。
+// erroringProvider verifies that when the scoring data source errors, the
+// module propagates it faithfully instead of swallowing it or faking a
+// neutral signal.
 type erroringProvider struct{ err error }
 
 func (erroringProvider) Name() string { return "erroring" }
@@ -285,6 +288,6 @@ func TestProviderErrorPropagates(t *testing.T) {
 	md := flatMarketData("BTCUSDT", item(1, "Bitcoin rally", "BTC"))
 	_, err := m.Evaluate(context.Background(), md, nil)
 	if !errors.Is(err, boom) {
-		t.Fatalf("期望错误透传 %v，得到 %v", boom, err)
+		t.Fatalf("expected the error to propagate as %v, got %v", boom, err)
 	}
 }

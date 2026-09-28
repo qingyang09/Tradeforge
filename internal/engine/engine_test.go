@@ -23,9 +23,10 @@ func quietLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// ---------- 可控的假模块 ----------
+// ---------- controllable fake module ----------
 
-// fakeModule 是一个行为完全可控的模块，用于构造引擎需要处理的各种情况。
+// fakeModule is a module with fully controllable behavior, used to
+// construct the various situations the engine needs to handle.
 type fakeModule struct {
 	name  string
 	dir   types.Direction
@@ -36,7 +37,7 @@ type fakeModule struct {
 }
 
 func (f *fakeModule) Name() string        { return f.name }
-func (f *fakeModule) Description() string { return "测试用假模块" }
+func (f *fakeModule) Description() string { return "fake module for testing" }
 func (f *fakeModule) RequiredParams() []types.ParamSpec {
 	return []types.ParamSpec{{Name: "k", Type: types.ParamInt, Default: 1, Min: types.F(1), Max: types.F(10)}}
 }
@@ -46,7 +47,7 @@ func (f *fakeModule) Evaluate(ctx context.Context, md types.MarketData, params m
 		return types.Signal{}, err
 	}
 	if f.panic {
-		panic("假模块故意 panic")
+		panic("fake module deliberately panicking")
 	}
 	if f.delay > 0 {
 		select {
@@ -60,7 +61,7 @@ func (f *fakeModule) Evaluate(ctx context.Context, md types.MarketData, params m
 	}
 	return types.Signal{
 		Module: f.name, Symbol: md.Symbol, Direction: f.dir, Confidence: f.conf,
-		Timestamp: md.Time(), Price: decimal.NewFromInt(100), Reason: "假模块输出",
+		Timestamp: md.Time(), Price: decimal.NewFromInt(100), Reason: "fake module output",
 	}, nil
 }
 
@@ -74,7 +75,7 @@ func registryOf(mods ...modules.SignalModule) *modules.Registry {
 
 func cfgFor(combine types.CombineMode, threshold float64, mcs ...types.ModuleConfig) types.StrategyConfig {
 	return types.StrategyConfig{
-		ID: "11111111-1111-4111-8111-111111111111", Name: "测试策略",
+		ID: "11111111-1111-4111-8111-111111111111", Name: "test strategy",
 		Symbol: "BTCUSDT", Timeframe: types.TF1h,
 		Modules: mcs, Combine: combine, Threshold: threshold,
 		Risk:  types.RiskConfig{MaxPositionSizeQuote: decimal.NewFromInt(1000)},
@@ -86,13 +87,14 @@ func marketData() types.MarketData {
 	return synth.New("BTCUSDT", types.TF1h, start).Trend(60, 100, 110, 1000, 0.6).Build()
 }
 
-// feedsFor 把单个 MarketData 包成 Evaluate/Process 现在要求的 feeds map，
-// 键用它自己的 Timeframe——单周期场景下这就是唯一需要的那一份。
+// feedsFor wraps a single MarketData into the feeds map that
+// Evaluate/Process now require, keyed by its own Timeframe — in a
+// single-timeframe scenario, that's the only entry needed.
 func feedsFor(md types.MarketData) map[types.Timeframe]types.MarketData {
 	return map[types.Timeframe]types.MarketData{md.Timeframe: md}
 }
 
-// ---------- ALL 组合 ----------
+// ---------- ALL combine ----------
 
 func TestAggregateAllTriggersWhenAllAgree(t *testing.T) {
 	reg := registryOf(
@@ -105,19 +107,19 @@ func TestAggregateAllTriggersWhenAllAgree(t *testing.T) {
 
 	d, err := New(reg, WithLogger(quietLogger())).Evaluate(context.Background(), cfg, feedsFor(marketData()))
 	if err != nil {
-		t.Fatalf("意外错误：%v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if !d.Triggered {
-		t.Fatalf("期望触发，实际未触发：%s", d.Reason)
+		t.Fatalf("expected trigger, got none: %s", d.Reason)
 	}
 	if d.Direction != types.DirectionLong {
-		t.Errorf("方向 = %s，期望 LONG", d.Direction)
+		t.Errorf("Direction = %s, want LONG", d.Direction)
 	}
 	if want := (0.8 + 0.6 + 0.7) / 3; d.Score < want-1e-9 || d.Score > want+1e-9 {
-		t.Errorf("Score = %v，期望平均置信度 %v", d.Score, want)
+		t.Errorf("Score = %v, want average confidence %v", d.Score, want)
 	}
 	if len(d.Signals) != 3 {
-		t.Errorf("信号数 = %d，期望 3（可解释性要求保留全部参与信号）", len(d.Signals))
+		t.Errorf("signal count = %d, want 3 (explainability requires keeping every participating signal)", len(d.Signals))
 	}
 }
 
@@ -133,10 +135,13 @@ func TestAggregateAllBlockedByOpposingModule(t *testing.T) {
 		t.Fatal(err)
 	}
 	if d.Triggered {
-		t.Fatal("方向相反时不应触发")
+		t.Fatal("should not trigger when directions oppose")
 	}
+	// NOTE: "相反" kept untranslated — it's the literal Chinese substring
+	// produced by aggregate.go's aggregateAll (see the NOTE there); the
+	// assertion has to match what production code actually emits.
 	if !strings.Contains(d.Reason, "相反") {
-		t.Errorf("Reason 应说明是方向冲突导致的，实际：%s", d.Reason)
+		t.Errorf("Reason should explain the direction conflict, got: %s", d.Reason)
 	}
 }
 
@@ -149,11 +154,11 @@ func TestAggregateAllBlockedByNeutralModule(t *testing.T) {
 
 	d, _ := New(reg, WithLogger(quietLogger())).Evaluate(context.Background(), cfg, feedsFor(marketData()))
 	if d.Triggered {
-		t.Fatalf("有模块中性时 ALL 不应触发：%s", d.Reason)
+		t.Fatalf("ALL should not trigger when a module is neutral: %s", d.Reason)
 	}
 }
 
-// ---------- WEIGHTED 组合 ----------
+// ---------- WEIGHTED combine ----------
 
 func TestAggregateWeightedTriggersAboveThreshold(t *testing.T) {
 	reg := registryOf(
@@ -170,10 +175,10 @@ func TestAggregateWeightedTriggersAboveThreshold(t *testing.T) {
 	}
 	// (0.6*0.9 + 0.4*0.8) / 1.0 = 0.86
 	if want := 0.86; d.Score < want-1e-9 || d.Score > want+1e-9 {
-		t.Errorf("Score = %v，期望 %v", d.Score, want)
+		t.Errorf("Score = %v, want %v", d.Score, want)
 	}
 	if !d.Triggered || d.Direction != types.DirectionLong {
-		t.Errorf("期望触发 LONG，实际 triggered=%v dir=%s：%s", d.Triggered, d.Direction, d.Reason)
+		t.Errorf("expected trigger LONG, got triggered=%v dir=%s: %s", d.Triggered, d.Direction, d.Reason)
 	}
 }
 
@@ -188,10 +193,10 @@ func TestAggregateWeightedNetsOutOpposingSignals(t *testing.T) {
 
 	d, _ := New(reg, WithLogger(quietLogger())).Evaluate(context.Background(), cfg, feedsFor(marketData()))
 	if d.Triggered {
-		t.Fatalf("等权反向信号应互相抵消，不该触发：%s", d.Reason)
+		t.Fatalf("equally-weighted opposing signals should cancel out and not trigger: %s", d.Reason)
 	}
 	if d.Score > 1e-9 || d.Score < -1e-9 {
-		t.Errorf("Score = %v，期望约 0", d.Score)
+		t.Errorf("Score = %v, want approximately 0", d.Score)
 	}
 }
 
@@ -201,14 +206,15 @@ func TestAggregateWeightedShortDirection(t *testing.T) {
 
 	d, _ := New(reg, WithLogger(quietLogger())).Evaluate(context.Background(), cfg, feedsFor(marketData()))
 	if !d.Triggered || d.Direction != types.DirectionShort {
-		t.Fatalf("期望触发 SHORT，实际 triggered=%v dir=%s", d.Triggered, d.Direction)
+		t.Fatalf("expected trigger SHORT, got triggered=%v dir=%s", d.Triggered, d.Direction)
 	}
 	if d.Score >= 0 {
-		t.Errorf("空头 Score = %v，期望为负", d.Score)
+		t.Errorf("short Score = %v, want negative", d.Score)
 	}
 }
 
-// 沉默的模块必须计入分母，否则少数模块能独自把分数顶到阈值以上。
+// Silent modules must still count toward the denominator, or a minority of
+// modules could push the score past the threshold on their own.
 func TestWeightedSilentModulesDiluteScore(t *testing.T) {
 	reg := registryOf(
 		&fakeModule{name: "a", dir: types.DirectionLong, conf: 1.0},
@@ -221,16 +227,16 @@ func TestWeightedSilentModulesDiluteScore(t *testing.T) {
 		types.ModuleConfig{Module: "c", Weight: 0.25})
 
 	d, _ := New(reg, WithLogger(quietLogger())).Evaluate(context.Background(), cfg, feedsFor(marketData()))
-	// 0.5*1.0 / (0.5+0.25+0.25) = 0.5，低于阈值 0.6
+	// 0.5*1.0 / (0.5+0.25+0.25) = 0.5, below the 0.6 threshold
 	if d.Triggered {
-		t.Fatalf("中性模块应稀释分数使其低于阈值，实际触发了：%s", d.Reason)
+		t.Fatalf("neutral modules should dilute the score below threshold, but it triggered: %s", d.Reason)
 	}
 	if want := 0.5; d.Score < want-1e-9 || d.Score > want+1e-9 {
-		t.Errorf("Score = %v，期望 %v", d.Score, want)
+		t.Errorf("Score = %v, want %v", d.Score, want)
 	}
 }
 
-// ---------- 隔离与降级 ----------
+// ---------- isolation and degradation ----------
 
 func TestModuleTimeoutDegradesWithoutBlockingOthers(t *testing.T) {
 	reg := registryOf(
@@ -248,52 +254,54 @@ func TestModuleTimeoutDegradesWithoutBlockingOthers(t *testing.T) {
 	elapsed := time.Since(begin)
 
 	if err != nil {
-		t.Fatalf("单模块超时不应让整个引擎报错：%v", err)
+		t.Fatalf("a single module timing out should not error out the whole engine: %v", err)
 	}
 	if elapsed > time.Second {
-		t.Errorf("耗时 %v：慢模块拖垮了整个引擎，超时未生效", elapsed)
+		t.Errorf("elapsed %v: the slow module dragged down the whole engine, timeout had no effect", elapsed)
 	}
 
 	byName := signalsByModule(d.Signals)
 	if !byName["slow"].Degraded {
-		t.Error("超时模块应被标记为 Degraded")
+		t.Error("timed-out module should be marked Degraded")
 	}
 	if byName["slow"].Direction != types.DirectionNeutral {
-		t.Errorf("降级信号方向 = %s，期望 NEUTRAL", byName["slow"].Direction)
+		t.Errorf("degraded signal Direction = %s, want NEUTRAL", byName["slow"].Direction)
 	}
 	if byName["fast"].Degraded {
-		t.Error("正常模块不应受慢模块影响")
+		t.Error("a normal module should not be affected by a slow one")
 	}
 	if byName["fast"].Direction != types.DirectionLong {
-		t.Errorf("正常模块方向 = %s，期望 LONG", byName["fast"].Direction)
+		t.Errorf("normal module Direction = %s, want LONG", byName["fast"].Direction)
 	}
 }
 
 func TestModuleErrorDegradesGracefully(t *testing.T) {
 	reg := registryOf(
 		&fakeModule{name: "ok", dir: types.DirectionLong, conf: 0.9},
+		// NOTE: kept in Chinese — asserted verbatim below via strings.Contains.
 		&fakeModule{name: "bad", err: errors.New("数据源炸了")},
 	)
 	cfg := cfgFor(types.CombineAll, 0, types.ModuleConfig{Module: "ok"}, types.ModuleConfig{Module: "bad"})
 
 	d, err := New(reg, WithLogger(quietLogger())).Evaluate(context.Background(), cfg, feedsFor(marketData()))
 	if err != nil {
-		t.Fatalf("模块报错不应让引擎报错：%v", err)
+		t.Fatalf("a module erroring should not error out the engine: %v", err)
 	}
 	bad := signalsByModule(d.Signals)["bad"]
 	if !bad.Degraded {
-		t.Error("报错的模块应被标记为 Degraded")
+		t.Error("an erroring module should be marked Degraded")
 	}
 	if !strings.Contains(bad.Err, "数据源炸了") {
-		t.Errorf("降级信号应保留原始错误，实际：%q", bad.Err)
+		t.Errorf("degraded signal should retain the original error, got: %q", bad.Err)
 	}
-	// ALL 组合下有降级模块就不该触发。
+	// ALL combine should not trigger when a module is degraded.
 	if d.Triggered {
-		t.Errorf("有模块降级时 ALL 不应触发：%s", d.Reason)
+		t.Errorf("ALL should not trigger when a module is degraded: %s", d.Reason)
 	}
 }
 
-// 模块 panic 必须被隔离，否则一个模块的 bug 会让整个引擎进程崩溃。
+// A module panicking must be isolated, or a single module's bug could crash
+// the entire engine process.
 func TestModulePanicIsIsolated(t *testing.T) {
 	reg := registryOf(
 		&fakeModule{name: "ok", dir: types.DirectionLong, conf: 0.9},
@@ -305,21 +313,21 @@ func TestModulePanicIsIsolated(t *testing.T) {
 
 	d, err := New(reg, WithLogger(quietLogger())).Evaluate(context.Background(), cfg, feedsFor(marketData()))
 	if err != nil {
-		t.Fatalf("模块 panic 不应让引擎报错：%v", err)
+		t.Fatalf("a module panicking should not error out the engine: %v", err)
 	}
 	boom := signalsByModule(d.Signals)["boom"]
 	if !boom.Degraded {
-		t.Error("panic 的模块应被标记为 Degraded")
+		t.Error("a panicking module should be marked Degraded")
 	}
 	if !strings.Contains(boom.Err, "panic") {
-		t.Errorf("降级信号应说明是 panic，实际：%q", boom.Err)
+		t.Errorf("degraded signal should mention it was a panic, got: %q", boom.Err)
 	}
 	if signalsByModule(d.Signals)["ok"].Direction != types.DirectionLong {
-		t.Error("panic 模块不应影响其它模块的结果")
+		t.Error("a panicking module should not affect other modules' results")
 	}
 }
 
-// ---------- 配置校验 ----------
+// ---------- config validation ----------
 
 func TestEvaluateRejectsInvalidConfig(t *testing.T) {
 	reg := registryOf(&fakeModule{name: "a", dir: types.DirectionLong, conf: 0.9})
@@ -327,23 +335,24 @@ func TestEvaluateRejectsInvalidConfig(t *testing.T) {
 		name string
 		cfg  types.StrategyConfig
 	}{
-		{"引用不存在的模块", cfgFor(types.CombineAll, 0, types.ModuleConfig{Module: "不存在的模块"})},
-		{"模块参数越界", cfgFor(types.CombineAll, 0, types.ModuleConfig{Module: "a", Params: map[string]any{"k": 999}})},
-		{"没有任何模块", cfgFor(types.CombineAll, 0)},
-		{"WEIGHTED 未配权重", cfgFor(types.CombineWeighted, 0.5, types.ModuleConfig{Module: "a"})},
-		{"WEIGHTED 阈值非法", cfgFor(types.CombineWeighted, 1.5, types.ModuleConfig{Module: "a", Weight: 1})},
+		{"references a nonexistent module", cfgFor(types.CombineAll, 0, types.ModuleConfig{Module: "nonexistent_module"})},
+		{"module param out of range", cfgFor(types.CombineAll, 0, types.ModuleConfig{Module: "a", Params: map[string]any{"k": 999}})},
+		{"no modules at all", cfgFor(types.CombineAll, 0)},
+		{"WEIGHTED with no weight configured", cfgFor(types.CombineWeighted, 0.5, types.ModuleConfig{Module: "a"})},
+		{"WEIGHTED with an illegal threshold", cfgFor(types.CombineWeighted, 1.5, types.ModuleConfig{Module: "a", Weight: 1})},
 	}
 	e := New(reg, WithLogger(quietLogger()))
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := e.Evaluate(context.Background(), tc.cfg, feedsFor(marketData())); err == nil {
-				t.Fatal("期望校验失败，实际通过了")
+				t.Fatal("expected validation to fail, but it passed")
 			}
 		})
 	}
 }
 
-// 标的错配必须拦下：不同标的的策略是一等公民，绝不能拿 ETH 的行情跑 BTC 的策略。
+// A symbol mismatch must be rejected: per-symbol strategies are a
+// first-class feature, so BTC's strategy must never be run on ETH's market data.
 func TestEvaluateRejectsSymbolMismatch(t *testing.T) {
 	reg := registryOf(&fakeModule{name: "a", dir: types.DirectionLong, conf: 0.9})
 	cfg := cfgFor(types.CombineAll, 0, types.ModuleConfig{Module: "a"})
@@ -351,14 +360,17 @@ func TestEvaluateRejectsSymbolMismatch(t *testing.T) {
 
 	_, err := New(reg, WithLogger(quietLogger())).Evaluate(context.Background(), cfg, feedsFor(md))
 	if err == nil {
-		t.Fatal("期望拒绝标的不一致的行情")
+		t.Fatal("expected mismatched-symbol market data to be rejected")
 	}
+	// NOTE: "隔离" kept untranslated — it's the literal Chinese substring
+	// produced by engine.go's Evaluate (see the NOTE there); the assertion
+	// has to match what production code actually emits.
 	if !strings.Contains(err.Error(), "隔离") {
-		t.Errorf("错误信息应点明标的隔离要求，实际：%v", err)
+		t.Errorf("error message should call out the per-symbol isolation requirement, got: %v", err)
 	}
 }
 
-// ---------- Process：审计与发布 ----------
+// ---------- Process: audit and publish ----------
 
 type recordingAuditor struct {
 	mu        sync.Mutex
@@ -400,36 +412,39 @@ func TestProcessAuditsAndPublishes(t *testing.T) {
 	e := New(reg, WithAuditor(aud), WithPublisher(pub), WithLogger(quietLogger()))
 	d, err := e.Process(context.Background(), cfg, feedsFor(marketData()))
 	if err != nil {
-		t.Fatalf("意外错误：%v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if d.ID == "" {
-		t.Error("决策必须带 ID，订单溯源要靠它反查")
+		t.Error("a decision must carry an ID, used to trace back to the order that resulted from it")
 	}
 	if len(aud.decisions) != 1 || len(pub.decisions) != 1 {
-		t.Fatalf("审计 %d 条、发布 %d 条，各期望 1 条", len(aud.decisions), len(pub.decisions))
+		t.Fatalf("recorded %d, published %d, want 1 each", len(aud.decisions), len(pub.decisions))
 	}
 	if aud.decisions[0].ID != d.ID || pub.decisions[0].ID != d.ID {
-		t.Error("审计与发布的必须是同一条决策")
+		t.Error("the recorded and published decisions must be the same one")
 	}
 }
 
-// 审计失败必须中止发布：绝不能出现"执行层已下单、审计表查无此决策"。
+// A recording failure must abort the publish: there must never be a case
+// where "the execution layer already placed an order but the audit table
+// has no record of the decision."
 func TestProcessAbortsPublishWhenAuditFails(t *testing.T) {
 	reg := registryOf(&fakeModule{name: "a", dir: types.DirectionLong, conf: 0.9})
 	cfg := cfgFor(types.CombineAll, 0, types.ModuleConfig{Module: "a"})
-	aud := &recordingAuditor{err: errors.New("数据库不可用")}
+	aud := &recordingAuditor{err: errors.New("database unavailable")}
 	pub := &recordingPublisher{}
 
 	e := New(reg, WithAuditor(aud), WithPublisher(pub), WithLogger(quietLogger()))
 	if _, err := e.Process(context.Background(), cfg, feedsFor(marketData())); err == nil {
-		t.Fatal("审计失败时 Process 应返回错误")
+		t.Fatal("Process should return an error when recording fails")
 	}
 	if len(pub.decisions) != 0 {
-		t.Error("审计失败后不得继续发布决策")
+		t.Error("must not publish a decision after recording it failed")
 	}
 }
 
-// 未触发的决策同样要留痕：用户需要知道"为什么这根 K 线没有开仓"。
+// A non-triggered decision must still be recorded: the user needs to know
+// "why didn't this candle open a position."
 func TestNonTriggeredDecisionsAreStillAudited(t *testing.T) {
 	reg := registryOf(&fakeModule{name: "a", dir: types.DirectionNeutral, conf: 0})
 	cfg := cfgFor(types.CombineAll, 0, types.ModuleConfig{Module: "a"})
@@ -441,29 +456,30 @@ func TestNonTriggeredDecisionsAreStillAudited(t *testing.T) {
 		t.Fatal(err)
 	}
 	if d.Triggered {
-		t.Fatal("中性信号不应触发")
+		t.Fatal("a neutral signal should not trigger")
 	}
 	if len(aud.decisions) != 1 {
-		t.Fatal("未触发的决策也必须落库审计")
+		t.Fatal("a non-triggered decision must still be recorded for audit")
 	}
 	if aud.decisions[0].Reason == "" {
-		t.Error("未触发时更要说明原因")
+		t.Error("a non-triggered decision needs its reason even more so")
 	}
 }
 
-// ---------- 多周期 ----------
+// ---------- multi-timeframe ----------
 
-// tfEchoModule 把自己实际收到的 MarketData.Timeframe 塞进 Signal.Reason 里，
-// 用来断言引擎有没有把正确周期的行情路由给正确的模块。
+// tfEchoModule stuffs the MarketData.Timeframe it actually received into
+// Signal.Reason, used to assert whether the engine routed the right
+// timeframe's market data to the right module.
 type tfEchoModule struct{ name string }
 
-func (f *tfEchoModule) Name() string        { return f.name }
-func (f *tfEchoModule) Description() string { return "回显收到的周期" }
+func (f *tfEchoModule) Name() string                      { return f.name }
+func (f *tfEchoModule) Description() string               { return "echoes back the timeframe it received" }
 func (f *tfEchoModule) RequiredParams() []types.ParamSpec { return nil }
 func (f *tfEchoModule) Evaluate(ctx context.Context, md types.MarketData, params map[string]any) (types.Signal, error) {
 	return types.Signal{
 		Module: f.name, Symbol: md.Symbol, Direction: types.DirectionLong, Confidence: 0.9,
-		Timestamp: md.Time(), Price: decimal.NewFromInt(100), Reason: "看到的周期：" + string(md.Timeframe),
+		Timestamp: md.Time(), Price: decimal.NewFromInt(100), Reason: "timeframe seen: " + string(md.Timeframe),
 	}, nil
 }
 
@@ -471,7 +487,7 @@ func TestEvaluateRoutesEachModuleToItsOwnTimeframe(t *testing.T) {
 	reg := registryOf(&tfEchoModule{name: "slow"}, &tfEchoModule{name: "fast"})
 	cfg := cfgFor(types.CombineAll, 0,
 		types.ModuleConfig{Module: "slow", Timeframe: types.TF1h},
-		types.ModuleConfig{Module: "fast"}, // 留空，跟随触发周期
+		types.ModuleConfig{Module: "fast"}, // left blank, follows the trigger timeframe
 	)
 	cfg.Timeframe = types.TF15m
 
@@ -482,17 +498,17 @@ func TestEvaluateRoutesEachModuleToItsOwnTimeframe(t *testing.T) {
 
 	d, err := New(reg, WithLogger(quietLogger())).Evaluate(context.Background(), cfg, feeds)
 	if err != nil {
-		t.Fatalf("意外错误：%v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	byName := signalsByModule(d.Signals)
 	if !strings.Contains(byName["slow"].Reason, "1h") {
-		t.Errorf("slow 模块应看到 1h 周期的行情，实际 Reason=%q", byName["slow"].Reason)
+		t.Errorf("the slow module should see 1h market data, got Reason=%q", byName["slow"].Reason)
 	}
 	if !strings.Contains(byName["fast"].Reason, "15m") {
-		t.Errorf("fast 模块应跟随触发周期看到 15m 行情，实际 Reason=%q", byName["fast"].Reason)
+		t.Errorf("the fast module should follow the trigger timeframe and see 15m market data, got Reason=%q", byName["fast"].Reason)
 	}
 	if d.Timestamp != feeds[types.TF15m].Time() {
-		t.Errorf("Decision.Timestamp 应取自触发周期的 feed")
+		t.Errorf("Decision.Timestamp should come from the trigger timeframe's feed")
 	}
 }
 
@@ -501,18 +517,18 @@ func TestEvaluateDegradesModuleWhenItsTimeframeFeedMissing(t *testing.T) {
 	cfg := cfgFor(types.CombineAll, 0, types.ModuleConfig{Module: "needs1h", Timeframe: types.TF1h})
 	cfg.Timeframe = types.TF15m
 
-	// 只提供触发周期的 feed，不提供模块需要的 1h feed。
+	// Only supply the trigger timeframe's feed, not the 1h feed the module needs.
 	feeds := map[types.Timeframe]types.MarketData{
 		types.TF15m: synth.New("BTCUSDT", types.TF15m, start).Trend(30, 100, 110, 1000, 0.6).Build(),
 	}
 
 	d, err := New(reg, WithLogger(quietLogger())).Evaluate(context.Background(), cfg, feeds)
 	if err != nil {
-		t.Fatalf("缺少某个模块所需的 feed 不应让整个 Evaluate 报错：%v", err)
+		t.Fatalf("a missing feed for one module's timeframe should not error out the whole Evaluate: %v", err)
 	}
 	sig := signalsByModule(d.Signals)["needs1h"]
 	if !sig.Degraded {
-		t.Error("缺少所需周期行情的模块应降级为中性信号，而不是让引擎报错")
+		t.Error("a module missing its required timeframe's market data should degrade to neutral, not error out the engine")
 	}
 }
 
@@ -521,13 +537,13 @@ func TestEvaluateRejectsMissingTriggerFeed(t *testing.T) {
 	cfg := cfgFor(types.CombineAll, 0, types.ModuleConfig{Module: "a"})
 	cfg.Timeframe = types.TF15m
 
-	// feeds 里完全没有触发周期 15m 的数据。
+	// feeds has no data at all for the 15m trigger timeframe.
 	feeds := map[types.Timeframe]types.MarketData{
 		types.TF1h: synth.New("BTCUSDT", types.TF1h, start).Trend(30, 100, 110, 1000, 0.6).Build(),
 	}
 
 	if _, err := New(reg, WithLogger(quietLogger())).Evaluate(context.Background(), cfg, feeds); err == nil {
-		t.Fatal("缺少触发周期的 feed 应该直接报错，它决定整条决策的时间戳和价格")
+		t.Fatal("a missing trigger-timeframe feed should error out immediately, since it determines the whole decision's timestamp and price")
 	}
 }
 

@@ -1,8 +1,9 @@
-// Package execution 实现多标的执行层。
+// Package execution implements the multi-symbol execution layer.
 //
-// 核心不变量：不同标的的执行完全隔离。每个进入 LIVE（或 PAPER_TRADING）
-// 的策略绑定一个独立 worker，一个标的的异常——报错、超时、甚至 panic——
-// 都不得影响其它标的。
+// Core invariant: execution across different symbols is fully isolated. Every
+// strategy that enters LIVE (or PAPER_TRADING) is bound to its own worker, and
+// a failure in one symbol — an error, a timeout, even a panic — must never
+// affect any other symbol.
 package execution
 
 import (
@@ -18,49 +19,56 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// OrderRequest 是一次下单请求。
+// OrderRequest is a single order placement request.
 type OrderRequest struct {
 	StrategyID string
 	Symbol     string
 	Side       types.OrderSide
-	// Quantity 是基础货币数量。
+	// Quantity is the base-currency amount.
 	Quantity decimal.Decimal
-	// RefPrice 是下单时的参考价（最新收盘价），模拟成交按它撮合。
+	// RefPrice is the reference price at order time (latest close); simulated
+	// fills are matched against it.
 	RefPrice decimal.Decimal
-	// Provenance 记录这笔单是被什么触发的，必填。
+	// Provenance records what triggered this order. Required.
 	Provenance types.OrderProvenance
 }
 
-// Broker 是下单通道的抽象。
+// Broker abstracts an order-placement channel.
 //
-// 抽象出接口是为了让"模拟盘"和"实盘"走完全相同的代码路径，
-// 只在这一层分叉——避免出现"模拟盘跑通了但实盘走的是另一条分支"。
+// The interface exists so "paper trading" and "live trading" run through
+// exactly the same code path, branching only at this one layer — this avoids
+// a situation where paper trading works but live trading quietly takes a
+// different branch.
 type Broker interface {
-	// Name 返回通道名，写入日志与审计。
+	// Name returns the channel name, written to logs and audit records.
 	Name() string
-	// Mode 返回该通道是模拟盘还是实盘。执行层据此做最后一道拦截。
+	// Mode reports whether this channel is paper or live. The execution layer
+	// uses this for its final gate check.
 	Mode() types.TradingMode
-	// PlaceOrder 下单并返回成交结果。
+	// PlaceOrder places an order and returns the fill result.
 	PlaceOrder(ctx context.Context, req OrderRequest) (types.Order, error)
 }
 
-// ErrLiveBrokerRequiresLiveState 表示试图用实盘通道执行非 LIVE 状态的策略。
-var ErrLiveBrokerRequiresLiveState = errors.New("非 LIVE 状态的策略不得使用实盘下单通道")
+// ErrLiveBrokerRequiresLiveState indicates an attempt to run a non-LIVE strategy
+// through a live broker channel.
+var ErrLiveBrokerRequiresLiveState = errors.New("strategy is not in LIVE state; live order channels may not be used")
 
-// ---------- 模拟盘通道 ----------
+// ---------- paper trading channel ----------
 
-// PaperBroker 是模拟撮合通道，永远不会向交易所发出真实订单。
+// PaperBroker is a simulated matching channel; it never sends a real order to
+// an exchange.
 type PaperBroker struct {
-	// SlippageBps 是模拟滑点，以基点计。
+	// SlippageBps is the simulated slippage, in basis points.
 	SlippageBps decimal.Decimal
-	// TakerFeeRate 是模拟手续费率。
+	// TakerFeeRate is the simulated fee rate.
 	TakerFeeRate decimal.Decimal
 
 	mu     sync.Mutex
 	orders []types.Order
 }
 
-// NewPaperBroker 用保守的默认成本参数构造模拟通道。
+// NewPaperBroker builds a paper channel with conservative default cost
+// parameters.
 func NewPaperBroker() *PaperBroker {
 	return &PaperBroker{
 		SlippageBps:  decimal.NewFromInt(5),
@@ -68,22 +76,23 @@ func NewPaperBroker() *PaperBroker {
 	}
 }
 
-// Name 实现 Broker。
+// Name implements Broker.
 func (b *PaperBroker) Name() string { return "paper" }
 
-// Mode 实现 Broker。
+// Mode implements Broker.
 func (b *PaperBroker) Mode() types.TradingMode { return types.ModePaper }
 
-// PlaceOrder 实现 Broker：按参考价加滑点立即成交。
+// PlaceOrder implements Broker: fills immediately at the reference price plus
+// slippage.
 func (b *PaperBroker) PlaceOrder(_ context.Context, req OrderRequest) (types.Order, error) {
 	if !req.RefPrice.IsPositive() {
-		return types.Order{}, fmt.Errorf("参考价 %s 非正，无法模拟成交", req.RefPrice)
+		return types.Order{}, fmt.Errorf("reference price %s is not positive, cannot simulate a fill", req.RefPrice)
 	}
 	if !req.Quantity.IsPositive() {
-		return types.Order{}, fmt.Errorf("下单数量 %s 非正", req.Quantity)
+		return types.Order{}, fmt.Errorf("order quantity %s is not positive", req.Quantity)
 	}
 
-	// 滑点永远对交易者不利：买入上浮、卖出下压。
+	// Slippage always works against the trader: buys are pushed up, sells are pushed down.
 	slip := req.RefPrice.Mul(b.SlippageBps).Div(decimal.NewFromInt(10000))
 	fill := req.RefPrice.Add(slip)
 	if req.Side == types.SideSell {
@@ -113,7 +122,7 @@ func (b *PaperBroker) PlaceOrder(_ context.Context, req OrderRequest) (types.Ord
 	return order, nil
 }
 
-// Orders 返回已模拟成交的全部订单，供测试与展示使用。
+// Orders returns every simulated fill placed so far, for tests and display.
 func (b *PaperBroker) Orders() []types.Order {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -122,27 +131,27 @@ func (b *PaperBroker) Orders() []types.Order {
 	return out
 }
 
-// ---------- 订单落库 ----------
+// ---------- order persistence ----------
 
-// OrderRecorder 把订单写入审计存储。
+// OrderRecorder writes an order to audit storage.
 type OrderRecorder interface {
 	RecordOrder(ctx context.Context, order types.Order) error
 }
 
-// RiskEventRecorder 把风控事件写入审计存储。
+// RiskEventRecorder writes a risk event to audit storage.
 type RiskEventRecorder interface {
 	RecordRiskEvent(ctx context.Context, ev RiskEvent) error
 }
 
-// RiskEvent 是一次风控触发记录。
+// RiskEvent records a single risk-control trigger.
 type RiskEvent struct {
 	StrategyID string
 	Symbol     string
-	// Rule 是触发的规则名，如 "max_daily_loss"。
+	// Rule is the name of the triggered rule, e.g. "max_daily_loss".
 	Rule string
-	// Detail 是触发时的数据快照。
+	// Detail is a snapshot of the data at trigger time.
 	Detail map[string]any
-	// Action 是系统采取的动作，如 "close_and_suspend"。
+	// Action is the action the system took, e.g. "close_and_suspend".
 	Action    string
 	CreatedAt time.Time
 }

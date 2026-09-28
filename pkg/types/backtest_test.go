@@ -7,8 +7,8 @@ import (
 )
 
 func TestFeeDragRatioComputesFeesOverGrossProfit(t *testing.T) {
-	// 本金 10000，涨到 11000（净利润 1000），手续费花了 800：
-	// 毛利润 = 1000 + 800 = 1800，占比 = 800/1800 ≈ 0.444。
+	// Capital 10000, grows to 11000 (net profit 1000), fees cost 800:
+	// gross profit = 1000 + 800 = 1800, ratio = 800/1800 ~= 0.444.
 	m := PerformanceMetrics{
 		TradeCount:  10,
 		TotalReturn: 0.1,
@@ -17,23 +17,24 @@ func TestFeeDragRatioComputesFeesOverGrossProfit(t *testing.T) {
 	}
 	ratio, ok := m.FeeDragRatio()
 	if !ok {
-		t.Fatal("有交易且毛利润为正时应该能算出比例")
+		t.Fatal("should be able to compute a ratio when there are trades and gross profit is positive")
 	}
 	if want := 800.0 / 1800.0; ratio < want-1e-6 || ratio > want+1e-6 {
-		t.Errorf("比例 = %v，期望约 %v", ratio, want)
+		t.Errorf("ratio = %v, expected approximately %v", ratio, want)
 	}
 }
 
 func TestFeeDragRatioUndefinedWhenNoTrades(t *testing.T) {
 	m := PerformanceMetrics{TradeCount: 0}
 	if _, ok := m.FeeDragRatio(); ok {
-		t.Error("没有交易时不应该算出一个比例")
+		t.Error("should not compute a ratio when there are no trades")
 	}
 }
 
 func TestFeeDragRatioUndefinedWhenGrossProfitNotPositive(t *testing.T) {
-	// 净利润为负、手续费也不足以让"净利润+手续费"转正：扣手续费前策略本身就在亏钱，
-	// "手续费占毛利润的比例"这个说法此时没有意义。
+	// Net profit is negative, and fees aren't enough to push "net profit + fees"
+	// positive: the strategy was already losing money before fees, so "fees as a
+	// fraction of gross profit" is meaningless here.
 	m := PerformanceMetrics{
 		TradeCount:  10,
 		TotalReturn: -0.2,
@@ -41,13 +42,13 @@ func TestFeeDragRatioUndefinedWhenGrossProfitNotPositive(t *testing.T) {
 		TotalFees:   decimal.NewFromInt(100),
 	}
 	if _, ok := m.FeeDragRatio(); ok {
-		t.Error("毛利润非正时不应该算出一个比例")
+		t.Error("should not compute a ratio when gross profit is not positive")
 	}
 }
 
 func TestFeeDragRatioUndefinedWhenTotalReturnIsTotalLoss(t *testing.T) {
 	m := PerformanceMetrics{TradeCount: 5, TotalReturn: -1}
 	if _, ok := m.FeeDragRatio(); ok {
-		t.Error("本金亏光（total_return = -1）时分母为零，不应该算出一个比例")
+		t.Error("should not compute a ratio when capital is wiped out (total_return = -1), which zeroes the denominator")
 	}
 }

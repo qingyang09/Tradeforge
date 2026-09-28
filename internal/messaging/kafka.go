@@ -1,4 +1,5 @@
-// Package messaging 封装 Kafka 读写，用于模块间的信号/决策传递解耦。
+// Package messaging wraps Kafka read/write access, decoupling signal and
+// decision delivery between modules.
 package messaging
 
 import (
@@ -15,50 +16,55 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// EnsureTopics 幂等地创建平台使用的 topic。
+// EnsureTopics idempotently creates the topics the platform uses.
 //
-// 依赖自动创建是不可靠的：首次写入常常在元数据传播完成前就失败一次。
-// 服务启动时显式建好，能让"topic 不存在"这类问题在启动期而不是首笔决策时暴露。
+// Relying on auto-creation is unreliable: the first write often fails once
+// before metadata propagation finishes. Creating topics explicitly at
+// service startup surfaces a "topic doesn't exist" problem at startup
+// instead of on the first decision.
 func EnsureTopics(ctx context.Context, cfg config.KafkaConfig) error {
 	conn, err := (&kafka.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp", cfg.Brokers[0])
 	if err != nil {
-		return fmt.Errorf("连接 Kafka（%s）失败：%w", cfg.Brokers[0], err)
+		return fmt.Errorf("failed to connect to Kafka (%s): %w", cfg.Brokers[0], err)
 	}
 	defer conn.Close()
 
 	controller, err := conn.Controller()
 	if err != nil {
-		return fmt.Errorf("获取 Kafka controller 失败：%w", err)
+		return fmt.Errorf("failed to get the Kafka controller: %w", err)
 	}
 	ctrlConn, err := (&kafka.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp",
 		net.JoinHostPort(controller.Host, strconv.Itoa(controller.Port)))
 	if err != nil {
-		return fmt.Errorf("连接 Kafka controller 失败：%w", err)
+		return fmt.Errorf("failed to connect to the Kafka controller: %w", err)
 	}
 	defer ctrlConn.Close()
 
-	// 本地单节点环境：1 分区 1 副本。生产环境应按吞吐与可用性另行规划。
+	// Local single-node setup: 1 partition, 1 replica. Production should
+	// plan this separately based on throughput and availability needs.
 	specs := []kafka.TopicConfig{
 		{Topic: cfg.DecisionTopic, NumPartitions: 1, ReplicationFactor: 1},
 		{Topic: cfg.SignalTopic, NumPartitions: 1, ReplicationFactor: 1},
 	}
 	if err := ctrlConn.CreateTopics(specs...); err != nil {
-		return fmt.Errorf("创建 topic 失败：%w", err)
+		return fmt.Errorf("failed to create topics: %w", err)
 	}
 	return nil
 }
 
-// KafkaPublisher 把决策与信号发布到 Kafka。
+// KafkaPublisher publishes decisions and signals to Kafka.
 type KafkaPublisher struct {
 	decisions *kafka.Writer
 	signals   *kafka.Writer
 }
 
-// NewKafkaPublisher 按配置创建发布器。
+// NewKafkaPublisher creates a publisher from config.
 //
-// 用策略 ID 作为消息 key：同一策略的决策会落到同一分区，
-// 从而保证消费端看到的顺序与产生顺序一致。乱序的决策会让执行层
-// 拿旧信号覆盖新信号，这在交易系统里是致命的。
+// The strategy ID is used as the message key: decisions for the same
+// strategy land on the same partition, guaranteeing consumers see them in
+// the same order they were produced. Out-of-order decisions would let the
+// execution layer overwrite a newer signal with an older one, which is
+// fatal in a trading system.
 func NewKafkaPublisher(cfg config.KafkaConfig) *KafkaPublisher {
 	mk := func(topic string) *kafka.Writer {
 		return &kafka.Writer{
@@ -68,8 +74,9 @@ func NewKafkaPublisher(cfg config.KafkaConfig) *KafkaPublisher {
 			RequiredAcks: kafka.RequireAll,
 			WriteTimeout: 10 * time.Second,
 			Async:        false,
-			// 本地开发时 topic 可能还不存在。生产环境应当由 EnsureTopics
-			// 或运维流程预先建好，自动创建只是兜底。
+			// In local development the topic may not exist yet. In
+			// production it should be pre-created by EnsureTopics or an ops
+			// process; auto-creation here is just a fallback.
 			AllowAutoTopicCreation: true,
 		}
 	}
@@ -79,11 +86,11 @@ func NewKafkaPublisher(cfg config.KafkaConfig) *KafkaPublisher {
 	}
 }
 
-// PublishDecision 实现 engine.Publisher。
+// PublishDecision implements engine.Publisher.
 func (p *KafkaPublisher) PublishDecision(ctx context.Context, d types.Decision) error {
 	payload, err := json.Marshal(d)
 	if err != nil {
-		return fmt.Errorf("序列化决策失败：%w", err)
+		return fmt.Errorf("failed to marshal decision: %w", err)
 	}
 	msg := kafka.Message{
 		Key:   []byte(d.StrategyID),
@@ -95,18 +102,19 @@ func (p *KafkaPublisher) PublishDecision(ctx context.Context, d types.Decision) 
 		},
 	}
 	if err := p.decisions.WriteMessages(ctx, msg); err != nil {
-		return fmt.Errorf("写入决策 topic 失败：%w", err)
+		return fmt.Errorf("failed to write to the decision topic: %w", err)
 	}
 	return nil
 }
 
-// PublishSignals 把单次评估中各模块的原始信号发布出去，用于调试与回放。
+// PublishSignals publishes each module's raw signal from a single
+// evaluation, for debugging and replay.
 func (p *KafkaPublisher) PublishSignals(ctx context.Context, strategyID string, signals []types.Signal) error {
 	msgs := make([]kafka.Message, 0, len(signals))
 	for _, s := range signals {
 		payload, err := json.Marshal(s)
 		if err != nil {
-			return fmt.Errorf("序列化模块 %s 的信号失败：%w", s.Module, err)
+			return fmt.Errorf("failed to marshal signal for module %s: %w", s.Module, err)
 		}
 		msgs = append(msgs, kafka.Message{
 			Key:   []byte(strategyID),
@@ -122,12 +130,12 @@ func (p *KafkaPublisher) PublishSignals(ctx context.Context, strategyID string, 
 		return nil
 	}
 	if err := p.signals.WriteMessages(ctx, msgs...); err != nil {
-		return fmt.Errorf("写入信号 topic 失败：%w", err)
+		return fmt.Errorf("failed to write to the signal topic: %w", err)
 	}
 	return nil
 }
 
-// Close 关闭底层 writer。
+// Close closes the underlying writers.
 func (p *KafkaPublisher) Close() error {
 	var firstErr error
 	for _, w := range []*kafka.Writer{p.decisions, p.signals} {
@@ -138,12 +146,14 @@ func (p *KafkaPublisher) Close() error {
 	return firstErr
 }
 
-// DecisionReader 消费决策 topic，供执行层与回测引擎使用。
+// DecisionReader consumes the decision topic, for use by the execution
+// layer and the backtest engine.
 type DecisionReader struct {
 	r *kafka.Reader
 }
 
-// NewDecisionReader 创建决策消费者。groupID 相同的实例之间会分摊分区。
+// NewDecisionReader creates a decision consumer. Instances sharing the same
+// groupID split partitions among themselves.
 func NewDecisionReader(cfg config.KafkaConfig, groupID string) *DecisionReader {
 	return &DecisionReader{r: kafka.NewReader(kafka.ReaderConfig{
 		Brokers:  cfg.Brokers,
@@ -155,7 +165,7 @@ func NewDecisionReader(cfg config.KafkaConfig, groupID string) *DecisionReader {
 	})}
 }
 
-// Read 阻塞读取下一条决策。
+// Read blocks until the next decision is available.
 func (r *DecisionReader) Read(ctx context.Context) (types.Decision, error) {
 	msg, err := r.r.ReadMessage(ctx)
 	if err != nil {
@@ -163,10 +173,10 @@ func (r *DecisionReader) Read(ctx context.Context) (types.Decision, error) {
 	}
 	var d types.Decision
 	if err := json.Unmarshal(msg.Value, &d); err != nil {
-		return types.Decision{}, fmt.Errorf("反序列化决策失败（offset %d）：%w", msg.Offset, err)
+		return types.Decision{}, fmt.Errorf("failed to unmarshal decision (offset %d): %w", msg.Offset, err)
 	}
 	return d, nil
 }
 
-// Close 关闭底层 reader。
+// Close closes the underlying reader.
 func (r *DecisionReader) Close() error { return r.r.Close() }

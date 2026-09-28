@@ -8,10 +8,11 @@ import (
 	"strings"
 )
 
-// ParamType 是模块参数的类型标签。
+// ParamType is the type tag for a module parameter.
 type ParamType string
 
-// 支持的参数类型。刻意保持极简：模块参数应当是可被 JSON Schema 直接表达的标量。
+// Supported parameter types. Deliberately kept minimal: module parameters should
+// be scalars that a JSON Schema can express directly.
 const (
 	ParamInt    ParamType = "int"
 	ParamFloat  ParamType = "float"
@@ -19,58 +20,59 @@ const (
 	ParamBool   ParamType = "bool"
 )
 
-// ParamSpec 描述模块的一个参数：名字、类型、默认值、取值范围。
+// ParamSpec describes one parameter of a module: name, type, default, and allowed range.
 //
-// 它同时是三处的唯一事实来源：
-//   - 模块自身的入参校验
-//   - Agent 翻译层生成 JSON Schema 时的取值约束
-//   - 界面上的参数编辑控件
+// It is the single source of truth for three things at once:
+//   - the module's own input validation
+//   - the value constraints the Agent translation layer bakes into its generated JSON Schema
+//   - the parameter-editing widget in the UI
 type ParamSpec struct {
 	Name        string    `json:"name"`
 	Type        ParamType `json:"type"`
 	Description string    `json:"description"`
-	// Default 是缺省值。Required 为 false 时必须提供。
+	// Default is the fallback value, required whenever Required is false.
 	Default any `json:"default,omitempty"`
-	// Required 为 true 时调用方必须显式提供该参数。
+	// Required, when true, means the caller must supply this parameter explicitly.
 	Required bool `json:"required,omitempty"`
-	// Min/Max 是数值型参数的闭区间边界，仅当对应指针非 nil 时生效。
+	// Min/Max are the closed-interval bounds for numeric parameters, effective only
+	// when the corresponding pointer is non-nil.
 	Min *float64 `json:"min,omitempty"`
 	Max *float64 `json:"max,omitempty"`
-	// Enum 是字符串型参数的允许取值集合，为空表示不限制。
+	// Enum is the allowed set of values for a string parameter; empty means unrestricted.
 	Enum []string `json:"enum,omitempty"`
 }
 
-// F 是构造 *float64 的语法糖，用于填写 Min/Max。
+// F is sugar for constructing a *float64, used to fill in Min/Max.
 func F(v float64) *float64 { return &v }
 
-// ParamError 描述一次参数校验失败。
+// ParamError describes a single parameter validation failure.
 //
-// 它带足了上下文，因此 Agent 翻译层可以把它原样转述给用户
-// （"你说的回看窗口 5000 超出了 20~500 的允许范围"），
-// 而不需要再让 LLM 编造解释。
+// It carries enough context that the Agent translation layer can relay it to the
+// user verbatim ("the lookback window of 5000 you specified is outside the
+// allowed range of 20~500") instead of having the LLM make up an explanation.
 type ParamError struct {
 	Module string
 	Param  string
 	Reason string
-	// Given 是用户/LLM 给出的原始值。
+	// Given is the raw value supplied by the user/LLM.
 	Given any
-	// Allowed 是人类可读的允许范围描述。
+	// Allowed is a human-readable description of the allowed range.
 	Allowed string
 }
 
 func (e *ParamError) Error() string {
 	var b strings.Builder
 	if e.Module != "" {
-		fmt.Fprintf(&b, "模块 %s 的", e.Module)
+		fmt.Fprintf(&b, "module %s: ", e.Module)
 	}
-	fmt.Fprintf(&b, "参数 %s 非法：%s", e.Param, e.Reason)
+	fmt.Fprintf(&b, "parameter %s is invalid: %s", e.Param, e.Reason)
 	if e.Allowed != "" {
-		fmt.Fprintf(&b, "（允许范围：%s）", e.Allowed)
+		fmt.Fprintf(&b, " (allowed: %s)", e.Allowed)
 	}
 	return b.String()
 }
 
-// AllowedDesc 返回该参数允许取值的人类可读描述。
+// AllowedDesc returns a human-readable description of this parameter's allowed values.
 func (p ParamSpec) AllowedDesc() string {
 	switch p.Type {
 	case ParamInt, ParamFloat:
@@ -87,17 +89,19 @@ func (p ParamSpec) AllowedDesc() string {
 		if len(p.Enum) > 0 {
 			return strings.Join(p.Enum, " / ")
 		}
-		return "字符串"
+		return "string"
 	case ParamBool:
 		return "true / false"
 	}
 	return string(p.Type)
 }
 
-// Coerce 把一个来自 JSON 的原始值转换成该参数的规范化 Go 类型并做范围校验。
+// Coerce converts a raw JSON-decoded value into this parameter's canonical Go
+// type and range-checks it.
 //
-// JSON 解码后数字一律是 float64，因此 int 型参数需要检查它确实是整数，
-// 而不是静悄悄地把 20.7 截断成 20——那属于"尽力修复"，是平台明确禁止的行为。
+// JSON decoding always yields float64 for numbers, so an int parameter must be
+// checked to actually be an integer rather than silently truncating 20.7 to
+// 20 — that would be "best-effort repair", which the platform explicitly forbids.
 func (p ParamSpec) Coerce(module string, v any) (any, error) {
 	fail := func(reason string) error {
 		return &ParamError{Module: module, Param: p.Name, Reason: reason, Given: v, Allowed: p.AllowedDesc()}
@@ -107,10 +111,10 @@ func (p ParamSpec) Coerce(module string, v any) (any, error) {
 	case ParamInt:
 		f, ok := toFloat(v)
 		if !ok {
-			return nil, fail(fmt.Sprintf("期望整数，得到 %T", v))
+			return nil, fail(fmt.Sprintf("expected an integer, got %T", v))
 		}
 		if f != math.Trunc(f) {
-			return nil, fail(fmt.Sprintf("期望整数，得到 %v", v))
+			return nil, fail(fmt.Sprintf("expected an integer, got %v", v))
 		}
 		if err := p.checkRange(module, f); err != nil {
 			return nil, err
@@ -120,10 +124,10 @@ func (p ParamSpec) Coerce(module string, v any) (any, error) {
 	case ParamFloat:
 		f, ok := toFloat(v)
 		if !ok {
-			return nil, fail(fmt.Sprintf("期望数字，得到 %T", v))
+			return nil, fail(fmt.Sprintf("expected a number, got %T", v))
 		}
 		if math.IsNaN(f) || math.IsInf(f, 0) {
-			return nil, fail("数值必须是有限数")
+			return nil, fail("value must be finite")
 		}
 		if err := p.checkRange(module, f); err != nil {
 			return nil, err
@@ -133,7 +137,7 @@ func (p ParamSpec) Coerce(module string, v any) (any, error) {
 	case ParamString:
 		s, ok := v.(string)
 		if !ok {
-			return nil, fail(fmt.Sprintf("期望字符串，得到 %T", v))
+			return nil, fail(fmt.Sprintf("expected a string, got %T", v))
 		}
 		if len(p.Enum) > 0 {
 			for _, e := range p.Enum {
@@ -141,29 +145,29 @@ func (p ParamSpec) Coerce(module string, v any) (any, error) {
 					return s, nil
 				}
 			}
-			return nil, fail(fmt.Sprintf("%q 不在允许的取值集合内", s))
+			return nil, fail(fmt.Sprintf("%q is not in the allowed set of values", s))
 		}
 		return s, nil
 
 	case ParamBool:
 		b, ok := v.(bool)
 		if !ok {
-			return nil, fail(fmt.Sprintf("期望布尔值，得到 %T", v))
+			return nil, fail(fmt.Sprintf("expected a bool, got %T", v))
 		}
 		return b, nil
 	}
 
-	return nil, fail(fmt.Sprintf("未知的参数类型 %q", p.Type))
+	return nil, fail(fmt.Sprintf("unknown parameter type %q", p.Type))
 }
 
 func (p ParamSpec) checkRange(module string, f float64) error {
 	if p.Min != nil && f < *p.Min {
 		return &ParamError{Module: module, Param: p.Name,
-			Reason: fmt.Sprintf("%g 小于允许的最小值 %g", f, *p.Min), Given: f, Allowed: p.AllowedDesc()}
+			Reason: fmt.Sprintf("%g is below the allowed minimum of %g", f, *p.Min), Given: f, Allowed: p.AllowedDesc()}
 	}
 	if p.Max != nil && f > *p.Max {
 		return &ParamError{Module: module, Param: p.Name,
-			Reason: fmt.Sprintf("%g 大于允许的最大值 %g", f, *p.Max), Given: f, Allowed: p.AllowedDesc()}
+			Reason: fmt.Sprintf("%g is above the allowed maximum of %g", f, *p.Max), Given: f, Allowed: p.AllowedDesc()}
 	}
 	return nil
 }
@@ -191,18 +195,21 @@ func toFloat(v any) (float64, bool) {
 	}
 }
 
-// ResolveParams 用一组 ParamSpec 校验并规范化实参：
-// 填充缺省值、拒绝未知参数、逐项做类型与范围校验。
+// ResolveParams validates and normalizes actual arguments against a set of
+// ParamSpecs: fills in defaults, rejects unknown parameters, and type/range
+// checks each one in turn.
 //
-// 返回的 map 中每个值都已是规范化的 Go 类型（int / float64 / string / bool），
-// 模块内部可以安全断言。任何一项失败都直接返回错误，不做部分修复。
+// Every value in the returned map is already a canonical Go type
+// (int / float64 / string / bool), so modules can safely type-assert it.
+// Any single failure returns an error immediately — no partial repair.
 func ResolveParams(module string, specs []ParamSpec, given map[string]any) (map[string]any, error) {
 	byName := make(map[string]ParamSpec, len(specs))
 	for _, s := range specs {
 		byName[s.Name] = s
 	}
 
-	// 先拒绝未知参数：LLM 幻觉出的参数名必须显式暴露，而不是被静默忽略。
+	// Reject unknown parameters first: an LLM-hallucinated parameter name must be
+	// surfaced explicitly, not silently ignored.
 	unknown := make([]string, 0)
 	for k := range given {
 		if _, ok := byName[k]; !ok {
@@ -214,7 +221,7 @@ func ResolveParams(module string, specs []ParamSpec, given map[string]any) (map[
 		return nil, &ParamError{
 			Module: module,
 			Param:  strings.Join(unknown, ", "),
-			Reason: "该模块不存在此参数",
+			Reason: "this module has no such parameter",
 			Allowed: strings.Join(func() []string {
 				names := make([]string, 0, len(specs))
 				for _, s := range specs {
@@ -232,11 +239,11 @@ func ResolveParams(module string, specs []ParamSpec, given map[string]any) (map[
 		if !ok || raw == nil {
 			if s.Required {
 				return nil, &ParamError{Module: module, Param: s.Name,
-					Reason: "缺少必填参数", Allowed: s.AllowedDesc()}
+					Reason: "missing required parameter", Allowed: s.AllowedDesc()}
 			}
 			if s.Default == nil {
 				return nil, &ParamError{Module: module, Param: s.Name,
-					Reason: "参数未提供且没有默认值", Allowed: s.AllowedDesc()}
+					Reason: "parameter not provided and has no default", Allowed: s.AllowedDesc()}
 			}
 			raw = s.Default
 		}
@@ -249,41 +256,42 @@ func ResolveParams(module string, specs []ParamSpec, given map[string]any) (map[
 	return out, nil
 }
 
-// 以下取值助手假设 params 已经过 ResolveParams 规范化。
-// 若断言失败说明调用方跳过了校验，属于编程错误，直接 panic 比返回零值更安全。
+// The accessor helpers below assume params has already been normalized by
+// ResolveParams. A failed assertion means the caller skipped validation —
+// that's a programming error, and panicking is safer than returning a zero value.
 
-// MustInt 取出一个 int 参数。
+// MustInt extracts an int parameter.
 func MustInt(params map[string]any, name string) int {
 	v, ok := params[name].(int)
 	if !ok {
-		panic(fmt.Sprintf("参数 %q 不是 int（是否忘了调用 ResolveParams？）", name))
+		panic(fmt.Sprintf("parameter %q is not an int (did you forget to call ResolveParams?)", name))
 	}
 	return v
 }
 
-// MustFloat 取出一个 float64 参数。
+// MustFloat extracts a float64 parameter.
 func MustFloat(params map[string]any, name string) float64 {
 	v, ok := params[name].(float64)
 	if !ok {
-		panic(fmt.Sprintf("参数 %q 不是 float64（是否忘了调用 ResolveParams？）", name))
+		panic(fmt.Sprintf("parameter %q is not a float64 (did you forget to call ResolveParams?)", name))
 	}
 	return v
 }
 
-// MustString 取出一个 string 参数。
+// MustString extracts a string parameter.
 func MustString(params map[string]any, name string) string {
 	v, ok := params[name].(string)
 	if !ok {
-		panic(fmt.Sprintf("参数 %q 不是 string（是否忘了调用 ResolveParams？）", name))
+		panic(fmt.Sprintf("parameter %q is not a string (did you forget to call ResolveParams?)", name))
 	}
 	return v
 }
 
-// MustBool 取出一个 bool 参数。
+// MustBool extracts a bool parameter.
 func MustBool(params map[string]any, name string) bool {
 	v, ok := params[name].(bool)
 	if !ok {
-		panic(fmt.Sprintf("参数 %q 不是 bool（是否忘了调用 ResolveParams？）", name))
+		panic(fmt.Sprintf("parameter %q is not a bool (did you forget to call ResolveParams?)", name))
 	}
 	return v
 }

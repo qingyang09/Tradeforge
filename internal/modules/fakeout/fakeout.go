@@ -1,20 +1,32 @@
-// Package fakeout 实现 fakeout 信号模块：先识别一段"盘整区间"，把区间的高点当作
-// "前高"、低点当作"前低"，再检测价格是否突破了区间高/低点后又很快收回——这才是
-// 假突破。
+// Package fakeout implements the fakeout signal module: first identify a
+// "consolidation range", treat the range's high as "prior high" and its low
+// as "prior low", then detect whether price broke above/below the range and
+// quickly reversed back — that's a fakeout.
 //
-// 不使用逐个摆动点聚类（那会在任意波动上报出一堆细碎的关键位，对"前高假突破"这种
-// 描述来说噪音太多），只关注一个明确的、离当前最近的区间。区间怎么定，由
-// range_mode 决定，两种互不兼容的语义：
-//   - tight（默认）：要求高低点幅度相对中枢价的比例不超过 range_tightness，
-//     从当前往回扩，扩到第一次超出容差就停——这是"真的横盘震荡"的判定，
-//     会自动排除趋势行情。局限：容差是固定比例，样本越长，出现一根极端影线
-//     把高低差撑大的概率天然越高，所以时间跨度很长的盘整反而更容易被这个
-//     固定阈值提前截断，抓不到真正的前高/前低。
-//   - extreme：不判断"够不够紧凑"，直接取 range_lookback 整个回看窗口内的
-//     最高价/最低价当作前高/前低——不管这段行情是不是真的横盘，用户选了这个
-//     模式就是在告诉系统"这段我自己认定是盘整，你只管把极值报给我"。适合
-//     跨度很长、说不清具体该量化成多少根K线的盘整。代价是不再区分"盘整"和
-//     "趋势"：单边趋势行情传进来也会老实报出区间内的最高/最低价。
+// This doesn't use point-by-point pivot clustering (that would report a pile
+// of fragmented key levels on any fluctuation, too noisy for a "prior-high
+// fakeout" description) — it only tracks one clear range closest to the
+// current point. How the range is defined is controlled by range_mode, with
+// two mutually incompatible semantics:
+//   - tight (default): requires the high/low spread relative to the midpoint
+//     price to stay within range_tightness, expanding backward from the
+//     current point and stopping the moment it first exceeds tolerance —
+//     this is the test for "genuine sideways chop" and automatically
+//     excludes trending markets. Limitation: the tolerance is a fixed ratio,
+//     and the longer the sample, the more likely it is that one extreme wick
+//     stretches the high/low spread — so a consolidation spanning a very
+//     long time is actually more likely to get cut off early by this fixed
+//     threshold, missing the true prior high/low.
+//   - extreme: doesn't test "tight enough" at all — it just takes the
+//     highest/lowest price across the entire range_lookback window as the
+//     prior high/low, regardless of whether this period was genuinely
+//     sideways. Choosing this mode is the user telling the system "I've
+//     already decided this period is a consolidation, just report me the
+//     extremes." Suited to a consolidation that spans a long time and isn't
+//     easy to quantify as a specific number of candles. The tradeoff is it
+//     no longer distinguishes "consolidation" from "trend": a one-directional
+//     trending market fed into it will still dutifully report the range's
+//     highest/lowest price.
 package fakeout
 
 import (
@@ -27,25 +39,25 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// ModuleName 是该模块在策略配置中的标识。
+// ModuleName is this module's identifier in strategy configs.
 const ModuleName = "fakeout"
 
-// 区间判定模式，见包文档。
+// Range-determination modes; see the package doc.
 const (
 	RangeModeTight   = "tight"
 	RangeModeExtreme = "extreme"
 )
 
-// Module 实现 fakeout 信号模块。零值可用。
+// Module implements the fakeout signal module. The zero value is usable.
 type Module struct{}
 
-// New 返回模块实例。
+// New returns a module instance.
 func New() *Module { return &Module{} }
 
-// Name 实现 modules.SignalModule。
+// Name implements modules.SignalModule.
 func (m *Module) Name() string { return ModuleName }
 
-// Description 实现 modules.SignalModule。
+// Description implements modules.SignalModule.
 func (m *Module) Description() string {
 	return "检测盘整区间的假突破：先在最近的一段行情里识别出一个区间，把区间高点当" +
 		"'前高'、低点当'前低'，再看最近几根 K 线是否突破了区间高/低点后又很快收回——" +
@@ -56,7 +68,7 @@ func (m *Module) Description() string {
 		"细碎的关键位。"
 }
 
-// RequiredParams 实现 modules.SignalModule。
+// RequiredParams implements modules.SignalModule.
 func (m *Module) RequiredParams() []types.ParamSpec {
 	return []types.ParamSpec{
 		{
@@ -106,21 +118,21 @@ func (m *Module) RequiredParams() []types.ParamSpec {
 	}
 }
 
-// 事件类型，写入 Signal.Raw["event"]。
+// Event types, written to Signal.Raw["event"].
 const (
-	eventFakeoutResistance = "fakeout_resistance" // 假突破区间高点，随后收回 → 看空
-	eventFakeoutSupport    = "fakeout_support"     // 假跌破区间低点，随后收回 → 看多
+	eventFakeoutResistance = "fakeout_resistance" // false breakout above the range high, then reversed -> bearish
+	eventFakeoutSupport    = "fakeout_support"    // false breakdown below the range low, then reversed -> bullish
 	eventNone              = "none"
 )
 
-// consolidationRange 是识别出的盘整区间。
+// consolidationRange is an identified consolidation range.
 type consolidationRange struct {
 	High decimal.Decimal
 	Low  decimal.Decimal
 	Bars int
 }
 
-// Evaluate 实现 modules.SignalModule。
+// Evaluate implements modules.SignalModule.
 func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[string]any) (types.Signal, error) {
 	p, err := types.ResolveParams(ModuleName, m.RequiredParams(), params)
 	if err != nil {
@@ -148,7 +160,8 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 	}
 	notFound := map[string]any{"event": eventNone, "range_found": false}
 
-	// 扫描窗口是"突破可能发生的那几根" + 当前这根（用来判定是否已经收回）。
+	// The scan window is "the candles where a breakout might have happened" +
+	// the current candle (used to determine whether it has already reversed back).
 	scanSize := reversalWindow + 1
 	if len(md.Candles) < minRangeBars+scanSize {
 		return neutral(fmt.Sprintf("K 线不足：需要至少 %d 根，实际 %d 根",
@@ -160,17 +173,20 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 	if !cur.Close.IsPositive() {
 		return neutral("最新收盘价非正，数据异常", notFound), nil
 	}
-	// 扫描窗口内可能发生突破的那几根（不含当前这根）。
+	// The candles within the scan window where a breakout might have happened (excluding the current candle).
 	scanCandles := md.Candles[n-scanSize : n-1]
 
-	// 盘整区间只用扫描窗口之前的历史数据算，避免这次要检测的突破事件本身
-	// 混进区间计算里。
+	// The consolidation range is computed only from history before the scan
+	// window, to keep the breakout event we're currently trying to detect
+	// from leaking into the range calculation.
 	levelHistory := md.Candles[:n-scanSize]
 	if len(levelHistory) > rangeLookback {
 		levelHistory = levelHistory[len(levelHistory)-rangeLookback:]
 	}
-	// 没找到区间时，把"这次到底往回看了多远"带出去——画板要用它在图上标出分析
-	// 窗口的起点，让用户能看到"系统看了这么一段，但没找到"，而不是以为压根没看。
+	// Carry out "how far back this actually looked" even when no range was
+	// found — the chart uses it to mark the analysis window's start, so the
+	// user can see "the system looked at this much history but found
+	// nothing", rather than assuming it didn't look at all.
 	windowStart := map[string]any{"window_start": levelHistory[0].OpenTime.Format(time.RFC3339)}
 
 	var rng consolidationRange
@@ -188,13 +204,19 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 		return neutral("未在回看窗口内找到有效盘整区间（价格波动幅度或维持时间不满足要求）", raw), nil
 	}
 
-	// 找到区间后，window_start 改成指向这个区间实际起点（levelHistory 的最后
-	// rng.Bars 根），而不再是整个 rangeLookback 回看窗口的起点——rng.High/rng.Low
-	// 只统计了区间内这几根 K 线，要是继续报"看了 rangeLookback 那么远"，图上画出来的
-	// 分析窗口标记会比区间本身宽，用户会以为"前高"应该覆盖到标记位置那么远，
-	// 但标记之外、区间起点之前的那段历史（哪怕里面有根更高的影线）其实根本没被
-	// 算进"前高"——即之前真实复现过的问题："前高抓的不是整个盘整区的最高点"，
-	// 根源就是这个标记跟实际计算范围对不上，不是 rng.High 算错了。
+	// Once a range is found, window_start is switched to point at that
+	// range's actual start (the last rng.Bars candles of levelHistory)
+	// instead of the entire rangeLookback window's start — rng.High/rng.Low
+	// were only computed over those candles within the range, so if we kept
+	// reporting "looked back rangeLookback candles", the analysis-window
+	// marker drawn on the chart would be wider than the range itself, and the
+	// user would assume the "prior high" should cover all the way out to
+	// where the marker sits — but the history outside the marker, before the
+	// range's actual start (even if it contains a taller wick), was never
+	// actually counted into the "prior high" at all. This is exactly a bug
+	// that really happened before: "the prior high didn't capture the true
+	// max of the whole consolidation zone" — the root cause was this marker
+	// not matching the actual computation range, not rng.High being computed wrong.
 	rangeStart := levelHistory[len(levelHistory)-rng.Bars]
 	windowStart = map[string]any{"window_start": rangeStart.OpenTime.Format(time.RFC3339)}
 
@@ -254,13 +276,19 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 	}, nil
 }
 
-// findConsolidationRange 从 history 末尾开始尽量往前扩大窗口，找出离当前最近、且
-// 波动幅度仍在 tightness 以内的最长一段。
+// findConsolidationRange expands the window backward from the end of
+// history as far as possible, finding the longest segment closest to the
+// current point whose spread still stays within tightness.
 //
-// 扩大窗口时区间高点只会越扩越高、低点只会越扩越低，两者之差因此单调不减；
-// 只要价格恒为正，波动幅度相对中枢价的比例也随之单调不减（可证明：固定低点、
-// 抬高点时，比例对新高点的导数符号等于低点本身，恒为正；固定高点、压低点时同理）。
-// 于是"比例第一次超过阈值就停"能保证找到的是最长的有效窗口，不需要回头重试。
+// As the window expands, the range high can only get higher and the low can
+// only get lower, so their difference is monotonically non-decreasing; as
+// long as price stays positive, the spread's ratio to the midpoint price is
+// therefore also monotonically non-decreasing (provable: holding the low
+// fixed and raising the high, the sign of the ratio's derivative with
+// respect to the new high equals the low itself, always positive; holding
+// the high fixed and lowering the low is symmetric). So "stop the first time
+// the ratio exceeds the threshold" is guaranteed to find the longest valid
+// window, with no need to backtrack and retry.
 func findConsolidationRange(history []types.Candle, minBars int, tightness decimal.Decimal) (consolidationRange, bool) {
 	n := len(history)
 	if n < minBars {
@@ -295,12 +323,16 @@ func findConsolidationRange(history []types.Candle, minBars int, tightness decim
 	return best, found
 }
 
-// extremeRange 是 range_mode=extreme 时用的区间定义：不判断"够不够紧凑"，直接把
-// 整个 history（range_lookback 那么长）内的最高价/最低价当作前高/前低。
+// extremeRange is the range definition used when range_mode=extreme: it
+// doesn't test "tight enough" at all, it just takes the highest/lowest price
+// across the entire history (range_lookback candles long) as the prior high/low.
 //
-// 跟 findConsolidationRange 的关键区别：后者会在波动幅度撑破容差的地方提前停止
-// 扩大窗口，所以窗口越长越容易被一根影线截断；extreme 不做这个判断，用户选了
-// 这个模式就是自己认定这一整段是盘整，系统只管把区间内的极值老实报出来。
+// The key difference from findConsolidationRange: the latter stops expanding
+// the window early wherever the spread breaks tolerance, so a longer window
+// is more likely to get cut off by a single wick; extreme skips that test
+// entirely — the user choosing this mode has already decided this whole
+// period is a consolidation, so the system just dutifully reports the
+// extremes within it.
 func extremeRange(history []types.Candle, minBars int) (consolidationRange, bool) {
 	n := len(history)
 	if n < minBars {
@@ -318,7 +350,7 @@ func extremeRange(history []types.Candle, minBars int) (consolidationRange, bool
 	return consolidationRange{High: hi, Low: lo, Bars: n}, true
 }
 
-// maxCloseAbove 报告 candles 里是否存在收盘价越过 threshold 的一根，并返回其中最高的收盘价。
+// maxCloseAbove reports whether any candle in candles closed above threshold, and returns the highest such close.
 func maxCloseAbove(candles []types.Candle, threshold decimal.Decimal) (decimal.Decimal, bool) {
 	var max decimal.Decimal
 	found := false
@@ -330,7 +362,7 @@ func maxCloseAbove(candles []types.Candle, threshold decimal.Decimal) (decimal.D
 	return max, found
 }
 
-// minCloseBelow 报告 candles 里是否存在收盘价跌破 threshold 的一根，并返回其中最低的收盘价。
+// minCloseBelow reports whether any candle in candles closed below threshold, and returns the lowest such close.
 func minCloseBelow(candles []types.Candle, threshold decimal.Decimal) (decimal.Decimal, bool) {
 	var min decimal.Decimal
 	found := false
@@ -342,9 +374,10 @@ func minCloseBelow(candles []types.Candle, threshold decimal.Decimal) (decimal.D
 	return min, found
 }
 
-// confidenceFor 把区间维持的根数映射为 [0,1] 的置信度：维持得越久，说明这个区间
-// 越站得住脚，假突破的判定也就越可信。基准 0.55，每超出 min_range_bars 20 根
-// 加满一次 0.3 的额度，上限 0.95。
+// confidenceFor maps the number of candles the range held for into a [0,1]
+// confidence: the longer it held, the more solid the range, and the more
+// credible the fakeout determination. Baseline 0.55, with a full 0.3 added
+// for every 20 candles beyond min_range_bars, capped at 0.95.
 func confidenceFor(bars, minBars int) float64 {
 	extra := float64(bars-minBars) / 20.0
 	c := 0.55 + 0.3*extra

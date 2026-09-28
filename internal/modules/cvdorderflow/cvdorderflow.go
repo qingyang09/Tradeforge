@@ -1,14 +1,18 @@
-// Package cvdorderflow 实现 cvd_orderflow 信号模块。
+// Package cvdorderflow implements the cvd_orderflow signal module.
 //
-// CVD（Cumulative Volume Delta，累计成交量差）是主动买入量减主动卖出量的累计值，
-// 反映"是买方还是卖方在主动成交"。模块检测两类现象：
+// CVD (Cumulative Volume Delta) is the running sum of taker buy volume minus
+// taker sell volume, reflecting "whether buyers or sellers are the aggressor".
+// The module detects two phenomena:
 //
-//   - 失衡（imbalance）：窗口内净买卖差相对总成交量的占比超过阈值，
-//     说明单边主动成交占据压倒性优势。
-//   - 背离（divergence）：价格与 CVD 的变动方向相反，
-//     即价格在涨但主动买盘在退（或反之）。背离时取 CVD 的方向作为信号方向。
+//   - Imbalance: the net buy/sell difference within the window, as a share of
+//     total volume, exceeds a threshold — indicating one side of aggressive
+//     order flow overwhelmingly dominates.
+//   - Divergence: price and CVD move in opposite directions, i.e. price is
+//     rising while buy-side order flow is retreating (or vice versa). On
+//     divergence, the signal direction follows CVD's direction.
 //
-// 订单流数据通过 FlowProvider 接口注入，便于后续替换为 Coinglass 等真实数据源。
+// Order-flow data is injected via the FlowProvider interface, so it can later
+// be swapped for a real data source such as Coinglass.
 package cvdorderflow
 
 import (
@@ -20,29 +24,29 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// ModuleName 是该模块在策略配置中的标识。
+// ModuleName is this module's identifier in strategy configs.
 const ModuleName = "cvd_orderflow"
 
-// 检测模式。
+// Detection modes.
 const (
 	DetectBoth       = "both"
 	DetectImbalance  = "imbalance"
 	DetectDivergence = "divergence"
 )
 
-// 事件类型，写入 Signal.Raw["event"]。
+// Event types, written to Signal.Raw["event"].
 const (
 	eventImbalance  = "imbalance"
 	eventDivergence = "divergence"
 	eventNone       = "none"
 )
 
-// Module 实现 cvd_orderflow 信号模块。
+// Module implements the cvd_orderflow signal module.
 type Module struct {
 	provider FlowProvider
 }
 
-// New 用指定的订单流数据源构造模块。
+// New builds the module with the given order-flow data source.
 func New(p FlowProvider) *Module {
 	if p == nil {
 		p = CandleFlowProvider{}
@@ -50,21 +54,21 @@ func New(p FlowProvider) *Module {
 	return &Module{provider: p}
 }
 
-// NewDefault 用 K 线自带的主动买入量作为数据源构造模块。
+// NewDefault builds the module using the candle's own taker buy volume as the data source.
 func NewDefault() *Module { return New(CandleFlowProvider{}) }
 
-// Provider 返回当前使用的订单流数据源。
+// Provider returns the order-flow data source currently in use.
 func (m *Module) Provider() FlowProvider { return m.provider }
 
-// Name 实现 modules.SignalModule。
+// Name implements modules.SignalModule.
 func (m *Module) Name() string { return ModuleName }
 
-// Description 实现 modules.SignalModule。
+// Description implements modules.SignalModule.
 func (m *Module) Description() string {
 	return "计算累计成交量差（CVD），检测窗口内的主动买卖失衡，以及价格与 CVD 之间的背离。"
 }
 
-// RequiredParams 实现 modules.SignalModule。
+// RequiredParams implements modules.SignalModule.
 func (m *Module) RequiredParams() []types.ParamSpec {
 	return []types.ParamSpec{
 		{
@@ -95,7 +99,7 @@ func (m *Module) RequiredParams() []types.ParamSpec {
 	}
 }
 
-// Evaluate 实现 modules.SignalModule。
+// Evaluate implements modules.SignalModule.
 func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[string]any) (types.Signal, error) {
 	p, err := types.ResolveParams(ModuleName, m.RequiredParams(), params)
 	if err != nil {
@@ -130,7 +134,9 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 	winDeltas := deltas[len(deltas)-window:]
 	cur := win[len(win)-1]
 
-	// 窗口内的净差与总量。CVD 本身是累计值，窗口内的"CVD 变动"就等于净差之和。
+	// Net difference and total volume within the window. CVD itself is a
+	// running total, so the "CVD change" within the window is just the sum of
+	// the net differences.
 	netSum, totalVol := decimal.Zero, decimal.Zero
 	cvd := decimal.Zero
 	cvdSeries := make([]string, 0, window)
@@ -157,11 +163,11 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 		return s, nil
 	}
 
-	// 失衡度：净差 / 总量，落在 [-1, 1]。
+	// Imbalance: net difference / total volume, falls in [-1, 1].
 	imbalance := netSum.Div(totalVol).InexactFloat64()
 	raw["imbalance"] = imbalance
 
-	// 价格变动：窗口首根开盘价到末根收盘价。
+	// Price move: from the window's first open to the last close.
 	first := win[0]
 	var priceMove float64
 	if first.Open.IsPositive() {
@@ -169,7 +175,9 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 	}
 	raw["price_move"] = priceMove
 
-	// 背离优先于失衡：背离是"价格与订单流打架"，信息量高于单纯的单边占优。
+	// Divergence takes priority over imbalance: divergence means "price and
+	// order flow are fighting each other", which carries more information
+	// than plain one-sided dominance.
 	if mode == DetectBoth || mode == DetectDivergence {
 		if sig, ok := m.checkDivergence(md.Symbol, cur, imbalance, priceMove, divThreshold, minMove, raw); ok {
 			return sig, nil
@@ -188,7 +196,7 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 	return s, nil
 }
 
-// checkDivergence 检测价格与 CVD 的方向背离。
+// checkDivergence detects a directional divergence between price and CVD.
 func (m *Module) checkDivergence(
 	symbol string, cur types.Candle,
 	imbalance, priceMove, divThreshold, minMove float64,
@@ -197,12 +205,13 @@ func (m *Module) checkDivergence(
 	if abs(priceMove) < minMove || abs(imbalance) < divThreshold {
 		return types.Signal{}, false
 	}
-	// 同向就不是背离。
+	// Same direction means it's not a divergence.
 	if (priceMove > 0) == (imbalance > 0) {
 		return types.Signal{}, false
 	}
 
-	// 背离时跟随 CVD 的方向：订单流被认为先于价格反映真实供需。
+	// On divergence, follow CVD's direction: order flow is assumed to reflect
+	// real supply/demand ahead of price.
 	dir := types.DirectionShort
 	desc := "价格上涨但主动买盘净流出"
 	if imbalance > 0 {
@@ -224,7 +233,7 @@ func (m *Module) checkDivergence(
 	}, true
 }
 
-// checkImbalance 检测窗口内的单边主动成交失衡。
+// checkImbalance detects a one-sided aggressive-order-flow imbalance within the window.
 func (m *Module) checkImbalance(
 	symbol string, cur types.Candle,
 	imbalance, threshold float64,
@@ -253,8 +262,9 @@ func (m *Module) checkImbalance(
 	}, true
 }
 
-// imbalanceConfidence 把失衡度映射到 [0.5, 0.95]。
-// 失衡度上限是 1（全部为单边成交），因此用它到阈值的剩余空间做线性插值。
+// imbalanceConfidence maps the imbalance ratio into [0.5, 0.95].
+// The imbalance ratio's upper bound is 1 (entirely one-sided), so we linearly
+// interpolate over the remaining space between it and the threshold.
 func imbalanceConfidence(imbalance, threshold float64) float64 {
 	a, t := abs(imbalance), abs(threshold)
 	if t >= 1 {
@@ -264,8 +274,9 @@ func imbalanceConfidence(imbalance, threshold float64) float64 {
 	return clamp(c, 0.5, 0.95)
 }
 
-// divergenceConfidence 与失衡同法，但基准略低：
-// 背离信号在方向上更早，同时也更容易被后续行情证伪。
+// divergenceConfidence uses the same method as imbalance but with a slightly
+// lower baseline: divergence signals fire earlier in a directional move, but
+// are also more easily invalidated by subsequent price action.
 func divergenceConfidence(imbalance, threshold float64) float64 {
 	a, t := abs(imbalance), abs(threshold)
 	if t >= 1 {

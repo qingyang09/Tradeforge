@@ -19,38 +19,48 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// BitgetDefaultBaseURL 是 Bitget 官方 REST 地址。模拟盘和实盘走的是同一个域名，
-// 靠请求头 paptrading 区分——跟 OKX 的模式一样（跟币安/Bybit"测试网是另一个域名"
-// 不同），而且模拟盘要求用专门生成的"模拟盘 API Key"，不是随便一把普通 key。
+// BitgetDefaultBaseURL is Bitget's official REST address. Demo and live
+// trading share the same domain, distinguished only by the paptrading header
+// — the same pattern as OKX (unlike Binance/Bybit's "testnet is a different
+// domain"), and demo trading requires a specially-generated "demo API key",
+// not just any regular key.
 const BitgetDefaultBaseURL = "https://api.bitget.com"
 
-// BitgetBroker 通过 Bitget REST API v2 下单，走 paptrading: 1 的模拟盘模式。
+// BitgetBroker places orders through the Bitget REST API v2, always in demo
+// mode via paptrading: 1.
 //
-// Mode() 恒返回 ModePaper——理由跟其它几个 broker 一致：模拟盘用的是虚拟资金，
-// 把它当实盘看待会让"实盘前必须人工解锁"这道闸门形同虚设。
+// Mode() always returns ModePaper — same rationale as the other brokers: demo
+// trading uses virtual funds, and treating it as live would render the
+// "manual unlock required before going live" gate meaningless.
 //
-// Bitget 现货市价单有一处跟 OKX/Bybit 不一样、且没有覆盖参数可以绕开的不对称：
-// 市价买单的 size 按计价货币（USDT）解读，市价卖单的 size 按基础货币解读——
-// OKX 有 tgtCcy、Bybit 有 marketUnit 可以强制两边都按基础货币算，Bitget v2 现货
-// 接口没有等价参数。所以买单这里用 RefPrice 把"基础货币数量"换算成"计价货币金额"
-// 发出去，这只是一个尽量贴近目标仓位的近似值——真实成交数量以下单后查询到的
-// baseVolume 为准，不影响记录到 Order 里的实际成交结果是否正确，只影响"实际成交
-// 数量跟本来想要的数量差多少"。
+// Bitget spot market orders have one asymmetry that differs from OKX/Bybit
+// and has no override parameter to work around: a market buy's size is
+// interpreted as the quote currency (USDT), while a market sell's size is
+// interpreted as the base currency. OKX has tgtCcy and Bybit has marketUnit
+// to force both sides to compute in the base currency; Bitget's v2 spot API
+// has no equivalent parameter. So for buys, RefPrice is used here to convert
+// the "base-currency quantity" into a "quote-currency amount" before sending
+// — this is only an approximation aiming to get close to the target
+// position; the real fill quantity is whatever baseVolume comes back from
+// the post-order query. It doesn't affect whether the actual fill result
+// recorded on the Order is correct, only how far the actual filled quantity
+// ends up from what was originally wanted.
 type BitgetBroker struct {
 	baseURL    string
 	apiKey     string
 	apiSecret  string
 	passphrase string
 	client     *http.Client
-	// pollInterval/pollTimeout：下单接口只返回订单号，不返回成交明细，要另外
-	// 查询订单详情才能拿到成交均价和手续费（跟 OKX/Bybit 是同一个模式）。
+	// pollInterval/pollTimeout: the order-placement endpoint only returns an
+	// order ID, not fill details; a separate order-detail query is needed to
+	// get the average fill price and fee (same pattern as OKX/Bybit).
 	pollInterval time.Duration
 	pollTimeout  time.Duration
 }
 
-// BitgetConfig 是 Bitget 通道的配置。
+// BitgetConfig configures the Bitget channel.
 type BitgetConfig struct {
-	// BaseURL 留空则使用 Bitget 官方地址。
+	// BaseURL defaults to Bitget's official address when left empty.
 	BaseURL    string
 	APIKey     string
 	APISecret  string
@@ -58,10 +68,11 @@ type BitgetConfig struct {
 	Timeout    time.Duration
 }
 
-// NewBitgetDemoBroker 创建 Bitget 模拟盘下单通道。
+// NewBitgetDemoBroker creates a Bitget demo-trading order channel.
 //
-// 当前只支持模拟盘（每个请求都带 paptrading: 1，且要求用专门生成的模拟盘 API Key）。
-// 接真实资金账户是一个需要单独评审的动作，不是配置项。
+// Currently demo-only (every request carries paptrading: 1, and requires a
+// specially-generated demo API key). Connecting a real funded account is an
+// action that needs its own separate review, not a config toggle.
 func NewBitgetDemoBroker(cfg BitgetConfig) (*BitgetBroker, error) {
 	if cfg.APIKey == "" || cfg.APISecret == "" || cfg.Passphrase == "" {
 		return nil, fmt.Errorf("缺少 Bitget 模拟盘 API 密钥（TF_BITGET_API_KEY / TF_BITGET_API_SECRET / TF_BITGET_PASSPHRASE）")
@@ -85,16 +96,18 @@ func NewBitgetDemoBroker(cfg BitgetConfig) (*BitgetBroker, error) {
 	}, nil
 }
 
-// Name 实现 Broker。
+// Name implements Broker.
 func (b *BitgetBroker) Name() string { return "bitget-demo" }
 
-// Mode 实现 Broker。模拟盘用的是虚拟资金，一律按模拟盘对待。
+// Mode implements Broker. Demo trading uses virtual funds, so it is always
+// treated as paper.
 func (b *BitgetBroker) Mode() types.TradingMode { return types.ModePaper }
 
-// PlaceOrder 实现 Broker：下现货市价单，然后轮询订单详情拿到实际成交结果。
+// PlaceOrder implements Broker: places a spot market order, then polls the
+// order detail to get the actual fill result.
 func (b *BitgetBroker) PlaceOrder(ctx context.Context, req OrderRequest) (types.Order, error) {
 	if !req.Quantity.IsPositive() {
-		return types.Order{}, fmt.Errorf("下单数量 %s 非正", req.Quantity)
+		return types.Order{}, fmt.Errorf("order quantity %s is not positive", req.Quantity)
 	}
 
 	side := "buy"
@@ -102,10 +115,11 @@ func (b *BitgetBroker) PlaceOrder(ctx context.Context, req OrderRequest) (types.
 	if req.Side == types.SideSell {
 		side = "sell"
 	} else {
-		// 市价买单的 size 是计价货币金额，不是基础货币数量——见类型注释。
-		// 没有参考价就没法换算，直接拒绝，不能假装能算出来。
+		// A market buy's size is a quote-currency amount, not a base-currency
+		// quantity — see the type comment. With no reference price there's no
+		// way to convert it, so reject outright rather than pretending we can.
 		if !req.RefPrice.IsPositive() {
-			return types.Order{}, fmt.Errorf("Bitget 市价买单需要一个正的参考价才能把数量换算成计价货币金额")
+			return types.Order{}, fmt.Errorf("Bitget market buy orders need a positive reference price to convert the quantity into a quote-currency amount")
 		}
 		size = req.Quantity.Mul(req.RefPrice)
 	}
@@ -119,15 +133,15 @@ func (b *BitgetBroker) PlaceOrder(ctx context.Context, req OrderRequest) (types.
 	}
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
-		return types.Order{}, fmt.Errorf("构造下单请求体失败：%w", err)
+		return types.Order{}, fmt.Errorf("failed to build order request body: %w", err)
 	}
 
 	var placeResp bitgetPlaceOrderResponse
 	if err := b.doSigned(ctx, http.MethodPost, "/api/v2/spot/trade/place-order", nil, bodyBytes, &placeResp); err != nil {
-		return types.Order{}, fmt.Errorf("Bitget 下单失败：%w", err)
+		return types.Order{}, fmt.Errorf("Bitget order placement failed: %w", err)
 	}
 	if placeResp.Code != "00000" {
-		return types.Order{}, fmt.Errorf("Bitget 拒绝了订单（code %s）：%s", placeResp.Code, placeResp.Msg)
+		return types.Order{}, fmt.Errorf("Bitget rejected the order (code %s): %s", placeResp.Code, placeResp.Msg)
 	}
 	orderID := placeResp.Data.OrderID
 
@@ -138,17 +152,17 @@ func (b *BitgetBroker) PlaceOrder(ctx context.Context, req OrderRequest) (types.
 	return b.toOrder(req, orderID, detail)
 }
 
-// pollOrderDetail 反复查询订单详情，直到订单进入终态或超时。
+// pollOrderDetail repeatedly queries the order detail until the order reaches a terminal state or the poll times out.
 func (b *BitgetBroker) pollOrderDetail(ctx context.Context, orderID string) (bitgetOrderDetail, error) {
 	deadline := time.Now().Add(b.pollTimeout)
 	for {
 		var resp bitgetGetOrderResponse
 		q := url.Values{"orderId": {orderID}}
 		if err := b.doSigned(ctx, http.MethodGet, "/api/v2/spot/trade/orderInfo", q, nil, &resp); err != nil {
-			return bitgetOrderDetail{}, fmt.Errorf("查询 Bitget 订单详情失败：%w", err)
+			return bitgetOrderDetail{}, fmt.Errorf("failed to query Bitget order detail: %w", err)
 		}
 		if resp.Code != "00000" || len(resp.Data) == 0 {
-			return bitgetOrderDetail{}, fmt.Errorf("查询 Bitget 订单详情出错（code %s）：%s", resp.Code, resp.Msg)
+			return bitgetOrderDetail{}, fmt.Errorf("error querying Bitget order detail (code %s): %s", resp.Code, resp.Msg)
 		}
 		detail := resp.Data[0]
 		switch detail.Status {
@@ -156,7 +170,8 @@ func (b *BitgetBroker) pollOrderDetail(ctx context.Context, orderID string) (bit
 			return detail, nil
 		}
 		if time.Now().After(deadline) {
-			// 超时仍未到终态：如实按"当前查到的状态"返回，不假装它已经成交。
+			// Still not terminal by the deadline: return the status as
+			// currently observed, rather than pretending it filled.
 			return detail, nil
 		}
 		select {
@@ -170,18 +185,18 @@ func (b *BitgetBroker) pollOrderDetail(ctx context.Context, orderID string) (bit
 func (b *BitgetBroker) toOrder(req OrderRequest, orderID string, detail bitgetOrderDetail) (types.Order, error) {
 	filledQty, err := decimalOrZero(detail.BaseVolume)
 	if err != nil {
-		return types.Order{}, fmt.Errorf("解析成交数量失败：%w", err)
+		return types.Order{}, fmt.Errorf("failed to parse filled quantity: %w", err)
 	}
 	avg, err := decimalOrZero(detail.PriceAvg)
 	if err != nil {
-		return types.Order{}, fmt.Errorf("解析成交均价失败：%w", err)
+		return types.Order{}, fmt.Errorf("failed to parse average fill price: %w", err)
 	}
 
 	fee := decimal.Zero
 	for _, f := range detail.FeeDetail {
 		v, err := decimalOrZero(f.TotalFee)
 		if err != nil {
-			return types.Order{}, fmt.Errorf("解析手续费失败：%w", err)
+			return types.Order{}, fmt.Errorf("failed to parse fee: %w", err)
 		}
 		fee = fee.Add(v.Abs())
 	}
@@ -216,7 +231,7 @@ func (b *BitgetBroker) toOrder(req OrderRequest, orderID string, detail bitgetOr
 	}, nil
 }
 
-// doSigned 发送一个带 Bitget v2 签名的请求并把响应体解码进 out。
+// doSigned sends a request signed per Bitget v2 rules and decodes the response body into out.
 func (b *BitgetBroker) doSigned(ctx context.Context, method, path string, query url.Values, body []byte, out any) error {
 	requestPath := path
 	if len(query) > 0 {
@@ -233,7 +248,7 @@ func (b *BitgetBroker) doSigned(ctx context.Context, method, path string, query 
 
 	httpReq, err := http.NewRequestWithContext(ctx, method, endpoint, bodyReader)
 	if err != nil {
-		return fmt.Errorf("构造请求失败：%w", err)
+		return fmt.Errorf("failed to build request: %w", err)
 	}
 
 	timestamp := fmt.Sprintf("%d", time.Now().UnixMilli())
@@ -244,23 +259,25 @@ func (b *BitgetBroker) doSigned(ctx context.Context, method, path string, query 
 	httpReq.Header.Set("ACCESS-TIMESTAMP", timestamp)
 	httpReq.Header.Set("ACCESS-PASSPHRASE", b.passphrase)
 	httpReq.Header.Set("Content-Type", "application/json")
-	// 恒带模拟盘标记：当前版本只支持模拟盘，接实盘是需要单独评审的动作。
-	// 前提是调用方用的是专门生成的"模拟盘 API Key"，普通 key 带这个头会被拒绝。
+	// Always carry the demo-trading flag: this version only supports demo
+	// trading; connecting live is an action that needs its own separate
+	// review. This assumes the caller is using a specially-generated "demo
+	// API key" — a regular key sending this header gets rejected.
 	httpReq.Header.Set("paptrading", "1")
 
 	resp, err := b.client.Do(httpReq)
 	if err != nil {
-		return fmt.Errorf("调用 Bitget 接口失败：%w", err)
+		return fmt.Errorf("call to Bitget API failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return fmt.Errorf("解析 Bitget 响应失败（HTTP %d）：%w", resp.StatusCode, err)
+		return fmt.Errorf("failed to parse Bitget response (HTTP %d): %w", resp.StatusCode, err)
 	}
 	return nil
 }
 
-// sign 按 Bitget v2 的签名规则：base64(HMAC-SHA256(secret, timestamp+method.upper()+requestPath+body))。
+// sign follows Bitget v2's signing rule: base64(HMAC-SHA256(secret, timestamp+method.upper()+requestPath+body)).
 func (b *BitgetBroker) sign(timestamp, method, requestPath, body string) string {
 	mac := hmac.New(sha256.New, []byte(b.apiSecret))
 	mac.Write([]byte(timestamp + strings.ToUpper(method) + requestPath + body))

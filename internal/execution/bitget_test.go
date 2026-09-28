@@ -12,9 +12,12 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// testBitgetBroker 直接构造 BitgetBroker，绕开 NewBitgetDemoBroker 的必填密钥校验——
-// 那道校验是给真实调用方防呆用的，跟"用假 HTTP 服务器验证签名/轮询/解析逻辑"这个
-// 测试目的无关。轮询间隔调短，避免测试因为默认 300ms 的间隔跑得很慢。
+// testBitgetBroker builds a BitgetBroker directly, bypassing
+// NewBitgetDemoBroker's required-credentials check — that check fool-proofs
+// real callers and has nothing to do with this test's purpose of verifying
+// signing/polling/parsing logic against a fake HTTP server. The poll
+// interval is shortened so the test doesn't run slowly because of the
+// default 300ms interval.
 func testBitgetBroker(t *testing.T, baseURL string) *BitgetBroker {
 	t.Helper()
 	return &BitgetBroker{
@@ -28,9 +31,10 @@ func testBitgetBroker(t *testing.T, baseURL string) *BitgetBroker {
 	}
 }
 
-// fakeBitgetServer 模拟 Bitget 的下单 + 查订单详情两个接口：下单接口只返回订单号，
-// 查订单详情接口返回真正的成交结果（跟 OKX/Bybit 是同一个模式，不像币安一次
-// 下单响应就带全部成交明细）。
+// fakeBitgetServer simulates Bitget's two endpoints — place order and get
+// order detail: the place-order endpoint only returns an order ID, and the
+// order-detail endpoint returns the actual fill result (same pattern as
+// OKX/Bybit, unlike Binance which returns all fill details in one response).
 func fakeBitgetServer(t *testing.T, orderDetailBody string, orderDetailStatus int, checkPlaceReq func(*http.Request, string)) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -47,7 +51,7 @@ func fakeBitgetServer(t *testing.T, orderDetailBody string, orderDetailStatus in
 			w.WriteHeader(orderDetailStatus)
 			w.Write([]byte(orderDetailBody))
 		default:
-			t.Fatalf("未预期的请求：%s %s", r.Method, r.URL.Path)
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
 	}))
 	t.Cleanup(srv.Close)
@@ -72,41 +76,42 @@ func TestBitgetBrokerPlaceOrderSignsAndSendsRequest(t *testing.T) {
 	})
 	b := testBitgetBroker(t, srv.URL)
 
-	// 卖单：size 应该直接等于基础货币数量，不做换算。
+	// Sell order: size should equal the base-currency quantity directly, with no conversion.
 	_, err := b.PlaceOrder(t.Context(), OrderRequest{
 		StrategyID: "s1", Symbol: "BTCUSDT", Side: types.SideSell,
 		Quantity: decimal.NewFromFloat(0.1), RefPrice: decimal.NewFromInt(100000),
 		Provenance: types.OrderProvenance{DecisionID: "d1"},
 	})
 	if err != nil {
-		t.Fatalf("意外错误：%v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 
 	if gotHeaders.Get("ACCESS-KEY") != "test-key" {
-		t.Errorf("ACCESS-KEY = %q，期望 test-key", gotHeaders.Get("ACCESS-KEY"))
+		t.Errorf("ACCESS-KEY = %q, want test-key", gotHeaders.Get("ACCESS-KEY"))
 	}
 	if gotHeaders.Get("ACCESS-PASSPHRASE") != "test-pass" {
-		t.Errorf("ACCESS-PASSPHRASE = %q，期望 test-pass", gotHeaders.Get("ACCESS-PASSPHRASE"))
+		t.Errorf("ACCESS-PASSPHRASE = %q, want test-pass", gotHeaders.Get("ACCESS-PASSPHRASE"))
 	}
 	if gotHeaders.Get("ACCESS-SIGN") == "" {
-		t.Error("请求必须带签名，实际为空")
+		t.Error("request must carry a signature, got empty")
 	}
 	if gotHeaders.Get("paptrading") != "1" {
-		t.Errorf("必须带模拟盘标记 paptrading: 1，实际 %q", gotHeaders.Get("paptrading"))
+		t.Errorf("must carry the demo-trading flag paptrading: 1, got %q", gotHeaders.Get("paptrading"))
 	}
 	if !strings.Contains(gotBody, `"symbol":"BTCUSDT"`) {
-		t.Errorf("下单请求体标的应为 BTCUSDT（不需要转换），实际：%s", gotBody)
+		t.Errorf("order request body symbol should be BTCUSDT (no conversion needed), got: %s", gotBody)
 	}
 	if !strings.Contains(gotBody, `"side":"sell"`) {
-		t.Errorf("下单请求体方向应为 sell，实际：%s", gotBody)
+		t.Errorf("order request body side should be sell, got: %s", gotBody)
 	}
 	if !strings.Contains(gotBody, `"size":"0.1"`) {
-		t.Errorf("卖单 size 应直接等于基础货币数量 0.1，实际：%s", gotBody)
+		t.Errorf("sell order size should equal the base-currency quantity 0.1 directly, got: %s", gotBody)
 	}
 }
 
-// TestBitgetBrokerPlaceOrderConvertsBuySizeToQuoteCurrency 覆盖 Bitget 这里特有的
-// 不对称：市价买单的 size 是计价货币金额，不是基础货币数量，需要用参考价换算。
+// TestBitgetBrokerPlaceOrderConvertsBuySizeToQuoteCurrency covers Bitget's own
+// asymmetry: a market buy's size is a quote-currency amount, not a
+// base-currency quantity, and needs converting via the reference price.
 func TestBitgetBrokerPlaceOrderConvertsBuySizeToQuoteCurrency(t *testing.T) {
 	var gotBody string
 	srv := fakeBitgetServer(t, realBitgetFilledOrderJSON, http.StatusOK, func(r *http.Request, body string) {
@@ -119,11 +124,11 @@ func TestBitgetBrokerPlaceOrderConvertsBuySizeToQuoteCurrency(t *testing.T) {
 		Quantity: decimal.NewFromFloat(0.1), RefPrice: decimal.NewFromInt(100000),
 	})
 	if err != nil {
-		t.Fatalf("意外错误：%v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	// 0.1 (基础货币) * 100000 (参考价) = 10000 (计价货币金额)。
+	// 0.1 (base currency) * 100000 (reference price) = 10000 (quote-currency amount).
 	if !strings.Contains(gotBody, `"size":"10000"`) {
-		t.Errorf("买单 size 应该是数量*参考价换算出的计价货币金额 10000，实际：%s", gotBody)
+		t.Errorf("buy order size should be the quote-currency amount 10000 from quantity*refPrice, got: %s", gotBody)
 	}
 }
 
@@ -134,7 +139,7 @@ func TestBitgetBrokerPlaceOrderRejectsBuyWithoutRefPrice(t *testing.T) {
 		Quantity: decimal.NewFromFloat(0.1), RefPrice: decimal.Zero,
 	})
 	if err == nil {
-		t.Fatal("买单没有参考价时应该在发请求前就拒绝（换算不出计价货币金额）")
+		t.Fatal("a buy order with no reference price should be rejected before the request is sent (can't convert to a quote-currency amount)")
 	}
 }
 
@@ -148,29 +153,29 @@ func TestBitgetBrokerPlaceOrderParsesFilledDetailIntoOrder(t *testing.T) {
 		Provenance: types.OrderProvenance{DecisionID: "d1"},
 	})
 	if err != nil {
-		t.Fatalf("意外错误：%v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 
 	if order.Status != types.OrderFilled {
-		t.Errorf("Status = %s，期望 FILLED", order.Status)
+		t.Errorf("Status = %s, want FILLED", order.Status)
 	}
 	if !order.Quantity.Equal(decimal.NewFromFloat(0.1)) {
-		t.Errorf("Quantity = %s，期望 0.1（来自 baseVolume）", order.Quantity)
+		t.Errorf("Quantity = %s, want 0.1 (from baseVolume)", order.Quantity)
 	}
 	if !order.FilledPrice.Equal(decimal.NewFromInt(100155)) {
-		t.Errorf("FilledPrice = %s，期望 100155（来自 priceAvg）", order.FilledPrice)
+		t.Errorf("FilledPrice = %s, want 100155 (from priceAvg)", order.FilledPrice)
 	}
 	if !order.Fee.Equal(decimal.NewFromFloat(0.0001)) {
-		t.Errorf("Fee = %s，期望 0.0001（feeDetail 里 totalFee 取绝对值）", order.Fee)
+		t.Errorf("Fee = %s, want 0.0001 (feeDetail's totalFee, absolute value)", order.Fee)
 	}
 	if order.ExchangeOrderID != "1234567890" {
-		t.Errorf("ExchangeOrderID = %s，期望 1234567890", order.ExchangeOrderID)
+		t.Errorf("ExchangeOrderID = %s, want 1234567890", order.ExchangeOrderID)
 	}
 	if order.Mode != types.ModePaper {
-		t.Errorf("Mode = %s，期望 PAPER（模拟盘恒按模拟盘对待）", order.Mode)
+		t.Errorf("Mode = %s, want PAPER (demo trading is always treated as paper)", order.Mode)
 	}
 	if order.Provenance.DecisionID != "d1" {
-		t.Error("Provenance 应该原样透传")
+		t.Error("Provenance should be passed through unchanged")
 	}
 }
 
@@ -184,10 +189,10 @@ func TestBitgetBrokerPlaceOrderRejectedWhenCancelled(t *testing.T) {
 		Quantity: decimal.NewFromFloat(0.1), RefPrice: decimal.NewFromInt(100000),
 	})
 	if err != nil {
-		t.Fatalf("意外错误：%v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if order.Status != types.OrderRejected {
-		t.Errorf("Status = %s，期望 REJECTED（订单被取消、未成交）", order.Status)
+		t.Errorf("Status = %s, want REJECTED (order was cancelled, never filled)", order.Status)
 	}
 }
 
@@ -204,10 +209,10 @@ func TestBitgetBrokerPlaceOrderErrorsOnExchangeRejection(t *testing.T) {
 		Quantity: decimal.NewFromFloat(0.1), RefPrice: decimal.NewFromInt(100000),
 	})
 	if err == nil {
-		t.Fatal("交易所拒单时应该报错")
+		t.Fatal("exchange rejection should produce an error")
 	}
 	if !strings.Contains(err.Error(), "40762") {
-		t.Errorf("错误信息应带上交易所的错误码，实际：%v", err)
+		t.Errorf("error message should include the exchange's error code, got: %v", err)
 	}
 }
 
@@ -218,6 +223,6 @@ func TestBitgetBrokerPlaceOrderRejectsNonPositiveQuantity(t *testing.T) {
 		Quantity: decimal.Zero, RefPrice: decimal.NewFromInt(100000),
 	})
 	if err == nil {
-		t.Fatal("下单数量非正时应该在发请求前就拒绝")
+		t.Fatal("a non-positive order quantity should be rejected before the request is even sent")
 	}
 }

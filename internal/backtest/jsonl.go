@@ -6,8 +6,8 @@ import (
 	"io"
 )
 
-// WriteJSONL 把 Replay 的结果写成 python/backtest 认得的 JSONL 格式：
-// 一行 meta，随后每根K线一行 decision。
+// WriteJSONL writes a Replay result in the JSONL format python/backtest
+// understands: one meta line, followed by one decision line per candle.
 func WriteJSONL(w io.Writer, meta Meta, decisions []DecisionLine) error {
 	bw := bufio.NewWriterSize(w, 1<<20)
 	enc := json.NewEncoder(bw)

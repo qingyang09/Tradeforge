@@ -1,12 +1,17 @@
-// Package poc 实现 poc（Point of Control，成交量分布重心）信号模块。
+// Package poc implements the poc (Point of Control, volume-distribution
+// center of mass) signal module.
 //
-// 真正的 POC 需要逐笔成交数据按精确价格分桶统计，平台目前只有 OHLCV K 线，算不出
-// tick 级的成交量分布。这里用标准的粗粒度近似：把每根 K 线的成交量整根记到
-// (最高+最低+收盘)/3 所在的价格桶，桶内成交量最大的即为近似 POC——跟本项目
-// cvd_orderflow 的 SyntheticFlowProvider（is_synthetic）、news_sentiment 的
-// KeywordSentimentProvider（is_heuristic）是同一处理方式：不假装精确，
-// 在 Signal.Raw 里明确标注 is_approximate，供下游（比如止损止盈的合规判断）决定
-// 是否接受这种精度。
+// A true POC requires tick-by-tick trade data bucketed by exact price; the
+// platform currently only has OHLCV candles, so a tick-level volume
+// distribution can't be computed. This uses a standard coarse approximation
+// instead: each candle's entire volume is attributed to the price bucket
+// containing (high+low+close)/3, and the bucket with the most volume is the
+// approximate POC. This is the same treatment as this project's
+// cvd_orderflow SyntheticFlowProvider (is_synthetic) and news_sentiment's
+// KeywordSentimentProvider (is_heuristic): don't pretend it's precise —
+// explicitly tag is_approximate in Signal.Raw, letting downstream code (e.g.
+// stop-loss/take-profit compliance checks) decide whether to accept this
+// level of precision.
 package poc
 
 import (
@@ -19,26 +24,26 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// ModuleName 是该模块在策略配置中的标识。
+// ModuleName is this module's identifier in strategy configs.
 const ModuleName = "poc"
 
-// Module 实现 poc 信号模块。零值可用。
+// Module implements the poc signal module. The zero value is usable.
 type Module struct{}
 
-// New 返回模块实例。
+// New returns a module instance.
 func New() *Module { return &Module{} }
 
-// Name 实现 modules.SignalModule。
+// Name implements modules.SignalModule.
 func (m *Module) Name() string { return ModuleName }
 
-// Description 实现 modules.SignalModule。
+// Description implements modules.SignalModule.
 func (m *Module) Description() string {
 	return "计算成交量分布重心（Point of Control）：把回看窗口内每根 K 线的成交量" +
 		"记到其典型价格（最高+最低+收盘取平均）所在的价格桶，成交量最大的桶即为 POC。" +
 		"只有 OHLCV 数据，是对真实逐笔成交量分布的粗粒度近似，不是精确值。"
 }
 
-// RequiredParams 实现 modules.SignalModule。
+// RequiredParams implements modules.SignalModule.
 func (m *Module) RequiredParams() []types.ParamSpec {
 	return []types.ParamSpec{
 		{
@@ -61,7 +66,7 @@ func (m *Module) RequiredParams() []types.ParamSpec {
 	}
 }
 
-// Evaluate 实现 modules.SignalModule。
+// Evaluate implements modules.SignalModule.
 func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[string]any) (types.Signal, error) {
 	p, err := types.ResolveParams(ModuleName, m.RequiredParams(), params)
 	if err != nil {
@@ -92,8 +97,9 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 	if len(window) > lookback {
 		window = window[len(window)-lookback:]
 	}
-	// 不管算不算得出 POC，都把回看窗口的起点带出去——画板要用它在图上标出
-	// "系统正在看这一段历史"，跟 fakeout 模块的 window_start 是同一个用途。
+	// Carry the lookback window's start out regardless of whether a POC could
+	// be computed — the chart uses it to mark "this is the history the system
+	// is looking at", the same purpose as window_start in the fakeout module.
 	windowStart := window[0].OpenTime.Format(time.RFC3339)
 
 	pocPrice, pocVolume, err := computePOC(window, bucketCount)
@@ -125,8 +131,10 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 		return s, nil
 	}
 
-	// 从下方触及 POC：成交密集区常被当作阻力，偏向看空；从上方触及则偏向看多。
-	// 跟 support_resistance 的 test_support/test_resistance 是同一套直觉，不是新发明的规则。
+	// Approaching the POC from below: a high-volume zone is often treated as
+	// resistance, leaning bearish; approaching from above leans bullish.
+	// Same intuition as support_resistance's test_support/test_resistance,
+	// not a newly invented rule.
 	dir := types.DirectionShort
 	if cur.Close.LessThan(pocPrice) {
 		dir = types.DirectionLong
@@ -136,7 +144,7 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 		Module:     ModuleName,
 		Symbol:     md.Symbol,
 		Direction:  dir,
-		Confidence: 0.4, // 近似值本来就不精确，置信度刻意压低，不跟 support_resistance 的精确关键位同一档
+		Confidence: 0.4, // an approximation is inherently imprecise, so confidence is deliberately kept low, not on par with support_resistance's exact key levels
 		Timestamp:  cur.CloseTime,
 		Price:      cur.Close,
 		Reason: fmt.Sprintf("收盘价 %s 触及近似 POC %s（回看 %d 根 K 线，%d 个价格桶）",
@@ -145,7 +153,8 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 	}, nil
 }
 
-// computePOC 把 candles 的成交量按典型价格分桶，返回成交量最大的桶的中点价格与成交量。
+// computePOC buckets candles' volume by typical price, returning the midpoint
+// price and volume of the bucket with the most volume.
 func computePOC(candles []types.Candle, bucketCount int) (decimal.Decimal, decimal.Decimal, error) {
 	low, high := candles[0].Low, candles[0].High
 	for _, c := range candles {
@@ -184,13 +193,14 @@ func computePOC(candles []types.Candle, bucketCount int) (decimal.Decimal, decim
 		}
 	}
 
-	// 桶中点作为该桶的代表价格。
+	// Use the bucket's midpoint as its representative price.
 	half := decimal.NewFromFloat(0.5)
 	bucketPrice := low.Add(bucketWidth.Mul(decimal.NewFromInt(int64(bestIdx)).Add(half)))
 	return bucketPrice, buckets[bestIdx], nil
 }
 
-// relDist 返回两个价格的相对距离 |a-b|/b。b 为零时返回一个必然超出任何容差的大值。
+// relDist returns the relative distance |a-b|/b between two prices. When b is
+// zero, it returns a large value guaranteed to exceed any tolerance.
 func relDist(a, b decimal.Decimal) decimal.Decimal {
 	if b.IsZero() {
 		return decimal.NewFromInt(1 << 30)

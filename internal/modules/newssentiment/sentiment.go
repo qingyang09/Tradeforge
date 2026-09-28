@@ -7,26 +7,33 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// SentimentProvider 是新闻情绪打分的来源抽象。
+// SentimentProvider abstracts the source of news sentiment scoring.
 //
-// 这是后续接入真实 NLP/LLM 情绪分析服务的扩展点：只要实现这个接口并在构造模块时
-// 注入，模块算法本身（窗口过滤、新近度加权、阈值判定）完全不用改。
+// This is the extension point for later plugging in a real NLP/LLM sentiment
+// analysis service: implement this interface and inject it when constructing
+// the module, and the module's own algorithm (window filtering, recency
+// weighting, threshold decision) needs no changes at all.
 type SentimentProvider interface {
-	// Name 返回数据源标识，会写进 Signal.Raw，让人一眼看出得分是怎么算的。
+	// Name returns the data source's identifier; it's written into
+	// Signal.Raw so it's immediately clear how a score was computed.
 	Name() string
-	// Score 给单条新闻打分，取值范围 [-1, 1]，正数偏多头、负数偏空头、0 为中性。
+	// Score scores a single news item, in the range [-1, 1]: positive leans
+	// bullish, negative leans bearish, 0 is neutral.
 	Score(ctx context.Context, item types.NewsItem) (float64, error)
 }
 
-// KeywordSentimentProvider 用一份固定的正负面关键词表给标题打分。
+// KeywordSentimentProvider scores headlines using a fixed list of positive and negative keywords.
 //
-// 得分 = (命中正面词数 - 命中负面词数) / 命中总词数，不命中任何关键词记为 0（中性）。
-// 这只是让链路能在没有真实 NLP/LLM 情绪服务时跑起来的占位实现，精度远低于真实语义
-// 理解（无法识别否定、讽刺、上下文），绝不能当作真实情绪信号用于实盘决策，因此它会
-// 在信号里显式标注数据源，下游可据此拒绝放行。
+// Score = (positive keyword hits - negative keyword hits) / total hits; no
+// hits at all scores 0 (neutral). This is only a placeholder implementation
+// to keep the pipeline running without a real NLP/LLM sentiment service — its
+// accuracy is far below genuine semantic understanding (it can't recognize
+// negation, sarcasm, or context) and must never be used as a real sentiment
+// signal for live decisions, so it explicitly tags its data source in the
+// signal, letting downstream code refuse to let it through.
 type KeywordSentimentProvider struct{}
 
-// Name 实现 SentimentProvider。
+// Name implements SentimentProvider.
 func (KeywordSentimentProvider) Name() string { return "keyword_heuristic" }
 
 var positiveKeywords = []string{
@@ -41,7 +48,7 @@ var negativeKeywords = []string{
 	"downgrade", "liquidation", "bankrupt", "bankruptcy", "default",
 }
 
-// Score 实现 SentimentProvider。
+// Score implements SentimentProvider.
 func (KeywordSentimentProvider) Score(_ context.Context, item types.NewsItem) (float64, error) {
 	text := strings.ToLower(item.Headline)
 	pos, neg := 0, 0
@@ -61,7 +68,9 @@ func (KeywordSentimentProvider) Score(_ context.Context, item types.NewsItem) (f
 	return float64(pos-neg) / float64(pos+neg), nil
 }
 
-// IsHeuristic 报告某个数据源是否为关键词占位实现。执行层可据此拒绝让实盘策略使用。
+// IsHeuristic reports whether a data source is the keyword placeholder
+// implementation. The execution layer can use this to refuse to let a live
+// strategy use it.
 func IsHeuristic(p SentimentProvider) bool {
 	_, ok := p.(KeywordSentimentProvider)
 	return ok

@@ -18,30 +18,35 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// OKXDefaultBaseURL 是 OKX 官方 REST 地址。模拟盘和实盘走的是同一个域名，
-// 靠请求头 x-simulated-trading 区分——跟币安"测试网是另一个域名"的模式不同。
+// OKXDefaultBaseURL is OKX's official REST address. Demo and live trading
+// share the same domain, distinguished only by the x-simulated-trading
+// header — unlike Binance's pattern of "testnet is a different domain".
 const OKXDefaultBaseURL = okx.DefaultRESTBaseURL
 
-// OKXBroker 通过 OKX REST API 下单，走 x-simulated-trading: 1 的模拟盘模式。
+// OKXBroker places orders through the OKX REST API, always in demo mode via
+// x-simulated-trading: 1.
 //
-// Mode() 恒返回 ModePaper——模拟盘用的是虚拟资金，把它当实盘看待会让
-// "实盘前必须人工解锁"这道闸门形同虚设（跟 BinanceBroker 的理由一致）。
+// Mode() always returns ModePaper — demo trading uses virtual funds, and
+// treating it as live would render the "manual unlock required before going
+// live" gate meaningless (same rationale as BinanceBroker).
 type OKXBroker struct {
 	baseURL    string
 	apiKey     string
 	apiSecret  string
 	passphrase string
 	client     *http.Client
-	// pollInterval/pollTimeout 控制下单后轮询成交结果的节奏：OKX 下单接口本身
-	// 只返回订单号，不像币安 FULL 响应那样一次性带回成交明细，市价单要另外
-	// 查询订单详情才能拿到成交均价和手续费。
+	// pollInterval/pollTimeout control the cadence of polling for the fill
+	// result after placing an order: OKX's order-placement endpoint only
+	// returns an order ID, unlike Binance's FULL response which returns fill
+	// details in one shot — a market order needs a separate order-detail
+	// query to get the average fill price and fee.
 	pollInterval time.Duration
 	pollTimeout  time.Duration
 }
 
-// OKXConfig 是 OKX 通道的配置。
+// OKXConfig configures the OKX channel.
 type OKXConfig struct {
-	// BaseURL 留空则使用 OKX 官方地址。
+	// BaseURL defaults to OKX's official address when left empty.
 	BaseURL    string
 	APIKey     string
 	APISecret  string
@@ -49,10 +54,11 @@ type OKXConfig struct {
 	Timeout    time.Duration
 }
 
-// NewOKXDemoBroker 创建 OKX 模拟盘下单通道。
+// NewOKXDemoBroker creates an OKX demo-trading order channel.
 //
-// 当前只支持模拟盘（每个请求都带 x-simulated-trading: 1）。接真实资金账户是
-// 一个需要单独评审的动作，不是配置项。
+// Currently demo-only (every request carries x-simulated-trading: 1).
+// Connecting a real funded account is an action that needs its own separate
+// review, not a config toggle.
 func NewOKXDemoBroker(cfg OKXConfig) (*OKXBroker, error) {
 	if cfg.APIKey == "" || cfg.APISecret == "" || cfg.Passphrase == "" {
 		return nil, fmt.Errorf("缺少 OKX 模拟盘 API 密钥（TF_OKX_API_KEY / TF_OKX_API_SECRET / TF_OKX_PASSPHRASE）")
@@ -76,16 +82,18 @@ func NewOKXDemoBroker(cfg OKXConfig) (*OKXBroker, error) {
 	}, nil
 }
 
-// Name 实现 Broker。
+// Name implements Broker.
 func (b *OKXBroker) Name() string { return "okx-demo" }
 
-// Mode 实现 Broker。模拟盘用的是虚拟资金，一律按模拟盘对待。
+// Mode implements Broker. Demo trading uses virtual funds, so it is always
+// treated as paper.
 func (b *OKXBroker) Mode() types.TradingMode { return types.ModePaper }
 
-// PlaceOrder 实现 Broker：下市价单，然后轮询订单详情拿到实际成交结果。
+// PlaceOrder implements Broker: places a market order, then polls the order
+// detail to get the actual fill result.
 func (b *OKXBroker) PlaceOrder(ctx context.Context, req OrderRequest) (types.Order, error) {
 	if !req.Quantity.IsPositive() {
-		return types.Order{}, fmt.Errorf("下单数量 %s 非正", req.Quantity)
+		return types.Order{}, fmt.Errorf("order quantity %s is not positive", req.Quantity)
 	}
 	instID, err := okx.ToInstID(req.Symbol)
 	if err != nil {
@@ -102,27 +110,29 @@ func (b *OKXBroker) PlaceOrder(ctx context.Context, req OrderRequest) (types.Ord
 		"side":    side,
 		"ordType": "market",
 		"sz":      req.Quantity.String(),
-		// 不指定 tgtCcy 的话，OKX 现货市价单里买单的 sz 默认按计价货币（USDT）
-		// 解读、卖单默认按基础货币解读——两个方向语义不一致。强制两边都按基础
-		// 货币解读，才能让 sz 的含义跟 OrderRequest.Quantity（基础货币数量）
-		// 以及 BinanceBroker 的行为保持一致。
+		// Without tgtCcy, OKX spot market orders interpret sz as the quote
+		// currency (USDT) by default for buys and as the base currency by
+		// default for sells — inconsistent semantics across the two sides.
+		// Forcing both sides to interpret it as the base currency keeps sz's
+		// meaning aligned with OrderRequest.Quantity (a base-currency amount)
+		// and with BinanceBroker's behavior.
 		"tgtCcy": "base_ccy",
 	}
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
-		return types.Order{}, fmt.Errorf("构造下单请求体失败：%w", err)
+		return types.Order{}, fmt.Errorf("failed to build order request body: %w", err)
 	}
 
 	var placeResp okxPlaceOrderResponse
 	if err := b.doSigned(ctx, http.MethodPost, "/api/v5/trade/order", nil, bodyBytes, &placeResp); err != nil {
-		return types.Order{}, fmt.Errorf("OKX 下单失败：%w", err)
+		return types.Order{}, fmt.Errorf("OKX order placement failed: %w", err)
 	}
 	if placeResp.Code != "0" || len(placeResp.Data) == 0 {
-		return types.Order{}, fmt.Errorf("OKX 拒绝了订单（code %s）：%s", placeResp.Code, placeResp.Msg)
+		return types.Order{}, fmt.Errorf("OKX rejected the order (code %s): %s", placeResp.Code, placeResp.Msg)
 	}
 	entry := placeResp.Data[0]
 	if entry.SCode != "0" {
-		return types.Order{}, fmt.Errorf("OKX 拒绝了订单（sCode %s）：%s", entry.SCode, entry.SMsg)
+		return types.Order{}, fmt.Errorf("OKX rejected the order (sCode %s): %s", entry.SCode, entry.SMsg)
 	}
 
 	detail, err := b.pollOrderDetail(ctx, instID, entry.OrdID)
@@ -132,25 +142,28 @@ func (b *OKXBroker) PlaceOrder(ctx context.Context, req OrderRequest) (types.Ord
 	return b.toOrder(req, entry.OrdID, detail)
 }
 
-// pollOrderDetail 反复查询订单详情，直到订单进入终态（filled/canceled）或超时。
-// OKX 市价单通常在几十到几百毫秒内成交，轮询是因为下单接口本身不返回成交明细。
+// pollOrderDetail repeatedly queries the order detail until the order reaches
+// a terminal state (filled/canceled) or the poll times out. OKX market orders
+// typically fill within tens to hundreds of milliseconds; polling is needed
+// because the order-placement endpoint itself doesn't return fill details.
 func (b *OKXBroker) pollOrderDetail(ctx context.Context, instID, ordID string) (okxOrderDetail, error) {
 	deadline := time.Now().Add(b.pollTimeout)
 	for {
 		var resp okxGetOrderResponse
 		q := url.Values{"instId": {instID}, "ordId": {ordID}}
 		if err := b.doSigned(ctx, http.MethodGet, "/api/v5/trade/order", q, nil, &resp); err != nil {
-			return okxOrderDetail{}, fmt.Errorf("查询 OKX 订单详情失败：%w", err)
+			return okxOrderDetail{}, fmt.Errorf("failed to query OKX order detail: %w", err)
 		}
 		if resp.Code != "0" || len(resp.Data) == 0 {
-			return okxOrderDetail{}, fmt.Errorf("查询 OKX 订单详情出错（code %s）：%s", resp.Code, resp.Msg)
+			return okxOrderDetail{}, fmt.Errorf("error querying OKX order detail (code %s): %s", resp.Code, resp.Msg)
 		}
 		detail := resp.Data[0]
 		if detail.State == "filled" || detail.State == "canceled" || detail.State == "mmp_canceled" {
 			return detail, nil
 		}
 		if time.Now().After(deadline) {
-			// 超时仍未到终态：如实按"当前查到的状态"返回，不假装它已经成交。
+			// Still not terminal by the deadline: return the status as
+			// currently observed, rather than pretending it filled.
 			return detail, nil
 		}
 		select {
@@ -164,18 +177,19 @@ func (b *OKXBroker) pollOrderDetail(ctx context.Context, instID, ordID string) (
 func (b *OKXBroker) toOrder(req OrderRequest, ordID string, detail okxOrderDetail) (types.Order, error) {
 	filledQty, err := decimalOrZero(detail.AccFillSz)
 	if err != nil {
-		return types.Order{}, fmt.Errorf("解析成交数量失败：%w", err)
+		return types.Order{}, fmt.Errorf("failed to parse filled quantity: %w", err)
 	}
 	avg, err := decimalOrZero(detail.AvgPx)
 	if err != nil {
-		return types.Order{}, fmt.Errorf("解析成交均价失败：%w", err)
+		return types.Order{}, fmt.Errorf("failed to parse average fill price: %w", err)
 	}
 	feeRaw, err := decimalOrZero(detail.Fee)
 	if err != nil {
-		return types.Order{}, fmt.Errorf("解析手续费失败：%w", err)
+		return types.Order{}, fmt.Errorf("failed to parse fee: %w", err)
 	}
-	// OKX 把手续费记成负数（表示从账户扣除），项目内部约定手续费是非负的
-	// 支出金额，这里取绝对值统一语义。
+	// OKX records the fee as a negative number (an account debit); this
+	// project's internal convention is that fees are a non-negative expense
+	// amount, so take the absolute value to keep the semantics uniform.
 	fee := feeRaw.Abs()
 
 	status := types.OrderFilled
@@ -208,7 +222,7 @@ func (b *OKXBroker) toOrder(req OrderRequest, ordID string, detail okxOrderDetai
 	}, nil
 }
 
-// doSigned 发送一个带 OKX v5 签名的请求并把响应体解码进 out。
+// doSigned sends a request signed per OKX v5 rules and decodes the response body into out.
 func (b *OKXBroker) doSigned(ctx context.Context, method, path string, query url.Values, body []byte, out any) error {
 	requestPath := path
 	if len(query) > 0 {
@@ -225,7 +239,7 @@ func (b *OKXBroker) doSigned(ctx context.Context, method, path string, query url
 
 	httpReq, err := http.NewRequestWithContext(ctx, method, endpoint, bodyReader)
 	if err != nil {
-		return fmt.Errorf("构造请求失败：%w", err)
+		return fmt.Errorf("failed to build request: %w", err)
 	}
 
 	timestamp := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
@@ -236,22 +250,23 @@ func (b *OKXBroker) doSigned(ctx context.Context, method, path string, query url
 	httpReq.Header.Set("OK-ACCESS-TIMESTAMP", timestamp)
 	httpReq.Header.Set("OK-ACCESS-PASSPHRASE", b.passphrase)
 	httpReq.Header.Set("Content-Type", "application/json")
-	// 恒带模拟盘标记：当前版本只支持模拟盘，接实盘是需要单独评审的动作。
+	// Always carry the demo-trading flag: this version only supports demo
+	// trading; connecting live is an action that needs its own separate review.
 	httpReq.Header.Set("x-simulated-trading", "1")
 
 	resp, err := b.client.Do(httpReq)
 	if err != nil {
-		return fmt.Errorf("调用 OKX 接口失败：%w", err)
+		return fmt.Errorf("call to OKX API failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return fmt.Errorf("解析 OKX 响应失败（HTTP %d）：%w", resp.StatusCode, err)
+		return fmt.Errorf("failed to parse OKX response (HTTP %d): %w", resp.StatusCode, err)
 	}
 	return nil
 }
 
-// sign 按 OKX v5 的签名规则：base64(HMAC-SHA256(secret, timestamp+method+requestPath+body))。
+// sign follows OKX v5's signing rule: base64(HMAC-SHA256(secret, timestamp+method+requestPath+body)).
 func (b *OKXBroker) sign(timestamp, method, requestPath, body string) string {
 	mac := hmac.New(sha256.New, []byte(b.apiSecret))
 	mac.Write([]byte(timestamp + method + requestPath + body))

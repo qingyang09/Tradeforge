@@ -9,15 +9,15 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// RiskVerdict 是一次风控判定的结果。
+// RiskVerdict is the outcome of a single risk-control check.
 type RiskVerdict int
 
 const (
-	// RiskAllow 允许该动作。
+	// RiskAllow permits the action.
 	RiskAllow RiskVerdict = iota
-	// RiskReject 拒绝开仓，但不暂停策略（如单笔仓位超限）。
+	// RiskReject rejects opening a position, but does not suspend the strategy (e.g. per-trade size exceeded).
 	RiskReject
-	// RiskForceClose 立即平仓并暂停该标的的策略。
+	// RiskForceClose closes the position immediately and suspends the strategy for this symbol.
 	RiskForceClose
 )
 
@@ -34,53 +34,54 @@ func (v RiskVerdict) String() string {
 	}
 }
 
-// RiskDecision 是风控判定及其依据。
+// RiskDecision is a risk-control verdict together with its rationale.
 type RiskDecision struct {
 	Verdict RiskVerdict
-	// Rule 是触发的规则名，RiskAllow 时为空。
+	// Rule is the name of the triggered rule; empty when Verdict is RiskAllow.
 	Rule string
-	// Reason 是人类可读的说明。
+	// Reason is a human-readable explanation.
 	Reason string
-	// Detail 是触发时的数据快照，写入审计。
+	// Detail is a snapshot of the data at trigger time, written to the audit log.
 	Detail map[string]any
 }
 
-// Allowed 报告是否放行。
+// Allowed reports whether the action is permitted.
 func (d RiskDecision) Allowed() bool { return d.Verdict == RiskAllow }
 
-// RiskManager 是单个标的的风控器。
+// RiskManager is the risk controller for a single symbol.
 //
-// 每个标的一个实例，状态互不共享——这正是"风控在标的级别独立"的实现方式。
-// BTC 打满单日亏损额度，不该影响 ETH 继续交易。
+// One instance per symbol, sharing no state between them — this is precisely
+// how "risk control is independent per symbol" is implemented. BTC maxing
+// out its daily loss allowance must not affect ETH continuing to trade.
 type RiskManager struct {
 	cfg    types.RiskConfig
 	symbol string
 
-	// dayKey 是当前统计日（UTC 日期），跨日自动重置。
+	// dayKey is the current accounting day (UTC date), reset automatically across days.
 	dayKey string
-	// dayRealizedLoss 是当日累计已实现亏损（正数表示亏损额）。
+	// dayRealizedLoss is the day's cumulative realized loss so far (a positive number is a loss amount).
 	dayRealizedLoss decimal.Decimal
-	// halted 为 true 表示该标的已被风控暂停，需人工介入才能恢复。
+	// halted being true means this symbol has been suspended by risk control and needs manual intervention to resume.
 	halted bool
-	// haltRule 记录导致暂停的规则。
+	// haltRule records the rule that caused the suspension.
 	haltRule string
 }
 
-// NewRiskManager 为某个标的创建风控器。
+// NewRiskManager creates a risk controller for a symbol.
 func NewRiskManager(symbol string, cfg types.RiskConfig) *RiskManager {
 	return &RiskManager{symbol: symbol, cfg: cfg}
 }
 
-// Halted 报告该标的是否已被风控暂停。
+// Halted reports whether this symbol has been suspended by risk control.
 func (r *RiskManager) Halted() bool { return r.halted }
 
-// HaltRule 返回导致暂停的规则名。
+// HaltRule returns the name of the rule that caused the suspension.
 func (r *RiskManager) HaltRule() string { return r.haltRule }
 
-// DayRealizedLoss 返回当日累计已实现亏损。
+// DayRealizedLoss returns the day's cumulative realized loss so far.
 func (r *RiskManager) DayRealizedLoss() decimal.Decimal { return r.dayRealizedLoss }
 
-// CheckOpen 判定是否允许按给定名义金额开仓。
+// CheckOpen decides whether opening a position of the given notional amount is allowed.
 func (r *RiskManager) CheckOpen(now time.Time, notional decimal.Decimal) RiskDecision {
 	r.rollDay(now)
 
@@ -103,8 +104,9 @@ func (r *RiskManager) CheckOpen(now time.Time, notional decimal.Decimal) RiskDec
 		}
 	}
 
-	// 单日亏损已达上限时不再开新仓。这里只拒绝开仓、不强平——
-	// 已有持仓的处置交给 CheckPosition，避免同一根 K 线上重复动作。
+	// No new positions once the daily loss cap is reached. This only rejects
+	// opening — it does not force-close; handling an existing position is
+	// left to CheckPosition, to avoid duplicate actions on the same candle.
 	if r.dailyLossBreached() {
 		return RiskDecision{
 			Verdict: RiskReject, Rule: "max_daily_loss",
@@ -120,10 +122,11 @@ func (r *RiskManager) CheckOpen(now time.Time, notional decimal.Decimal) RiskDec
 	return RiskDecision{Verdict: RiskAllow}
 }
 
-// CheckPosition 判定已有持仓是否需要被强制平仓。
+// CheckPosition decides whether an existing position must be force-closed.
 //
-// 顺序即优先级：单日亏损 > 止损 > 止盈 > 持仓超时。
-// 单日亏损排在最前，因为它是唯一会连带暂停整个标的的规则。
+// The order here is the priority: daily loss > stop-loss > take-profit >
+// holding timeout. Daily loss comes first because it's the only rule that
+// also suspends the whole symbol.
 func (r *RiskManager) CheckPosition(
 	now time.Time, pos types.Position, price decimal.Decimal,
 ) RiskDecision {
@@ -133,7 +136,8 @@ func (r *RiskManager) CheckPosition(
 		return RiskDecision{Verdict: RiskAllow}
 	}
 
-	// 单日亏损把浮亏也算进去：等浮亏变成已实现再暂停就太晚了。
+	// The daily loss check also counts unrealized P&L: waiting until an
+	// unrealized loss becomes realized before suspending would be too late.
 	if r.cfg.MaxDailyLossQuote.IsPositive() {
 		unrealized := pos.UnrealizedPnL(price)
 		projected := r.dayRealizedLoss
@@ -154,10 +158,13 @@ func (r *RiskManager) CheckPosition(
 		}
 	}
 
-	// 止损/止盈的绝对价格阈值在开仓那一刻（Worker.openPosition，见 ResolveStopLossPrice/
-	// ResolveTakeProfitPrice）就已经算好存在 pos 上了，不管当初是固定百分比还是
-	// support_resistance 模式——这里只需要拿当前价跟这两个价格比，两种模式走的是
-	// 完全相同的比较逻辑，不需要在这里区分。
+	// The absolute stop-loss/take-profit price thresholds were already
+	// computed and stored on pos at the moment the position was opened
+	// (Worker.openPosition, see ResolveStopLossPrice/ResolveTakeProfitPrice),
+	// regardless of whether that used a fixed percentage or
+	// support_resistance mode — here we just compare the current price
+	// against those two prices; both modes go through exactly the same
+	// comparison logic, no need to distinguish between them here.
 	if pos.StopLossPrice.IsPositive() {
 		triggered := price.LessThanOrEqual(pos.StopLossPrice)
 		if pos.Direction == types.DirectionShort {
@@ -214,7 +221,7 @@ func (r *RiskManager) CheckPosition(
 	return RiskDecision{Verdict: RiskAllow}
 }
 
-// RecordRealized 记录一次已实现盈亏，用于单日亏损统计。
+// RecordRealized records a single realized P&L event, for daily loss tracking.
 func (r *RiskManager) RecordRealized(now time.Time, pnl decimal.Decimal) {
 	r.rollDay(now)
 	if pnl.IsNegative() {
@@ -222,25 +229,26 @@ func (r *RiskManager) RecordRealized(now time.Time, pnl decimal.Decimal) {
 	}
 }
 
-// Halt 暂停该标的的交易。
+// Halt suspends trading for this symbol.
 func (r *RiskManager) Halt(rule string) {
 	r.halted = true
 	r.haltRule = rule
 }
 
-// Resume 解除暂停。这是人工操作的入口，系统自身绝不调用。
+// Resume lifts the suspension. This is a manual-operation entry point; the system itself never calls it.
 func (r *RiskManager) Resume() {
 	r.halted = false
 	r.haltRule = ""
 }
 
-// rollDay 跨日时重置当日统计。
+// rollDay resets the day's stats when the accounting day rolls over.
 func (r *RiskManager) rollDay(now time.Time) {
 	key := now.UTC().Format("2006-01-02")
 	if key != r.dayKey {
 		r.dayKey = key
 		r.dayRealizedLoss = decimal.Zero
-		// 注意：跨日不自动解除暂停。风控触发过的标的必须由人确认后才恢复。
+		// Note: rolling over to a new day does NOT auto-lift a suspension. A
+		// symbol that tripped risk control must be confirmed by a human before it resumes.
 	}
 }
 
@@ -249,10 +257,14 @@ func (r *RiskManager) dailyLossBreached() bool {
 		r.dayRealizedLoss.GreaterThanOrEqual(r.cfg.MaxDailyLossQuote)
 }
 
-// ResolveStopLossPrice 在开仓那一刻算出止损的绝对价格阈值，pct 为 0（未设置止损）时
-// 返回零值、不报错。support_resistance 模式下找不到可用的关键位（附近没有探测到、
-// 或该信号本次是降级产物）时报错——调用方（Worker.openPosition）应当据此拒绝开仓，
-// 不能在用户明确要求止损保护的情况下，因为算不出价格就假装没有这回事。
+// ResolveStopLossPrice computes the absolute stop-loss price threshold at the
+// moment a position is opened; it returns the zero value with no error when
+// pct is 0 (stop-loss not set). In support_resistance mode it errors when no
+// usable key level can be found (none detected nearby, or this signal is a
+// degraded product this time) — the caller (Worker.openPosition) should
+// reject opening the position on that basis; it must not pretend everything
+// is fine just because the price couldn't be computed, when the user
+// explicitly asked for stop-loss protection.
 func ResolveStopLossPrice(
 	cfg types.RiskConfig, direction types.Direction, entryPrice decimal.Decimal, signals []types.Signal,
 ) (decimal.Decimal, error) {
@@ -263,7 +275,7 @@ func ResolveStopLossPrice(
 		}
 		return adversePctPrice(direction, entryPrice, cfg.StopLossPct), nil
 	case types.RiskLevelModeSupportResistance:
-		// 多头止损设在支撑位（价格下方），空头止损设在阻力位（价格上方）。
+		// A long's stop-loss sits at the support level (below price); a short's sits at the resistance level (above price).
 		return levelPrice(signals, direction != types.DirectionShort, "止损")
 	case types.RiskLevelModePOC:
 		return pocPrice(signals, "止损")
@@ -272,8 +284,9 @@ func ResolveStopLossPrice(
 	}
 }
 
-// ResolveTakeProfitPrice 是 ResolveStopLossPrice 的止盈版本：多头止盈设在阻力位，
-// 空头止盈设在支撑位——跟止损方向相反。
+// ResolveTakeProfitPrice is the take-profit counterpart of
+// ResolveStopLossPrice: a long's take-profit sits at the resistance level, a
+// short's at the support level — the opposite direction from stop-loss.
 func ResolveTakeProfitPrice(
 	cfg types.RiskConfig, direction types.Direction, entryPrice decimal.Decimal, signals []types.Signal,
 ) (decimal.Decimal, error) {
@@ -292,15 +305,24 @@ func ResolveTakeProfitPrice(
 	}
 }
 
-// ResolvePositionSizeQuote 算出开仓的名义金额（计价货币）。fixed_quote 模式下就是
-// MaxPositionSizeQuote 本身，跟止损无关；risk_pct 模式下按"账户权益 × 单笔风险比例 ÷
-// 止损距离百分比"算，依赖调用方已经解析好的止损绝对价格（stopLossPrice）——止损没
-// 设置或算不出来、或止损价等于入场价（距离为 0）时报错，调用方应据此拒绝开仓，理由
-// 跟 ResolveStopLossPrice 一样：用户明确要求按风险百分比开仓，算不出来就不该假装能开。
+// ResolvePositionSizeQuote computes the notional amount (in the quote
+// currency) to open. In fixed_quote mode it is simply MaxPositionSizeQuote,
+// unrelated to the stop-loss; in risk_pct mode it's computed as "account
+// equity × per-trade risk percentage ÷ stop-loss distance percentage",
+// relying on the caller having already resolved the absolute stop-loss price
+// (stopLossPrice) — it errors when the stop-loss is unset, unresolvable, or
+// equal to the entry price (zero distance), and the caller should reject
+// opening the position on that basis, for the same reason as
+// ResolveStopLossPrice: the user explicitly asked to size by risk
+// percentage, so we must not pretend we can size the position when we can't.
 //
-// 这里刻意不对结果做 MaxPositionSizeQuote 上限的裁剪——上限检查交给 RiskManager.CheckOpen
-// 做，超限就整笔拒绝，不做静默缩小：静默缩小会破坏"这笔仓位对应 N% 权益风险"这个用户
-// 明确要的语义，用户需要知道自己配的风险比例/止损距离在当前上限下开不出这么大的仓位。
+// This deliberately does NOT clip the result against the MaxPositionSizeQuote
+// cap — that check is left to RiskManager.CheckOpen, which rejects the whole
+// trade outright when the cap is exceeded rather than silently shrinking it:
+// silently shrinking would break the "this position corresponds to N% equity
+// risk" semantics the user explicitly asked for; the user needs to know that
+// their configured risk percentage/stop-loss distance can't open a position
+// this large under the current cap.
 func ResolvePositionSizeQuote(
 	cfg types.RiskConfig, entryPrice, stopLossPrice decimal.Decimal,
 ) (decimal.Decimal, error) {
@@ -339,8 +361,9 @@ func favorablePctPrice(direction types.Direction, entry decimal.Decimal, pct flo
 	return entry.Mul(decimal.NewFromInt(1).Add(factor))
 }
 
-// levelPrice 从本次决策的信号里取 support_resistance 模块检测到的最近支撑/阻力位。
-// wantSupport 为 true 时取支撑位，否则取阻力位。
+// levelPrice pulls the nearest support/resistance level detected by the
+// support_resistance module from this decision's signals. wantSupport true
+// selects the support level, otherwise the resistance level.
 func levelPrice(signals []types.Signal, wantSupport bool, purpose string) (decimal.Decimal, error) {
 	sig, ok := findSignal(signals, "support_resistance")
 	if !ok {
@@ -374,9 +397,11 @@ func levelPrice(signals []types.Signal, wantSupport bool, purpose string) (decim
 	return price, nil
 }
 
-// pocPrice 从本次决策的信号里取 poc 模块算出的成交量分布重心。POC 只有一个价格，
-// 不像支撑/阻力位分上下两个，所以不需要 wantSupport 这样的方向参数——
-// 止损止盈用的是同一个值，多空双方都一样。
+// pocPrice pulls the volume-profile point of control computed by the poc
+// module from this decision's signals. POC is a single price, unlike
+// support/resistance which splits into an upper and lower level, so it needs
+// no direction parameter like wantSupport — stop-loss and take-profit use the
+// same value, for both longs and shorts alike.
 func pocPrice(signals []types.Signal, purpose string) (decimal.Decimal, error) {
 	sig, ok := findSignal(signals, "poc")
 	if !ok {

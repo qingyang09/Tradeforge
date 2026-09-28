@@ -1,7 +1,8 @@
-// Package modules 定义信号模块的统一接口与注册表。
+// Package modules defines the common interface for signal modules and their registry.
 //
-// 设计约束：各模块实现包只依赖 pkg/types，互不引用，也不引用本包。
-// 本包反过来引用它们并组装默认注册表，依赖方向单向、无环。
+// Design constraint: each module implementation package depends only on pkg/types,
+// never on each other or on this package. This package depends on them in turn and
+// assembles the default registry, keeping the dependency direction one-way and acyclic.
 package modules
 
 import (
@@ -12,61 +13,73 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// SignalModule 是所有交易信号模块必须实现的接口。
+// SignalModule is the interface every trading signal module must implement.
 //
-// 模块之间互不耦合：唯一的对外契约就是"吃 MarketData + 参数，吐 Signal"。
-// 组合引擎只依赖这个接口，不关心模块内部算法。
+// Modules are decoupled from one another: the only external contract is "take
+// MarketData + params, emit a Signal". The composition engine depends only on
+// this interface and knows nothing about a module's internal algorithm.
 type SignalModule interface {
-	// Name 返回模块的唯一标识，如 "support_resistance"。
-	// 这个名字会出现在策略配置里，是 Agent 翻译层唯一允许引用的模块标识。
+	// Name returns the module's unique identifier, e.g. "support_resistance".
+	// This name appears in strategy configs and is the only module identifier
+	// the Agent translation layer is allowed to reference.
 	Name() string
 
-	// Description 返回一句中立的功能描述，用于展示与 Agent 的模块清单提示词。
-	// 只描述"这个模块算什么"，不得包含任何适用场景推荐或效果承诺。
+	// Description returns a neutral one-line description of what the module does,
+	// used for display and in the Agent's module-list prompt.
+	// It must describe only "what this module computes" — no recommendations
+	// about when to use it and no performance claims.
 	Description() string
 
-	// RequiredParams 返回模块的参数规格：名称、类型、默认值、取值范围。
-	// 它是参数校验与 JSON Schema 生成的唯一事实来源。
+	// RequiredParams returns the module's parameter spec: name, type, default
+	// value, and valid range. It is the single source of truth for both
+	// parameter validation and JSON Schema generation.
 	RequiredParams() []types.ParamSpec
 
-	// Evaluate 基于行情数据与参数计算信号。
+	// Evaluate computes a signal from market data and parameters.
 	//
-	// 实现约定：
-	//   - 数据不足时返回中性信号 + nil error，不要报错（这是正常情况）
-	//   - 参数非法时返回错误（这是调用方的问题，必须暴露）
-	//   - 必须尊重 ctx 的取消与超时
-	//   - 不得修改传入的 MarketData
+	// Implementation contract:
+	//   - Insufficient data returns a neutral signal + nil error, not an error
+	//     (this is a normal condition, not a failure)
+	//   - Invalid parameters return an error (this is the caller's problem and
+	//     must be surfaced)
+	//   - Must respect ctx cancellation and deadlines
+	//   - Must not mutate the MarketData passed in
 	Evaluate(ctx context.Context, md types.MarketData, params map[string]any) (types.Signal, error)
 }
 
-// Registry 是模块注册表，把模块名映射到实现。
+// Registry is the module registry, mapping module names to implementations.
 //
-// 它是"平台内置了哪些模块"的唯一权威来源：Agent 翻译层从这里取可选模块清单，
-// 组合引擎从这里取实现，两者看到的必须是同一份。
+// It is the single authoritative source for "which modules the platform ships":
+// the Agent translation layer pulls its list of selectable modules from here,
+// and the composition engine pulls implementations from here — both must see
+// the same set.
 type Registry struct {
 	byName map[string]SignalModule
 }
 
-// NewRegistry 返回一个空注册表。
+// NewRegistry returns an empty registry.
 func NewRegistry() *Registry {
 	return &Registry{byName: make(map[string]SignalModule)}
 }
 
-// Register 登记一个模块。重复注册同名模块会 panic：
-// 这只可能是启动期的编程错误，静默覆盖会让线上跑的模块与预期不符。
+// Register adds a module. Registering the same name twice panics: this can
+// only be a startup-time programming error, and silently overwriting the
+// entry would make the module running in production diverge from what was
+// intended.
 func (r *Registry) Register(m SignalModule) {
 	name := m.Name()
 	if name == "" {
-		panic("modules: 模块名不能为空")
+		panic("modules: module name must not be empty")
 	}
 	if _, dup := r.byName[name]; dup {
-		panic(fmt.Sprintf("modules: 模块 %q 重复注册", name))
+		panic(fmt.Sprintf("modules: module %q registered twice", name))
 	}
 	r.byName[name] = m
 }
 
-// Get 按名字取模块。未注册时返回 error 而不是零值，
-// 让"Agent 幻觉出一个不存在的模块"这类问题在配置校验期就炸出来。
+// Get looks up a module by name. Returns an error rather than a zero value
+// when unregistered, so an "Agent hallucinated a module that doesn't exist"
+// bug surfaces during config validation instead of later.
 func (r *Registry) Get(name string) (SignalModule, error) {
 	m, ok := r.byName[name]
 	if !ok {
@@ -75,13 +88,13 @@ func (r *Registry) Get(name string) (SignalModule, error) {
 	return m, nil
 }
 
-// Has 报告模块是否已注册。
+// Has reports whether a module is registered.
 func (r *Registry) Has(name string) bool {
 	_, ok := r.byName[name]
 	return ok
 }
 
-// Names 返回全部已注册模块名，按字典序排列（保证输出稳定）。
+// Names returns all registered module names, lexically sorted (so the output is stable).
 func (r *Registry) Names() []string {
 	names := make([]string, 0, len(r.byName))
 	for n := range r.byName {
@@ -91,7 +104,7 @@ func (r *Registry) Names() []string {
 	return names
 }
 
-// All 返回全部已注册模块，按名字排序。
+// All returns every registered module, sorted by name.
 func (r *Registry) All() []SignalModule {
 	out := make([]SignalModule, 0, len(r.byName))
 	for _, n := range r.Names() {
@@ -100,7 +113,7 @@ func (r *Registry) All() []SignalModule {
 	return out
 }
 
-// UnknownModuleError 表示引用了未注册的模块。
+// UnknownModuleError indicates a reference to a module that isn't registered.
 type UnknownModuleError struct {
 	Name      string
 	Available []string
@@ -110,8 +123,9 @@ func (e *UnknownModuleError) Error() string {
 	return fmt.Sprintf("未知模块 %q；平台当前提供的模块为：%v", e.Name, e.Available)
 }
 
-// ResolveParams 用模块自己的参数规格校验并规范化一组实参。
-// 这是模块实现在 Evaluate 开头应当调用的第一件事。
+// ResolveParams validates and normalizes a set of arguments against a module's
+// own parameter spec. This is the first thing a module implementation should
+// call at the top of Evaluate.
 func ResolveParams(m SignalModule, params map[string]any) (map[string]any, error) {
 	return types.ResolveParams(m.Name(), m.RequiredParams(), params)
 }

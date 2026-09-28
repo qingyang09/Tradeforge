@@ -10,8 +10,10 @@ import (
 	"tradeforge/internal/modules/volumebreakout"
 )
 
-// 编译期确认各实现确实满足 SignalModule 接口。
-// 断言放在本包而不是实现包里，是为了让实现包只依赖 pkg/types，保持依赖单向。
+// Compile-time check that each implementation actually satisfies SignalModule.
+// These assertions live here rather than in the implementation packages so the
+// implementation packages can depend only on pkg/types, keeping the dependency
+// direction one-way.
 var (
 	_ SignalModule = (*supportresistance.Module)(nil)
 	_ SignalModule = (*volumebreakout.Module)(nil)
@@ -22,10 +24,12 @@ var (
 	_ SignalModule = (*poc.Module)(nil)
 )
 
-// NewDefaultRegistry 返回装好全部内置模块的注册表。
+// NewDefaultRegistry returns a registry preloaded with all built-in modules.
 //
-// 这是"平台内置了哪些模块"的唯一权威定义：Agent 翻译层的可选模块清单、
-// 组合引擎的模块查找、界面的模块列表，都必须从这里取，不允许各自维护一份。
+// This is the single authoritative definition of "which modules the platform
+// ships": the Agent translation layer's selectable module list, the
+// composition engine's module lookup, and the UI's module list must all pull
+// from here — none of them may maintain their own copy.
 func NewDefaultRegistry() *Registry {
 	r := NewRegistry()
 	r.Register(supportresistance.New())

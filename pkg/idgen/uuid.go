@@ -1,4 +1,4 @@
-// Package idgen 生成平台使用的标识符。
+// Package idgen generates the identifiers used across the platform.
 package idgen
 
 import (
@@ -7,16 +7,18 @@ import (
 	"fmt"
 )
 
-// NewUUID 生成 RFC 4122 版本 4 的 UUID 字符串。
+// NewUUID generates an RFC 4122 version 4 UUID string.
 //
-// 自己实现而不是引第三方库：全项目只需要这一个函数，
-// 而 Postgres 的 uuid 列要求标准的带连字符格式。
+// Implemented in-house rather than pulling in a third-party library: the whole
+// project only needs this one function, and Postgres's uuid column requires the
+// standard hyphenated format.
 func NewUUID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		// crypto/rand 失败意味着系统熵源不可用。此时继续跑会产出可预测的
-		// 审计 ID 与订单号，比直接崩溃更危险。
-		panic(fmt.Sprintf("idgen: 无法读取随机数生成 UUID：%v", err))
+		// crypto/rand failing means the system's entropy source is unavailable.
+		// Continuing to run in that state would produce predictable audit IDs and
+		// order numbers, which is more dangerous than just crashing.
+		panic(fmt.Sprintf("idgen: failed to read random bytes for UUID: %v", err))
 	}
 	b[6] = (b[6] & 0x0f) | 0x40 // version 4
 	b[8] = (b[8] & 0x3f) | 0x80 // variant 10

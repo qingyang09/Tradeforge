@@ -11,13 +11,13 @@ func TestRequiredTimeframesDedupsAndIncludesTrigger(t *testing.T) {
 		Modules: []ModuleConfig{
 			{Module: "fakeout", Timeframe: TF1h},
 			{Module: "poc", Timeframe: TF1h},
-			{Module: "volume_breakout"}, // 留空，跟随触发周期
+			{Module: "volume_breakout"}, // left empty, follows the trigger timeframe
 		},
 	}
 	got := cfg.RequiredTimeframes()
 	want := []Timeframe{TF15m, TF1h}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("RequiredTimeframes() = %v，期望 %v", got, want)
+		t.Errorf("RequiredTimeframes() = %v, expected %v", got, want)
 	}
 }
 
@@ -32,7 +32,7 @@ func TestRequiredTimeframesSingleTimeframeStrategy(t *testing.T) {
 	got := cfg.RequiredTimeframes()
 	want := []Timeframe{TF1h}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("RequiredTimeframes() = %v，期望 %v", got, want)
+		t.Errorf("RequiredTimeframes() = %v, expected %v", got, want)
 	}
 }
 
@@ -41,6 +41,6 @@ func TestRequiredTimeframesNoModules(t *testing.T) {
 	got := cfg.RequiredTimeframes()
 	want := []Timeframe{TF4h}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("RequiredTimeframes() = %v，期望 %v", got, want)
+		t.Errorf("RequiredTimeframes() = %v, expected %v", got, want)
 	}
 }

@@ -1,36 +1,38 @@
 package types
 
-// StrategyState 是策略在验证闭环中的状态。
+// StrategyState is a strategy's state within the verification lifecycle.
 //
-// 合法流转固定为：
+// The legal transition path is fixed:
 //
 //	DRAFT → BACKTESTED → PAPER_TRADING → LIVE_ELIGIBLE → LIVE
 //
-// 状态机本身（含门槛校验与审计日志）实现在 internal/engine/statemachine.go。
-// 这里只放常量，避免下层包为了引用状态名而依赖上层包。
+// The state machine itself (gate checks and audit logging) is implemented in
+// internal/engine/statemachine.go. Only the constants live here, so lower-level
+// packages can reference state names without depending on a higher-level package.
 type StrategyState string
 
 const (
-	// StateDraft 草稿：Agent 刚翻译出的配置，尚未回测。
+	// StateDraft: a config just translated by the Agent, not yet backtested.
 	StateDraft StrategyState = "DRAFT"
-	// StateBacktested 已回测：回测跑完且样本外结果达到门槛。
+	// StateBacktested: backtest complete and out-of-sample results clear the gate.
 	StateBacktested StrategyState = "BACKTESTED"
-	// StatePaperTrading 模拟盘：用实时行情跑模拟交易，不下真实单。
+	// StatePaperTrading: running simulated trades against live market data, no real orders.
 	StatePaperTrading StrategyState = "PAPER_TRADING"
-	// StateLiveEligible 具备实盘资格：模拟盘时长与笔数均已达标，等待用户手动解锁。
+	// StateLiveEligible: eligible for live trading — paper trading duration and trade
+	// count both clear the gate, awaiting the user's manual unlock.
 	StateLiveEligible StrategyState = "LIVE_ELIGIBLE"
-	// StateLive 实盘：真实下单中。
+	// StateLive: live trading, placing real orders.
 	StateLive StrategyState = "LIVE"
-	// StateSuspended 已暂停：触发风控或用户手动停止。
+	// StateSuspended: suspended — risk control was triggered or the user stopped it manually.
 	StateSuspended StrategyState = "SUSPENDED"
 )
 
-// AllStates 按流程顺序列出全部状态。
+// AllStates lists every state in pipeline order.
 var AllStates = []StrategyState{
 	StateDraft, StateBacktested, StatePaperTrading, StateLiveEligible, StateLive, StateSuspended,
 }
 
-// Valid 报告状态是否为已定义的取值。
+// Valid reports whether the state is one of the defined values.
 func (s StrategyState) Valid() bool {
 	for _, v := range AllStates {
 		if v == s {

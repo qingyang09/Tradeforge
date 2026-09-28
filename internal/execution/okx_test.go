@@ -12,9 +12,11 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// testOKXBroker 直接构造 OKXBroker，绕开 NewOKXDemoBroker 的必填密钥校验——
-// 那道校验是给真实调用方防呆用的，跟"用假 HTTP 服务器验证签名/轮询/解析逻辑"
-// 这个测试目的无关。轮询间隔调短，避免测试因为默认 300ms 的间隔跑得很慢。
+// testOKXBroker builds an OKXBroker directly, bypassing NewOKXDemoBroker's
+// required-credentials check — that check fool-proofs real callers and has
+// nothing to do with this test's purpose of verifying signing/polling/parsing
+// logic against a fake HTTP server. The poll interval is shortened so the
+// test doesn't run slowly because of the default 300ms interval.
 func testOKXBroker(t *testing.T, baseURL string) *OKXBroker {
 	t.Helper()
 	return &OKXBroker{
@@ -28,9 +30,10 @@ func testOKXBroker(t *testing.T, baseURL string) *OKXBroker {
 	}
 }
 
-// fakeOKXServer 模拟 OKX 的下单 + 查订单详情两个接口：下单接口只返回订单号，
-// 查订单详情接口返回真正的成交结果——这跟 OKX 的真实行为一致（不像币安一次
-// 下单响应就带全部成交明细）。
+// fakeOKXServer simulates OKX's two endpoints — place order and get order
+// detail: the place-order endpoint only returns an order ID, and the
+// order-detail endpoint returns the actual fill result — matching OKX's real
+// behavior (unlike Binance, which returns all fill details in one response).
 func fakeOKXServer(t *testing.T, orderDetailBody string, orderDetailStatus int, checkPlaceReq func(*http.Request, string)) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -47,7 +50,7 @@ func fakeOKXServer(t *testing.T, orderDetailBody string, orderDetailStatus int, 
 			w.WriteHeader(orderDetailStatus)
 			w.Write([]byte(orderDetailBody))
 		default:
-			t.Fatalf("未预期的请求：%s %s", r.Method, r.URL.Path)
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
 	}))
 	t.Cleanup(srv.Close)
@@ -78,32 +81,32 @@ func TestOKXBrokerPlaceOrderSignsAndSendsRequest(t *testing.T) {
 		Provenance: types.OrderProvenance{DecisionID: "d1"},
 	})
 	if err != nil {
-		t.Fatalf("意外错误：%v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 
 	if gotHeaders.Get("OK-ACCESS-KEY") != "test-key" {
-		t.Errorf("OK-ACCESS-KEY = %q，期望 test-key", gotHeaders.Get("OK-ACCESS-KEY"))
+		t.Errorf("OK-ACCESS-KEY = %q, want test-key", gotHeaders.Get("OK-ACCESS-KEY"))
 	}
 	if gotHeaders.Get("OK-ACCESS-PASSPHRASE") != "test-pass" {
-		t.Errorf("OK-ACCESS-PASSPHRASE = %q，期望 test-pass", gotHeaders.Get("OK-ACCESS-PASSPHRASE"))
+		t.Errorf("OK-ACCESS-PASSPHRASE = %q, want test-pass", gotHeaders.Get("OK-ACCESS-PASSPHRASE"))
 	}
 	if gotHeaders.Get("OK-ACCESS-SIGN") == "" {
-		t.Error("请求必须带签名，实际为空")
+		t.Error("request must carry a signature, got empty")
 	}
 	if gotHeaders.Get("x-simulated-trading") != "1" {
-		t.Errorf("必须带模拟盘标记 x-simulated-trading: 1，实际 %q", gotHeaders.Get("x-simulated-trading"))
+		t.Errorf("must carry the demo-trading flag x-simulated-trading: 1, got %q", gotHeaders.Get("x-simulated-trading"))
 	}
 	if !strings.Contains(gotBody, `"instId":"BTC-USDT"`) {
-		t.Errorf("下单请求体里标的应转换成 BTC-USDT，实际：%s", gotBody)
+		t.Errorf("order request body should convert the symbol to BTC-USDT, got: %s", gotBody)
 	}
 	if !strings.Contains(gotBody, `"side":"buy"`) {
-		t.Errorf("下单请求体方向应为 buy，实际：%s", gotBody)
+		t.Errorf("order request body side should be buy, got: %s", gotBody)
 	}
 	if !strings.Contains(gotBody, `"tgtCcy":"base_ccy"`) {
-		t.Errorf("必须强制 tgtCcy=base_ccy，保证 sz 语义跟买卖方向无关，实际：%s", gotBody)
+		t.Errorf("must force tgtCcy=base_ccy so sz's meaning is independent of buy/sell side, got: %s", gotBody)
 	}
 	if !strings.Contains(gotBody, `"sz":"0.1"`) {
-		t.Errorf("sz 应为下单数量 0.1，实际：%s", gotBody)
+		t.Errorf("sz should be the order quantity 0.1, got: %s", gotBody)
 	}
 }
 
@@ -117,30 +120,30 @@ func TestOKXBrokerPlaceOrderParsesFilledDetailIntoOrder(t *testing.T) {
 		Provenance: types.OrderProvenance{DecisionID: "d1"},
 	})
 	if err != nil {
-		t.Fatalf("意外错误：%v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 
 	if order.Status != types.OrderFilled {
-		t.Errorf("Status = %s，期望 FILLED", order.Status)
+		t.Errorf("Status = %s, want FILLED", order.Status)
 	}
 	if !order.Quantity.Equal(decimal.NewFromFloat(0.1)) {
-		t.Errorf("Quantity = %s，期望 0.1（来自 accFillSz）", order.Quantity)
+		t.Errorf("Quantity = %s, want 0.1 (from accFillSz)", order.Quantity)
 	}
 	if !order.FilledPrice.Equal(decimal.NewFromInt(100155)) {
-		t.Errorf("FilledPrice = %s，期望 100155（来自 avgPx）", order.FilledPrice)
+		t.Errorf("FilledPrice = %s, want 100155 (from avgPx)", order.FilledPrice)
 	}
-	// OKX 的 fee 是负数（-0.0001，表示扣费），Order.Fee 应存成非负的 0.0001。
+	// OKX's fee is negative (-0.0001, meaning a charge); Order.Fee should be stored as the non-negative 0.0001.
 	if !order.Fee.Equal(decimal.NewFromFloat(0.0001)) {
-		t.Errorf("Fee = %s，期望 0.0001（fee 取绝对值）", order.Fee)
+		t.Errorf("Fee = %s, want 0.0001 (fee's absolute value)", order.Fee)
 	}
 	if order.ExchangeOrderID != "312269865356374016" {
-		t.Errorf("ExchangeOrderID = %s，期望 312269865356374016", order.ExchangeOrderID)
+		t.Errorf("ExchangeOrderID = %s, want 312269865356374016", order.ExchangeOrderID)
 	}
 	if order.Mode != types.ModePaper {
-		t.Errorf("Mode = %s，期望 PAPER（模拟盘恒按模拟盘对待）", order.Mode)
+		t.Errorf("Mode = %s, want PAPER (demo trading is always treated as paper)", order.Mode)
 	}
 	if order.Provenance.DecisionID != "d1" {
-		t.Error("Provenance 应该原样透传")
+		t.Error("Provenance should be passed through unchanged")
 	}
 }
 
@@ -154,10 +157,10 @@ func TestOKXBrokerPlaceOrderRejectedWhenCanceled(t *testing.T) {
 		Quantity: decimal.NewFromFloat(0.1), RefPrice: decimal.NewFromInt(100000),
 	})
 	if err != nil {
-		t.Fatalf("意外错误：%v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if order.Status != types.OrderRejected {
-		t.Errorf("Status = %s，期望 REJECTED（订单被取消、未成交）", order.Status)
+		t.Errorf("Status = %s, want REJECTED (order was canceled, never filled)", order.Status)
 	}
 }
 
@@ -174,10 +177,10 @@ func TestOKXBrokerPlaceOrderErrorsOnExchangeRejection(t *testing.T) {
 		Quantity: decimal.NewFromFloat(0.1), RefPrice: decimal.NewFromInt(100000),
 	})
 	if err == nil {
-		t.Fatal("交易所拒单时应该报错")
+		t.Fatal("exchange rejection should produce an error")
 	}
 	if !strings.Contains(err.Error(), "OKX") {
-		t.Errorf("错误信息应说明是 OKX 拒单，实际：%v", err)
+		t.Errorf("error message should state that OKX rejected the order, got: %v", err)
 	}
 }
 
@@ -188,7 +191,7 @@ func TestOKXBrokerPlaceOrderRejectsNonPositiveQuantity(t *testing.T) {
 		Quantity: decimal.Zero, RefPrice: decimal.NewFromInt(100000),
 	})
 	if err == nil {
-		t.Fatal("下单数量非正时应该在发请求前就拒绝")
+		t.Fatal("a non-positive order quantity should be rejected before the request is even sent")
 	}
 }
 
@@ -199,6 +202,6 @@ func TestOKXBrokerPlaceOrderRejectsUnknownSymbol(t *testing.T) {
 		Quantity: decimal.NewFromFloat(0.1), RefPrice: decimal.NewFromInt(100000),
 	})
 	if err == nil {
-		t.Fatal("无法识别计价货币的标的应该被拒绝")
+		t.Fatal("a symbol whose quote currency can't be identified should be rejected")
 	}
 }

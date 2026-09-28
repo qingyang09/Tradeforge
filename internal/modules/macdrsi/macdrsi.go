@@ -1,16 +1,19 @@
-// Package macdrsi 实现 macd_rsi 信号模块。
+// Package macdrsi implements the macd_rsi signal module.
 //
-// 结合两个经典动量指标：
-//   - MACD（快慢 EMA 之差与其自身的 EMA）：捕捉趋势动量的转向，
-//     MACD 线上穿/下穿信号线视为金叉/死叉。
-//   - RSI（相对强弱指数，Wilder 平滑）：捕捉超买超卖后的回归，
-//     RSI 从极值区间穿回视为反转。
+// Combines two classic momentum indicators:
+//   - MACD (the difference between a fast and slow EMA, plus its own EMA):
+//     captures turns in trend momentum. The MACD line crossing above/below
+//     the signal line counts as a bullish/bearish cross.
+//   - RSI (Relative Strength Index, Wilder-smoothed): captures mean reversion
+//     after overbought/oversold conditions. RSI crossing back out of an
+//     extreme zone counts as a reversal.
 //
-// 三种模式：
-//   - macd_cross：只看 MACD 金叉/死叉
-//   - rsi_reversal：只看 RSI 从超买/超卖区间穿回
-//   - confluence（默认）：要求 MACD 金叉/死叉发生时 RSI 尚未处于同向的极值区间，
-//     避免在行情已经透支的位置追单
+// Three modes:
+//   - macd_cross: only looks at MACD bullish/bearish crosses
+//   - rsi_reversal: only looks at RSI crossing back from overbought/oversold
+//   - confluence (default): requires that when a MACD cross happens, RSI is
+//     not yet in the same-direction extreme zone, to avoid chasing an entry
+//     when the move is already overextended
 package macdrsi
 
 import (
@@ -22,17 +25,17 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// ModuleName 是该模块在策略配置中的标识。
+// ModuleName is this module's identifier in strategy configs.
 const ModuleName = "macd_rsi"
 
-// 检测模式。
+// Detection modes.
 const (
 	ModeMACDCross   = "macd_cross"
 	ModeRSIReversal = "rsi_reversal"
 	ModeConfluence  = "confluence"
 )
 
-// 事件类型，写入 Signal.Raw["event"]。
+// Event types, written to Signal.Raw["event"].
 const (
 	eventBullishCross    = "bullish_cross"
 	eventBearishCross    = "bearish_cross"
@@ -41,21 +44,21 @@ const (
 	eventNone            = "none"
 )
 
-// Module 实现 macd_rsi 信号模块。零值可用。
+// Module implements the macd_rsi signal module. The zero value is usable.
 type Module struct{}
 
-// New 返回模块实例。
+// New returns a module instance.
 func New() *Module { return &Module{} }
 
-// Name 实现 modules.SignalModule。
+// Name implements modules.SignalModule.
 func (m *Module) Name() string { return ModuleName }
 
-// Description 实现 modules.SignalModule。
+// Description implements modules.SignalModule.
 func (m *Module) Description() string {
 	return "结合 MACD 金叉/死叉与 RSI 超买超卖反转，检测趋势动量的转向。"
 }
 
-// RequiredParams 实现 modules.SignalModule。
+// RequiredParams implements modules.SignalModule.
 func (m *Module) RequiredParams() []types.ParamSpec {
 	return []types.ParamSpec{
 		{
@@ -97,7 +100,7 @@ func (m *Module) RequiredParams() []types.ParamSpec {
 	}
 }
 
-// Evaluate 实现 modules.SignalModule。
+// Evaluate implements modules.SignalModule.
 func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[string]any) (types.Signal, error) {
 	p, err := types.ResolveParams(ModuleName, m.RequiredParams(), params)
 	if err != nil {
@@ -136,7 +139,7 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 		return s
 	}
 
-	// 至少要有两个有效的信号线/RSI 取值才能判定穿越（本根 vs 上一根）。
+	// Need at least two valid signal-line/RSI values to detect a cross (this candle vs. the previous one).
 	minForMACD := slowPeriod + signalPeriod
 	minForRSI := rsiPeriod + 2
 	minCandles := minForMACD
@@ -208,9 +211,11 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 	}
 }
 
-// decideDirection 把三种模式的触发条件收口成一个纯函数，便于单独测试——
-// 尤其是 confluence 模式"金叉/死叉发生时 RSI 是否已处于同向极值区间"这条过滤逻辑，
-// 不必依赖精心构造的行情数据就能直接验证。
+// decideDirection consolidates the trigger conditions for all three modes
+// into one pure function, so it's easy to test in isolation — in particular
+// the confluence mode's filter ("is RSI already in the same-direction
+// extreme zone when the cross happens") can be verified directly without
+// relying on carefully constructed market data.
 func decideDirection(
 	mode string,
 	bullishCross, bearishCross, bullishReversal, bearishReversal bool,
@@ -244,10 +249,12 @@ func decideDirection(
 	return types.DirectionNeutral, eventNone, false
 }
 
-// emaSeries 计算指数移动平均，起点用简单平均作种子。
+// emaSeries computes the exponential moving average, seeding the starting
+// point with a simple average.
 //
-// 返回的 series 与 values 等长；[0, validFrom) 区间的值未定义（零值），调用方不得读取。
-// values 长度不足 period 时 validFrom 等于 len(values)（即整体不可用）。
+// The returned series is the same length as values; values in [0, validFrom)
+// are undefined (zero value) and the caller must not read them. If values is
+// shorter than period, validFrom equals len(values) (i.e. the whole series is unusable).
 func emaSeries(values []decimal.Decimal, period int) (series []decimal.Decimal, validFrom int) {
 	n := len(values)
 	series = make([]decimal.Decimal, n)
@@ -269,10 +276,12 @@ func emaSeries(values []decimal.Decimal, period int) (series []decimal.Decimal, 
 	return series, period - 1
 }
 
-// rsiSeries 用 Wilder 平滑法计算 RSI，取值范围 [0, 100]。
+// rsiSeries computes RSI using Wilder's smoothing method, ranging over [0, 100].
 //
-// RSI 是无量纲的振荡指标：内部用 decimal 计算保证精度（增减量本质是价格差），
-// 对外以 float64 表示，与置信度、夏普等统计量的处理方式一致。
+// RSI is a dimensionless oscillator: internally it uses decimal arithmetic
+// for precision (the gains/losses are ultimately price differences), and is
+// exposed externally as float64, consistent with how confidence, Sharpe, and
+// other statistics are handled.
 func rsiSeries(closes []decimal.Decimal, period int) (rsi []float64, validFrom int) {
 	n := len(closes)
 	rsi = make([]float64, n)
@@ -313,7 +322,7 @@ func rsiSeries(closes []decimal.Decimal, period int) (rsi []float64, validFrom i
 func rsiFromAvg(avgGain, avgLoss decimal.Decimal) float64 {
 	switch {
 	case avgLoss.IsZero() && avgGain.IsZero():
-		return 50 // 完全没有波动，视为中性
+		return 50 // no movement at all, treated as neutral
 	case avgLoss.IsZero():
 		return 100
 	case avgGain.IsZero():
@@ -324,8 +333,10 @@ func rsiFromAvg(avgGain, avgLoss decimal.Decimal) float64 {
 	return hundred.Sub(hundred.Div(rs.Add(decimal.NewFromInt(1)))).InexactFloat64()
 }
 
-// avgAbsMACD 计算 MACD 线在 [from, to] 区间内（最多取最近 50 根）的平均绝对值，
-// 用作置信度归一化的量纲基准，使同一套参数在不同价格量级的标的上行为一致。
+// avgAbsMACD computes the average absolute value of the MACD line over
+// [from, to] (at most the most recent 50 candles), used as the normalization
+// scale for confidence so the same parameter set behaves consistently across
+// symbols with different price magnitudes.
 func avgAbsMACD(macdLine []decimal.Decimal, from, to int) decimal.Decimal {
 	if to < from {
 		return decimal.Zero
@@ -346,9 +357,10 @@ func avgAbsMACD(macdLine []decimal.Decimal, from, to int) decimal.Decimal {
 	return sum.Div(decimal.NewFromInt(int64(count)))
 }
 
-// crossSignal 构造 MACD 金叉/死叉信号。
+// crossSignal builds a MACD bullish/bearish cross signal.
 //
-// 置信度按穿越后的差距相对近期 MACD 幅度归一化：差距越大说明动量转向越果断。
+// Confidence is normalized from the post-cross gap relative to the recent
+// MACD magnitude: a bigger gap indicates a more decisive momentum shift.
 func crossSignal(
 	symbol string, cur types.Candle, dir types.Direction, event string,
 	macd, signal, norm decimal.Decimal, raw map[string]any,
@@ -380,9 +392,10 @@ func crossConfidence(gap, norm decimal.Decimal) float64 {
 	return clamp(0.5+0.45*clamp(ratio, 0, 1), 0.5, 0.95)
 }
 
-// reversalSignal 构造 RSI 超买超卖反转信号。
+// reversalSignal builds an RSI overbought/oversold reversal signal.
 //
-// 置信度按穿回前 RSI 深入极值区间的程度：跌得越深/冲得越高，反转的信息量越大。
+// Confidence is based on how deep RSI went into the extreme zone before
+// crossing back: the deeper it went, the more informative the reversal.
 func reversalSignal(
 	symbol string, cur types.Candle, dir types.Direction, event string,
 	extremeRSI, oversold, overbought float64, raw map[string]any,

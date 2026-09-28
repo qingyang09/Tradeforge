@@ -11,11 +11,12 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// Supervisor 管理一组执行实例，每个策略（标的）一个。
+// Supervisor manages a set of execution instances, one per strategy (symbol).
 //
-// 它的全部价值就在"隔离"二字：决策按策略 ID 路由到各自的 Worker，
-// 每个 Worker 在自己的 goroutine 里串行处理自己的队列。
-// 一个标的阻塞、报错或 panic，其它标的照常运转。
+// Its entire value is in the word "isolation": decisions are routed to their
+// own Worker by strategy ID, and each Worker processes its own queue
+// serially in its own goroutine. If one symbol blocks, errors, or panics,
+// every other symbol keeps running normally.
 type Supervisor struct {
 	logger *slog.Logger
 
@@ -25,16 +26,17 @@ type Supervisor struct {
 
 type workerHandle struct {
 	worker *Worker
-	// inbox 是该标的的专属队列。每个标的一条队列，
-	// 慢的标的堆积在自己的队列里，不会拖住别人。
+	// inbox is this symbol's dedicated queue. One queue per symbol, so a slow
+	// symbol backs up only its own queue and never holds up anyone else.
 	inbox  chan types.Decision
 	cancel context.CancelFunc
 	done   chan struct{}
-	// inflight 统计"已投递但尚未处理完"的决策数，供 Drain 精确等待。
+	// inflight counts decisions that have been delivered but not yet fully
+	// processed, so Drain can wait precisely.
 	inflight sync.WaitGroup
 }
 
-// NewSupervisor 创建执行层管理器。
+// NewSupervisor creates the execution-layer manager.
 func NewSupervisor(logger *slog.Logger) *Supervisor {
 	if logger == nil {
 		logger = slog.Default()
@@ -42,30 +44,33 @@ func NewSupervisor(logger *slog.Logger) *Supervisor {
 	return &Supervisor{logger: logger, workers: make(map[string]*workerHandle)}
 }
 
-// ErrUnknownStrategy 表示决策指向了未注册的策略。
-var ErrUnknownStrategy = errors.New("未注册的策略")
+// ErrUnknownStrategy indicates a decision pointed at an unregistered strategy.
+var ErrUnknownStrategy = errors.New("unregistered strategy")
 
-// ErrAlreadyRegistered 表示这个策略已经注册过、正在运行——供周期性重新扫描时区分
-// "这个策略之前扫描过、这次不用重新注册"（正常，静默跳过即可）和真正的注册失败。
-var ErrAlreadyRegistered = errors.New("策略已经在运行中")
+// ErrAlreadyRegistered indicates this strategy has already been registered
+// and is running — used so periodic rescans can distinguish "this strategy
+// was already scanned before, no need to re-register" (normal, silently
+// skip) from a genuine registration failure.
+var ErrAlreadyRegistered = errors.New("strategy is already running")
 
-// DefaultQueueSize 是单个标的的队列容量。
+// DefaultQueueSize is the queue capacity for a single symbol.
 const DefaultQueueSize = 256
 
-// Register 注册一个策略并启动它的执行实例。
+// Register registers a strategy and starts its execution instance.
 func (s *Supervisor) Register(ctx context.Context, cfg types.StrategyConfig, broker Broker, opts ...WorkerOption) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if _, dup := s.workers[cfg.ID]; dup {
-		return fmt.Errorf("%w：%s", ErrAlreadyRegistered, cfg.ID)
+		return fmt.Errorf("%w: %s", ErrAlreadyRegistered, cfg.ID)
 	}
 
-	// 同一标的允许有多个策略，但要在日志里显式提示——
-	// 它们会共享同一个交易所仓位，风控互不感知。
+	// Multiple strategies are allowed on the same symbol, but this must be
+	// called out explicitly in the logs — they'll share the same exchange
+	// position, and their risk controls are unaware of each other.
 	for _, h := range s.workers {
 		if h.worker.Symbol() == cfg.Symbol {
-			s.logger.Warn("同一标的上已有其它策略在运行，两者的风控互相独立、不共享仓位视图",
+			s.logger.Warn("another strategy is already running on this symbol; risk control for each is independent and they do not share a position view",
 				"symbol", cfg.Symbol, "existing", h.worker.StrategyID(), "new", cfg.ID)
 		}
 	}
@@ -89,15 +94,16 @@ func (s *Supervisor) Register(ctx context.Context, cfg types.StrategyConfig, bro
 	return nil
 }
 
-// runWorker 是单个标的的事件循环。
+// runWorker is a single symbol's event loop.
 func (s *Supervisor) runWorker(ctx context.Context, h *workerHandle) {
 	defer close(h.done)
 
-	// 事件循环自身的 panic 也要兜住：Worker.Handle 内部已经 recover 过一层，
-	// 这里是最后的保险，确保一个标的的崩溃不会终止整个进程。
+	// A panic in the event loop itself must also be caught: Worker.Handle
+	// already recovers one layer internally, and this is the last line of
+	// defense to make sure one symbol crashing doesn't take down the whole process.
 	defer func() {
 		if r := recover(); r != nil {
-			s.logger.Error("执行实例的事件循环 panic，该标的已停止（其它标的不受影响）",
+			s.logger.Error("execution instance's event loop panicked; this symbol has stopped (other symbols unaffected)",
 				"symbol", h.worker.Symbol(), "panic", r)
 		}
 	}()
@@ -111,8 +117,8 @@ func (s *Supervisor) runWorker(ctx context.Context, h *workerHandle) {
 				return
 			}
 			if err := h.worker.Handle(ctx, d); err != nil {
-				// 已经在 Worker 内计入统计并记日志，这里只做汇总提示。
-				s.logger.Warn("处理决策时出错，已隔离在本标的内",
+				// Already counted in stats and logged inside Worker; this is just a rollup notice.
+				s.logger.Warn("error processing a decision, isolated to this symbol",
 					"symbol", h.worker.Symbol(), "err", err)
 			}
 			h.inflight.Done()
@@ -120,18 +126,19 @@ func (s *Supervisor) runWorker(ctx context.Context, h *workerHandle) {
 	}
 }
 
-// Dispatch 把一条决策投递给对应的执行实例。
+// Dispatch delivers a decision to its execution instance.
 //
-// 投递是非阻塞的：队列满时丢弃并报错，而不是阻塞调用方。
-// 交易系统里，等待一个已经堆积的队列毫无意义——等轮到它时行情早变了，
-// 而阻塞会连累其它标的的投递。
+// Delivery is non-blocking: when the queue is full it drops the decision and
+// errors, rather than blocking the caller. In a trading system, waiting on an
+// already-backed-up queue is pointless — by the time it's your turn the
+// market has moved on — and blocking would drag down delivery for other symbols too.
 func (s *Supervisor) Dispatch(d types.Decision) error {
 	s.mu.RLock()
 	h, ok := s.workers[d.StrategyID]
 	s.mu.RUnlock()
 
 	if !ok {
-		return fmt.Errorf("%w：%s", ErrUnknownStrategy, d.StrategyID)
+		return fmt.Errorf("%w: %s", ErrUnknownStrategy, d.StrategyID)
 	}
 
 	h.inflight.Add(1)
@@ -140,13 +147,13 @@ func (s *Supervisor) Dispatch(d types.Decision) error {
 		return nil
 	default:
 		h.inflight.Done()
-		s.logger.Error("执行队列已满，丢弃决策",
+		s.logger.Error("execution queue full, dropping decision",
 			"symbol", h.worker.Symbol(), "strategy_id", d.StrategyID)
-		return fmt.Errorf("标的 %s 的执行队列已满，本条决策被丢弃", h.worker.Symbol())
+		return fmt.Errorf("execution queue for symbol %s is full; this decision was dropped", h.worker.Symbol())
 	}
 }
 
-// Worker 按策略 ID 取执行实例。
+// Worker looks up an execution instance by strategy ID.
 func (s *Supervisor) Worker(strategyID string) (*Worker, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -157,7 +164,7 @@ func (s *Supervisor) Worker(strategyID string) (*Worker, bool) {
 	return h.worker, true
 }
 
-// StrategyIDs 返回全部在运行的策略 ID，按字典序排列。
+// StrategyIDs returns every running strategy ID, in lexicographic order.
 func (s *Supervisor) StrategyIDs() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -169,17 +176,20 @@ func (s *Supervisor) StrategyIDs() []string {
 	return out
 }
 
-// StrategyStats 把运行统计跟它所属的策略/标的捆在一起返回——单用 symbol 当 key 在
-// 多用户场景下并不安全：很多不同用户完全可能都在跑同一个 symbol（比如都在跑
-// BTCUSDT），按 symbol 聚合会让不相关用户的统计互相覆盖。策略 ID 全局唯一，按它聚合
-// 才不会有这个collision。
+// StrategyStats bundles a run's stats together with the strategy/symbol they
+// belong to — using symbol alone as the key isn't safe in a multi-user
+// setting: many different users could easily all be running the same symbol
+// (e.g. everyone trading BTCUSDT), and aggregating by symbol would let
+// unrelated users' stats overwrite each other. Strategy ID is globally
+// unique, so aggregating by it avoids that collision.
 type StrategyStats struct {
 	StrategyID string
 	Symbol     string
 	Stats      Stats
 }
 
-// StatsByStrategy 返回各策略的运行统计快照，按策略 ID（全局唯一）聚合。
+// StatsByStrategy returns a snapshot of each strategy's run stats, aggregated
+// by strategy ID (globally unique).
 func (s *Supervisor) StatsByStrategy() map[string]StrategyStats {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -190,7 +200,7 @@ func (s *Supervisor) StatsByStrategy() map[string]StrategyStats {
 	return out
 }
 
-// Unregister 停止并移除一个策略的执行实例。
+// Unregister stops and removes a strategy's execution instance.
 func (s *Supervisor) Unregister(strategyID string) error {
 	s.mu.Lock()
 	h, ok := s.workers[strategyID]
@@ -200,14 +210,14 @@ func (s *Supervisor) Unregister(strategyID string) error {
 	s.mu.Unlock()
 
 	if !ok {
-		return fmt.Errorf("%w：%s", ErrUnknownStrategy, strategyID)
+		return fmt.Errorf("%w: %s", ErrUnknownStrategy, strategyID)
 	}
 	h.cancel()
 	<-h.done
 	return nil
 }
 
-// Shutdown 停止全部执行实例并等待它们退出。
+// Shutdown stops every execution instance and waits for them to exit.
 func (s *Supervisor) Shutdown() {
 	s.mu.Lock()
 	handles := make([]*workerHandle, 0, len(s.workers))
@@ -225,9 +235,9 @@ func (s *Supervisor) Shutdown() {
 	}
 }
 
-// Drain 等待所有已投递的决策处理完毕。
+// Drain waits until every delivered decision has finished processing.
 //
-// 仅供测试使用：生产代码不应依赖"队列已空"这个状态。
+// Test-only: production code should never depend on the "queue is empty" state.
 func (s *Supervisor) Drain() {
 	s.mu.RLock()
 	handles := make([]*workerHandle, 0, len(s.workers))

@@ -52,7 +52,7 @@ func levelRisk() types.RiskConfig {
 	}
 }
 
-// ---------- pct 模式：跟原有 adverseMove/favorableMove 的行为等价 ----------
+// ---------- pct mode: equivalent to the old adverseMove/favorableMove behavior ----------
 
 func TestResolveStopLossPricePctLong(t *testing.T) {
 	got, err := ResolveStopLossPrice(pctRisk(0.05, 0), types.DirectionLong, dec("100"), nil)
@@ -60,7 +60,7 @@ func TestResolveStopLossPricePctLong(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !got.Equal(dec("95")) {
-		t.Errorf("多头 5%% 止损价 = %s，期望 95", got)
+		t.Errorf("long 5%% stop-loss price = %s, want 95", got)
 	}
 }
 
@@ -70,7 +70,7 @@ func TestResolveStopLossPricePctShort(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !got.Equal(dec("105")) {
-		t.Errorf("空头 5%% 止损价 = %s，期望 105", got)
+		t.Errorf("short 5%% stop-loss price = %s, want 105", got)
 	}
 }
 
@@ -80,7 +80,7 @@ func TestResolveTakeProfitPricePctLong(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !got.Equal(dec("110")) {
-		t.Errorf("多头 10%% 止盈价 = %s，期望 110", got)
+		t.Errorf("long 10%% take-profit price = %s, want 110", got)
 	}
 }
 
@@ -90,7 +90,7 @@ func TestResolveTakeProfitPricePctShort(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !got.Equal(dec("90")) {
-		t.Errorf("空头 10%% 止盈价 = %s，期望 90", got)
+		t.Errorf("short 10%% take-profit price = %s, want 90", got)
 	}
 }
 
@@ -100,11 +100,11 @@ func TestResolveStopLossPricePctZeroMeansUnset(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !got.IsZero() {
-		t.Errorf("止损比例为 0 应视为未设置，返回零值，实际 %s", got)
+		t.Errorf("a stop-loss percentage of 0 should be treated as unset and return the zero value, got %s", got)
 	}
 }
 
-// ---------- support_resistance 模式：四种方向 × 止损/止盈组合 ----------
+// ---------- support_resistance mode: four directions x stop-loss/take-profit combinations ----------
 
 func TestResolveStopLossPriceSupportResistanceLongUsesSupport(t *testing.T) {
 	signals := []types.Signal{supportResistanceSignal("95", "110", false)}
@@ -113,7 +113,7 @@ func TestResolveStopLossPriceSupportResistanceLongUsesSupport(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !got.Equal(dec("95")) {
-		t.Errorf("多头止损应取支撑位 95，实际 %s", got)
+		t.Errorf("a long's stop-loss should take the support level 95, got %s", got)
 	}
 }
 
@@ -124,7 +124,7 @@ func TestResolveTakeProfitPriceSupportResistanceLongUsesResistance(t *testing.T)
 		t.Fatal(err)
 	}
 	if !got.Equal(dec("110")) {
-		t.Errorf("多头止盈应取阻力位 110，实际 %s", got)
+		t.Errorf("a long's take-profit should take the resistance level 110, got %s", got)
 	}
 }
 
@@ -135,7 +135,7 @@ func TestResolveStopLossPriceSupportResistanceShortUsesResistance(t *testing.T) 
 		t.Fatal(err)
 	}
 	if !got.Equal(dec("110")) {
-		t.Errorf("空头止损应取阻力位 110，实际 %s", got)
+		t.Errorf("a short's stop-loss should take the resistance level 110, got %s", got)
 	}
 }
 
@@ -146,16 +146,16 @@ func TestResolveTakeProfitPriceSupportResistanceShortUsesSupport(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !got.Equal(dec("95")) {
-		t.Errorf("空头止盈应取支撑位 95，实际 %s", got)
+		t.Errorf("a short's take-profit should take the support level 95, got %s", got)
 	}
 }
 
-// ---------- support_resistance 模式：解析失败的情况都应该报错，不能悄悄给零值 ----------
+// ---------- support_resistance mode: every resolution failure should error, never silently return zero ----------
 
 func TestResolveStopLossPriceSupportResistanceMissingModuleErrors(t *testing.T) {
 	_, err := ResolveStopLossPrice(levelRisk(), types.DirectionLong, dec("100"), nil)
 	if err == nil {
-		t.Fatal("信号里没有 support_resistance 模块数据时应该报错")
+		t.Fatal("should error when the signals contain no support_resistance module data")
 	}
 }
 
@@ -163,34 +163,34 @@ func TestResolveStopLossPriceSupportResistanceDegradedSignalErrors(t *testing.T)
 	signals := []types.Signal{supportResistanceSignal("95", "110", true)}
 	_, err := ResolveStopLossPrice(levelRisk(), types.DirectionLong, dec("100"), signals)
 	if err == nil {
-		t.Fatal("support_resistance 信号是降级信号时应该报错，不能假装有数据")
+		t.Fatal("should error when the support_resistance signal is a degraded signal, must not pretend it has data")
 	}
 }
 
 func TestResolveStopLossPriceSupportResistanceNoLevelNearbyErrors(t *testing.T) {
-	// 附近没有支撑位（比如价格处于历史低点）。
+	// No support level nearby (e.g. price is at a historical low).
 	signals := []types.Signal{supportResistanceSignal("", "110", false)}
 	_, err := ResolveStopLossPrice(levelRisk(), types.DirectionLong, dec("100"), signals)
 	if err == nil {
-		t.Fatal("附近没有支撑位时应该报错，而不是返回零值假装设置成功")
+		t.Fatal("should error when there's no support level nearby, rather than returning zero and pretending it succeeded")
 	}
 	if !strings.Contains(err.Error(), "支撑位") {
-		t.Errorf("错误信息应提到支撑位，实际：%v", err)
+		t.Errorf("error message should mention the support level, got: %v", err)
 	}
 }
 
 func TestResolveTakeProfitPriceSupportResistanceZeroModeReturnsZero(t *testing.T) {
-	// TakeProfitMode 留空（默认 pct）且 TakeProfitPct 为 0：视为未设置止盈。
+	// TakeProfitMode left empty (defaults to pct) and TakeProfitPct is 0: treated as take-profit unset.
 	got, err := ResolveTakeProfitPrice(types.RiskConfig{MaxPositionSizeQuote: dec("1000")}, types.DirectionLong, dec("100"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !got.IsZero() {
-		t.Errorf("未配置止盈时应返回零值，实际 %s", got)
+		t.Errorf("should return zero when take-profit isn't configured, got %s", got)
 	}
 }
 
-// ---------- poc 模式：多空双方用的是同一个价格，不像支撑/阻力位分两个 ----------
+// ---------- poc mode: longs and shorts use the same price, unlike support/resistance which splits into two ----------
 
 func TestResolveStopLossPricePOCLong(t *testing.T) {
 	signals := []types.Signal{pocSignal("102", false)}
@@ -199,7 +199,7 @@ func TestResolveStopLossPricePOCLong(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !got.Equal(dec("102")) {
-		t.Errorf("止损价应等于 POC 102，实际 %s", got)
+		t.Errorf("stop-loss price should equal the POC 102, got %s", got)
 	}
 }
 
@@ -210,7 +210,7 @@ func TestResolveStopLossPricePOCShort(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !got.Equal(dec("102")) {
-		t.Errorf("空头止损价也应等于同一个 POC 102，实际 %s", got)
+		t.Errorf("a short's stop-loss price should also equal the same POC 102, got %s", got)
 	}
 }
 
@@ -221,38 +221,38 @@ func TestResolveTakeProfitPricePOC(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !got.Equal(dec("98")) {
-		t.Errorf("止盈价应等于 POC 98，实际 %s", got)
+		t.Errorf("take-profit price should equal the POC 98, got %s", got)
 	}
 }
 
 func TestResolveStopLossPricePOCMissingModuleErrors(t *testing.T) {
 	if _, err := ResolveStopLossPrice(pocRisk(), types.DirectionLong, dec("100"), nil); err == nil {
-		t.Fatal("信号里没有 poc 模块数据时应该报错")
+		t.Fatal("should error when the signals contain no poc module data")
 	}
 }
 
 func TestResolveStopLossPricePOCDegradedSignalErrors(t *testing.T) {
 	signals := []types.Signal{pocSignal("102", true)}
 	if _, err := ResolveStopLossPrice(pocRisk(), types.DirectionLong, dec("100"), signals); err == nil {
-		t.Fatal("poc 信号是降级信号时应该报错")
+		t.Fatal("should error when the poc signal is a degraded signal")
 	}
 }
 
 func TestResolveStopLossPricePOCNoPriceErrors(t *testing.T) {
-	signals := []types.Signal{pocSignal("", false)} // 价格波动为零之类的情况，算不出 POC
+	signals := []types.Signal{pocSignal("", false)} // e.g. zero price variance, POC can't be computed
 	if _, err := ResolveStopLossPrice(pocRisk(), types.DirectionLong, dec("100"), signals); err == nil {
-		t.Fatal("poc 信号里没有 poc_price 时应该报错")
+		t.Fatal("should error when the poc signal has no poc_price")
 	}
 }
 
 func TestResolveStopLossPriceUnknownModeErrors(t *testing.T) {
 	risk := types.RiskConfig{MaxPositionSizeQuote: dec("1000"), StopLossMode: types.RiskLevelMode("trailing")}
 	if _, err := ResolveStopLossPrice(risk, types.DirectionLong, dec("100"), nil); err == nil {
-		t.Fatal("未知的止损模式应该报错")
+		t.Fatal("an unknown stop-loss mode should error")
 	}
 }
 
-// 确认 decimal 精度没有意外经过 float64（哨兵用例：0.1 这种典型的浮点误差值）。
+// Confirms decimal precision never accidentally passes through float64 (sentinel case: 0.1, a classic floating-point error value).
 func TestResolveStopLossPricePctUsesDecimalPrecision(t *testing.T) {
 	got, err := ResolveStopLossPrice(pctRisk(0.1, 0), types.DirectionLong, dec("30000"), nil)
 	if err != nil {
@@ -260,11 +260,11 @@ func TestResolveStopLossPricePctUsesDecimalPrecision(t *testing.T) {
 	}
 	want, _ := decimal.NewFromString("27000")
 	if !got.Equal(want) {
-		t.Errorf("止损价 = %s，期望精确等于 27000", got)
+		t.Errorf("stop-loss price = %s, want exactly 27000", got)
 	}
 }
 
-// ---------- ResolvePositionSizeQuote：仓位怎么算 ----------
+// ---------- ResolvePositionSizeQuote: how the position size is computed ----------
 
 func riskPctSizingRisk(equity string, riskPct float64, maxCap string) types.RiskConfig {
 	return types.RiskConfig{
@@ -272,63 +272,63 @@ func riskPctSizingRisk(equity string, riskPct float64, maxCap string) types.Risk
 		PositionSizingMode:   types.PositionSizingModeRiskPct,
 		AccountEquityQuote:   dec(equity),
 		RiskPerTradePct:      riskPct,
-		StopLossPct:          0.02, // 校验层要求 risk_pct 模式必须有可用止损，这里给个占位值
+		StopLossPct:          0.02, // the validation layer requires risk_pct mode to have a usable stop-loss; this is a placeholder value
 	}
 }
 
 func TestResolvePositionSizeQuoteFixedQuoteIgnoresStopLoss(t *testing.T) {
 	risk := types.RiskConfig{MaxPositionSizeQuote: dec("500")}
-	got, err := ResolvePositionSizeQuote(risk, dec("100"), decimal.Zero) // 止损价传零值也不影响
+	got, err := ResolvePositionSizeQuote(risk, dec("100"), decimal.Zero) // passing zero for the stop-loss price has no effect either
 	if err != nil {
-		t.Fatalf("意外错误：%v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if !got.Equal(dec("500")) {
-		t.Errorf("fixed_quote 模式仓位 = %s，期望原样等于 MaxPositionSizeQuote 500", got)
+		t.Errorf("fixed_quote mode position size = %s, want it to equal MaxPositionSizeQuote 500 unchanged", got)
 	}
 }
 
 func TestResolvePositionSizeQuoteRiskPctBasic(t *testing.T) {
-	// 权益 10000，风险 1%（=100），入场 100、止损 95，距离 5% → 仓位 = 100 / 0.05 = 2000。
+	// Equity 10000, risk 1% (=100), entry 100, stop 95, distance 5% -> position = 100 / 0.05 = 2000.
 	risk := riskPctSizingRisk("10000", 0.01, "1000000")
 	got, err := ResolvePositionSizeQuote(risk, dec("100"), dec("95"))
 	if err != nil {
-		t.Fatalf("意外错误：%v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if !got.Equal(dec("2000")) {
-		t.Errorf("risk_pct 仓位 = %s，期望 2000", got)
+		t.Errorf("risk_pct position size = %s, want 2000", got)
 	}
 }
 
 func TestResolvePositionSizeQuoteRiskPctShortDirectionSameMagnitude(t *testing.T) {
-	// 空头止损在上方：入场 100、止损 105，距离同样是 5%，仓位应该跟多头场景一致——
-	// 公式只关心距离的绝对值，不关心方向。
+	// A short's stop-loss sits above: entry 100, stop 105, distance is also 5%,
+	// so the position size should match the long case — the formula only cares about the absolute distance, not direction.
 	risk := riskPctSizingRisk("10000", 0.01, "1000000")
 	got, err := ResolvePositionSizeQuote(risk, dec("100"), dec("105"))
 	if err != nil {
-		t.Fatalf("意外错误：%v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if !got.Equal(dec("2000")) {
-		t.Errorf("risk_pct 仓位 = %s，期望 2000", got)
+		t.Errorf("risk_pct position size = %s, want 2000", got)
 	}
 }
 
 func TestResolvePositionSizeQuoteRiskPctZeroStopDistanceErrors(t *testing.T) {
 	risk := riskPctSizingRisk("10000", 0.01, "1000000")
 	if _, err := ResolvePositionSizeQuote(risk, dec("100"), dec("100")); err == nil {
-		t.Fatal("止损价等于入场价（距离为 0）应该报错")
+		t.Fatal("should error when the stop-loss price equals the entry price (zero distance)")
 	}
 }
 
 func TestResolvePositionSizeQuoteRiskPctUnresolvedStopLossErrors(t *testing.T) {
 	risk := riskPctSizingRisk("10000", 0.01, "1000000")
 	if _, err := ResolvePositionSizeQuote(risk, dec("100"), decimal.Zero); err == nil {
-		t.Fatal("止损价未解析（零值）时应该报错")
+		t.Fatal("should error when the stop-loss price is unresolved (zero value)")
 	}
 }
 
 func TestResolvePositionSizeQuoteUnknownModeErrors(t *testing.T) {
 	risk := types.RiskConfig{MaxPositionSizeQuote: dec("1000"), PositionSizingMode: types.PositionSizingMode("kelly")}
 	if _, err := ResolvePositionSizeQuote(risk, dec("100"), dec("95")); err == nil {
-		t.Fatal("未知的仓位模式应该报错")
+		t.Fatal("an unknown position-sizing mode should error")
 	}
 }

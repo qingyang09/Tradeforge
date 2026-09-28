@@ -7,59 +7,75 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// ModuleConfig 是策略中对某一个信号模块的一次引用：用哪个模块、传什么参数、占多少权重。
+// ModuleConfig is a single reference to a signal module within a strategy: which
+// module, what parameters, how much weight.
 type ModuleConfig struct {
-	// Module 必须是已在模块注册表中登记的名字。Agent 不得发明不存在的模块。
+	// Module must be a name already registered in the module registry. The Agent
+	// must not invent a module that doesn't exist.
 	Module string `json:"module"`
-	// Params 是模块参数，键必须落在该模块 RequiredParams() 的范围内。
+	// Params are the module's parameters; keys must fall within that module's
+	// RequiredParams() range.
 	Params map[string]any `json:"params"`
-	// Weight 仅在 CombineWeighted 下有意义，取值 (0, 1]，同一策略内不要求归一化。
+	// Weight only matters under CombineWeighted, in (0, 1]; normalization across a
+	// strategy's modules isn't required.
 	Weight float64 `json:"weight,omitempty"`
-	// Timeframe 是该模块使用的 K 线周期，留空表示跟随 StrategyConfig.Timeframe
-	// （触发周期）。填了就不能比触发周期更快——决策只在触发周期收盘时算一次，
-	// 更快的模块周期永远来不及被看到。多个模块可以各自使用不同的（比触发周期慢的）
-	// 周期，比如用 1 小时的关键位判断背景、15 分钟的放量判断入场触发。
+	// Timeframe is the candle period this module uses; empty means it follows
+	// StrategyConfig.Timeframe (the trigger timeframe). If set, it must not be faster
+	// than the trigger timeframe — decisions are only computed once per close of the
+	// trigger timeframe, so a faster module period would never actually be observed
+	// in time. Multiple modules can each use a different (slower-than-trigger)
+	// timeframe, e.g. 1-hour key levels for background context and 15-minute volume
+	// spikes for the entry trigger.
 	Timeframe Timeframe `json:"timeframe,omitempty"`
 }
 
-// CombineMode 是模块信号的聚合方式。
+// CombineMode is how module signals get aggregated.
 type CombineMode string
 
 const (
-	// CombineAll 要求所有模块给出同方向信号才触发。
+	// CombineAll requires every module to give a signal in the same direction to trigger.
 	CombineAll CombineMode = "ALL"
-	// CombineWeighted 按权重加权置信度，超过阈值才触发。
+	// CombineWeighted aggregates weighted confidence; triggers once it exceeds the threshold.
 	CombineWeighted CombineMode = "WEIGHTED"
 )
 
-// Valid 报告聚合方式是否受支持。
+// Valid reports whether the combine mode is supported.
 func (c CombineMode) Valid() bool {
 	return c == CombineAll || c == CombineWeighted
 }
 
-// RiskLevelMode 决定止损/止盈的价格怎么算。
+// RiskLevelMode determines how the stop-loss/take-profit price is computed.
 type RiskLevelMode string
 
 const (
-	// RiskLevelModePct 是默认模式：按固定百分比计算（见 StopLossPct/TakeProfitPct）。
+	// RiskLevelModePct is the default mode: a fixed percentage (see StopLossPct/TakeProfitPct).
 	RiskLevelModePct RiskLevelMode = "pct"
-	// RiskLevelModeSupportResistance 用 support_resistance 模块在开仓那一刻检测到的
-	// 最近支撑/阻力位作为止损/止盈的价格阈值，而不是固定百分比。多头止损取支撑位、
-	// 止盈取阻力位；空头相反。这个价格只在开仓时算一次并锁定，此后不随行情重新计算——
-	// 跟固定百分比止损的语义一致（都是开仓瞬间定死一个阈值），不是逐根跟随的移动止损。
+	// RiskLevelModeSupportResistance uses the nearest support/resistance level detected
+	// by the support_resistance module at the moment the position opens as the
+	// stop-loss/take-profit price threshold, instead of a fixed percentage. A long
+	// position's stop-loss takes the support level and take-profit the resistance
+	// level; a short position is the reverse. This price is computed once at open and
+	// locked in — it is not recalculated as the market moves, matching the semantics
+	// of a fixed-percentage stop (both pin down a threshold at the instant of opening);
+	// it is not a candle-by-candle trailing stop.
 	RiskLevelModeSupportResistance RiskLevelMode = "support_resistance"
-	// RiskLevelModePOC 用 poc 模块在开仓那一刻算出的成交量分布重心（Point of Control）
-	// 作为止损/止盈的价格阈值。POC 只有一个价格，不像支撑/阻力位分上下两个——不区分
-	// 多空、不区分止损止盈方向，统一取同一个值。
+	// RiskLevelModePOC uses the volume-weighted center of distribution (Point of
+	// Control) computed by the poc module at the moment the position opens as the
+	// stop-loss/take-profit price threshold. POC has only a single price — unlike
+	// support/resistance, which has separate upper/lower levels — so it doesn't
+	// distinguish long/short or stop-loss/take-profit direction; the same value is used
+	// for both.
 	RiskLevelModePOC RiskLevelMode = "poc"
 )
 
-// Valid 报告是否为已支持的止损/止盈模式。空字符串视为 RiskLevelModePct（默认）。
+// Valid reports whether this is a supported stop-loss/take-profit mode. An empty
+// string is treated as RiskLevelModePct (the default).
 func (m RiskLevelMode) Valid() bool {
 	return m == "" || m == RiskLevelModePct || m == RiskLevelModeSupportResistance || m == RiskLevelModePOC
 }
 
-// RequiredModule 返回该模式依赖的信号模块名；pct 模式不依赖任何模块，返回空字符串。
+// RequiredModule returns the signal module name this mode depends on; the pct mode
+// depends on no module and returns an empty string.
 func (m RiskLevelMode) RequiredModule() string {
 	switch m.EffectiveOrPct() {
 	case RiskLevelModeSupportResistance:
@@ -71,7 +87,8 @@ func (m RiskLevelMode) RequiredModule() string {
 	}
 }
 
-// EffectiveOrPct 把空值规范化成 RiskLevelModePct，调用方不必到处判断空字符串。
+// EffectiveOrPct normalizes an empty value to RiskLevelModePct so callers don't
+// have to check for the empty string everywhere.
 func (m RiskLevelMode) EffectiveOrPct() RiskLevelMode {
 	if m == "" {
 		return RiskLevelModePct
@@ -79,26 +96,29 @@ func (m RiskLevelMode) EffectiveOrPct() RiskLevelMode {
 	return m
 }
 
-// PositionSizingMode 决定单笔开仓的名义金额怎么算。
+// PositionSizingMode determines how the notional size of a single position is computed.
 type PositionSizingMode string
 
 const (
-	// PositionSizingModeFixedQuote 是默认模式：名义金额固定等于 MaxPositionSizeQuote，
-	// 跟止损距离无关。
+	// PositionSizingModeFixedQuote is the default mode: notional size is fixed at
+	// MaxPositionSizeQuote, independent of stop-loss distance.
 	PositionSizingModeFixedQuote PositionSizingMode = "fixed_quote"
-	// PositionSizingModeRiskPct 按"账户权益 × 单笔风险比例 ÷ 止损距离百分比"动态计算，
-	// 依赖已经解析出的止损绝对价格——调用方必须先算好止损价，再算仓位（这跟固定金额
-	// 模式不同，固定金额模式的仓位大小跟止损完全无关，谁先算都行）。
+	// PositionSizingModeRiskPct computes size dynamically as "account equity x
+	// per-trade risk percentage / stop-loss distance percentage", which depends on
+	// the already-resolved absolute stop-loss price — the caller must compute the
+	// stop-loss price first, then the position size (unlike the fixed-quote mode,
+	// where size is entirely independent of the stop-loss, so either can be computed first).
 	PositionSizingModeRiskPct PositionSizingMode = "risk_pct"
 )
 
-// Valid 报告是否为已支持的仓位模式。空字符串视为 PositionSizingModeFixedQuote（默认）。
+// Valid reports whether this is a supported position-sizing mode. An empty string
+// is treated as PositionSizingModeFixedQuote (the default).
 func (m PositionSizingMode) Valid() bool {
 	return m == "" || m == PositionSizingModeFixedQuote || m == PositionSizingModeRiskPct
 }
 
-// EffectiveOrFixed 把空值规范化成 PositionSizingModeFixedQuote，调用方不必到处判断
-// 空字符串。
+// EffectiveOrFixed normalizes an empty value to PositionSizingModeFixedQuote so
+// callers don't have to check for the empty string everywhere.
 func (m PositionSizingMode) EffectiveOrFixed() PositionSizingMode {
 	if m == "" {
 		return PositionSizingModeFixedQuote
@@ -106,75 +126,98 @@ func (m PositionSizingMode) EffectiveOrFixed() PositionSizingMode {
 	return m
 }
 
-// RiskConfig 是标的级别的风控参数。每个标的独立配置，互不影响。
+// RiskConfig holds symbol-level risk-control parameters. Each symbol is configured
+// independently and none affect each other.
 type RiskConfig struct {
-	// MaxPositionSizeQuote 是单笔仓位的硬上限，以计价货币计（如 USDT）。不管
-	// PositionSizingMode 是哪种，这个值永远生效：fixed_quote 模式下它就是仓位金额
-	// 本身；risk_pct 模式下按公式算出来的仓位一旦超过它就直接拒绝这笔交易，不做
-	// 静默裁剪——静默缩小仓位会破坏"这笔交易只承担 N% 权益风险"这个用户明确要的
-	// 语义，等于假装忠实执行了规则、实际上没有。
+	// MaxPositionSizeQuote is the hard cap on a single position, denominated in the
+	// quote currency (e.g. USDT). This value always applies regardless of
+	// PositionSizingMode: in fixed_quote mode it is the position size itself; in
+	// risk_pct mode, if the size computed by the formula exceeds it, the trade is
+	// rejected outright rather than silently clamped — silently shrinking the
+	// position would break the semantics the user explicitly asked for ("this trade
+	// risks only N% of equity"), which amounts to pretending the rule was faithfully
+	// executed when it wasn't.
 	MaxPositionSizeQuote decimal.Decimal `json:"max_position_size_quote"`
-	// MaxDailyLossQuote 是单日最大亏损，达到后暂停该标的的策略。
+	// MaxDailyLossQuote is the maximum daily loss; once reached, this symbol's
+	// strategy is suspended.
 	MaxDailyLossQuote decimal.Decimal `json:"max_daily_loss_quote"`
-	// MaxHoldingPeriod 是最大持仓时间，超时强制平仓。为 0 表示不限制。
+	// MaxHoldingPeriod is the maximum holding time; a position is force-closed once
+	// exceeded. 0 means unlimited.
 	MaxHoldingPeriod Duration `json:"max_holding_period"`
-	// StopLossMode/TakeProfitMode 决定止损/止盈怎么算，默认（空值）是 RiskLevelModePct。
-	// 两者相互独立，允许"止损用支撑位、止盈用固定百分比"这种混搭。
+	// StopLossMode/TakeProfitMode determine how the stop-loss/take-profit are
+	// computed; the default (empty) is RiskLevelModePct. The two are independent of
+	// each other, allowing a mix like "stop-loss via support level, take-profit via
+	// fixed percentage".
 	StopLossMode RiskLevelMode `json:"stop_loss_mode,omitempty"`
-	// StopLossPct 是止损百分比，如 0.02 表示 2%。仅 StopLossMode 为 pct 时有意义。
-	// 为 0 表示不设置。
+	// StopLossPct is the stop-loss percentage, e.g. 0.02 for 2%. Only meaningful when
+	// StopLossMode is pct. 0 means unset.
 	StopLossPct    float64       `json:"stop_loss_pct,omitempty"`
 	TakeProfitMode RiskLevelMode `json:"take_profit_mode,omitempty"`
-	// TakeProfitPct 是止盈百分比。仅 TakeProfitMode 为 pct 时有意义。为 0 表示不设置。
+	// TakeProfitPct is the take-profit percentage. Only meaningful when
+	// TakeProfitMode is pct. 0 means unset.
 	TakeProfitPct float64 `json:"take_profit_pct,omitempty"`
-	// PositionSizingMode 决定单笔仓位怎么算，默认（空值）是 fixed_quote。
+	// PositionSizingMode determines how a single position's size is computed; the
+	// default (empty) is fixed_quote.
 	PositionSizingMode PositionSizingMode `json:"position_sizing_mode,omitempty"`
-	// AccountEquityQuote 是用户自报的账户权益（计价货币）。这是一个用户声明的静态
-	// 数字，不是从交易所实时拉取的余额——运行期间不会自动更新，用户权益变化后需要
-	// 自己回来改。仅 PositionSizingMode 为 risk_pct 时使用。
+	// AccountEquityQuote is the user-reported account equity (in the quote currency).
+	// This is a static number the user declares, not a balance pulled live from the
+	// exchange — it does not auto-update while running; the user must come back and
+	// update it themselves as their equity changes. Only used when PositionSizingMode
+	// is risk_pct.
 	AccountEquityQuote decimal.Decimal `json:"account_equity_quote,omitempty"`
-	// RiskPerTradePct 是单笔愿意承担的账户权益风险比例，如 0.01 表示 1%。
-	// 仅 PositionSizingMode 为 risk_pct 时使用。
+	// RiskPerTradePct is the fraction of account equity the user is willing to risk
+	// per trade, e.g. 0.01 for 1%. Only used when PositionSizingMode is risk_pct.
 	RiskPerTradePct float64 `json:"risk_per_trade_pct,omitempty"`
 }
 
-// StrategyConfig 是一个策略的完整定义，也是 AI Agent 翻译层唯一允许输出的结构。
+// StrategyConfig is the complete definition of a strategy, and the only structure
+// the AI Agent translation layer is allowed to output.
 //
-// 它是"用户规则的忠实记录"：系统只负责执行它，不对它的优劣做任何判断。
+// It is "a faithful record of the user's rules": the system's job is only to
+// execute it, never to judge whether it's any good.
 type StrategyConfig struct {
 	ID string `json:"id,omitempty"`
-	// UserID 是这条策略的归属用户（多用户 SaaS 改造引入）。存取时以数据库的 user_id
-	// 列为准，这个字段在 config JSONB 里的值可能是零值或过期的快照，不可信任
-	// （见 internal/storage/postgres.go 的 GetStrategy/ListStrategies 注释）。
+	// UserID is the user this strategy belongs to (introduced by the multi-user SaaS
+	// rework). The database's user_id column is authoritative for storage/lookup;
+	// this field's value inside the config JSONB may be a zero value or a stale
+	// snapshot and must not be trusted (see the GetStrategy/ListStrategies comments
+	// in internal/storage/postgres.go).
 	UserID string `json:"user_id,omitempty"`
 	Name   string `json:"name"`
-	// Symbol 是标的，如 "BTCUSDT"。不同标的的策略完全独立。
+	// Symbol is the trading pair, e.g. "BTCUSDT". Strategies on different symbols are
+	// fully independent.
 	Symbol string `json:"symbol"`
-	// Timeframe 是策略的触发周期：决策只在这个周期的每根 K 线收盘时计算一次。
-	// 模块可以通过各自的 ModuleConfig.Timeframe 声明使用更慢的周期，此时它们在每次
-	// 决策时被喂入"以触发时刻为准、已经真实收盘"的最新数据，不会看到未来的数据。
+	// Timeframe is the strategy's trigger period: a decision is computed exactly once
+	// per candle close of this period. Modules may declare a slower period via their
+	// own ModuleConfig.Timeframe, in which case each decision feeds them the latest
+	// data that has genuinely closed as of the trigger moment — never future data.
 	Timeframe Timeframe `json:"timeframe"`
-	// Modules 是参与该策略的模块组合，至少一个。
+	// Modules is the set of modules participating in this strategy; at least one.
 	Modules []ModuleConfig `json:"modules"`
-	// Combine 是聚合方式。
+	// Combine is the aggregation mode.
 	Combine CombineMode `json:"combine"`
-	// Threshold 仅在 CombineWeighted 下使用：加权置信度超过它才触发，取值 (0, 1]。
+	// Threshold is only used under CombineWeighted: weighted confidence must exceed
+	// it to trigger, in (0, 1].
 	Threshold float64 `json:"threshold,omitempty"`
-	// Risk 是该策略（该标的）的风控参数。
+	// Risk holds this strategy's (this symbol's) risk-control parameters.
 	Risk RiskConfig `json:"risk"`
 
-	// State 是状态机当前状态，见 strategy_state.go。新建策略一律从 StateDraft 开始。
+	// State is the state machine's current state, see strategy_state.go. New
+	// strategies always start at StateDraft.
 	State StrategyState `json:"state"`
 
 	CreatedAt time.Time `json:"created_at,omitempty"`
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
-	// SourceUtterance 保存用户最初的自然语言输入，用于审计"这条规则是怎么来的"。
+	// SourceUtterance stores the user's original natural-language input, for
+	// auditing "where did this rule come from".
 	SourceUtterance string `json:"source_utterance,omitempty"`
 }
 
-// RequiredTimeframes 返回该策略实际用到的全部周期（触发周期本身 + 每个模块显式声明
-// 的周期），去重后按字典序排列。引擎、信号引擎、回测重放都用它决定要准备哪些行情源，
-// 不必各自重新遍历一遍 Modules。
+// RequiredTimeframes returns every timeframe this strategy actually uses (the
+// trigger timeframe itself, plus each module's explicitly declared timeframe),
+// deduplicated and sorted lexicographically. The engine, signal engine, and
+// backtest replay all use this to decide which market data sources to prepare,
+// instead of each re-walking Modules on its own.
 func (cfg StrategyConfig) RequiredTimeframes() []Timeframe {
 	seen := map[Timeframe]bool{cfg.Timeframe: true}
 	for _, mc := range cfg.Modules {
@@ -192,24 +235,29 @@ func (cfg StrategyConfig) RequiredTimeframes() []Timeframe {
 	return out
 }
 
-// Decision 是组合引擎聚合后的最终决策，写入 Kafka 并落库审计。
+// Decision is the combination engine's final aggregated decision, written to
+// Kafka and persisted for audit.
 type Decision struct {
-	// ID 由引擎在落库前生成，订单的 Provenance 通过它反查触发依据。
+	// ID is generated by the engine before persisting; an order's Provenance uses it
+	// to trace back the triggering basis.
 	ID         string    `json:"id"`
 	StrategyID string    `json:"strategy_id"`
 	Symbol     string    `json:"symbol"`
 	Direction  Direction `json:"direction"`
-	// Score 是聚合后的强度：ALL 模式下为参与模块置信度的均值，
-	// WEIGHTED 模式下为加权置信度。
+	// Score is the aggregated strength: the mean confidence of participating modules
+	// under ALL mode, or the weighted confidence under WEIGHTED mode.
 	Score float64 `json:"score"`
-	// Triggered 为 true 表示该决策满足触发条件，执行层应当据此下单。
+	// Triggered being true means this decision met the trigger condition; the
+	// execution layer should place an order based on it.
 	Triggered bool `json:"triggered"`
-	// Signals 是参与本次决策的全部模块信号（含降级的），用于可解释性。
+	// Signals holds every module's signal that participated in this decision
+	// (degraded ones included), for explainability.
 	Signals []Signal `json:"signals"`
-	// Reason 说明为什么触发或为什么没触发，纯事实描述。
+	// Reason is a purely factual explanation of why it triggered or didn't.
 	Reason    string          `json:"reason"`
 	Price     decimal.Decimal `json:"price"`
 	Timestamp time.Time       `json:"timestamp"`
-	// EvaluatedAt 是引擎实际完成计算的墙上时间，与 Timestamp（行情时间）区分开。
+	// EvaluatedAt is the wall-clock time the engine actually finished computing,
+	// distinct from Timestamp (the market time).
 	EvaluatedAt time.Time `json:"evaluated_at"`
 }

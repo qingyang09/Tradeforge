@@ -1,5 +1,6 @@
-// Package engine 实现模块组合引擎：并发调用信号模块、聚合成决策、
-// 发布到消息队列并落库审计。
+// Package engine implements the module combination engine: it calls signal
+// modules concurrently, aggregates their output into a decision, publishes
+// it to the message queue, and records it for audit.
 package engine
 
 import (
@@ -16,23 +17,24 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// DefaultModuleTimeout 是单个模块 Evaluate 的默认超时。
+// DefaultModuleTimeout is the default timeout for a single module's Evaluate.
 const DefaultModuleTimeout = 3 * time.Second
 
-// Publisher 把决策发布到消息队列，供执行层与回测引擎消费。
+// Publisher publishes a decision to the message queue for consumption by
+// the execution layer and the backtest engine.
 type Publisher interface {
 	PublishDecision(ctx context.Context, d types.Decision) error
 }
 
-// Auditor 把决策落库，形成审计留痕。
+// Auditor persists a decision, forming an audit trail.
 type Auditor interface {
 	RecordDecision(ctx context.Context, d types.Decision) error
 }
 
-// Option 配置引擎。
+// Option configures the engine.
 type Option func(*Engine)
 
-// WithTimeout 设置单模块超时。
+// WithTimeout sets the per-module timeout.
 func WithTimeout(d time.Duration) Option {
 	return func(e *Engine) {
 		if d > 0 {
@@ -41,13 +43,13 @@ func WithTimeout(d time.Duration) Option {
 	}
 }
 
-// WithPublisher 设置决策发布通道。不设置则不发布。
+// WithPublisher sets the decision publishing channel. If unset, decisions aren't published.
 func WithPublisher(p Publisher) Option { return func(e *Engine) { e.publisher = p } }
 
-// WithAuditor 设置审计落库通道。不设置则不落库。
+// WithAuditor sets the audit persistence channel. If unset, decisions aren't recorded.
 func WithAuditor(a Auditor) Option { return func(e *Engine) { e.auditor = a } }
 
-// WithLogger 设置日志器。
+// WithLogger sets the logger.
 func WithLogger(l *slog.Logger) Option {
 	return func(e *Engine) {
 		if l != nil {
@@ -56,7 +58,8 @@ func WithLogger(l *slog.Logger) Option {
 	}
 }
 
-// WithIDFunc 覆盖决策 ID 的生成方式，便于测试产出确定性的 ID。
+// WithIDFunc overrides how decision IDs are generated, so tests can produce
+// deterministic IDs.
 func WithIDFunc(f func() string) Option {
 	return func(e *Engine) {
 		if f != nil {
@@ -65,7 +68,8 @@ func WithIDFunc(f func() string) Option {
 	}
 }
 
-// Engine 是组合引擎。它本身无状态，可被多个标的并发共用。
+// Engine is the combination engine. It is stateless and can be shared
+// concurrently across multiple symbols.
 type Engine struct {
 	registry  *modules.Registry
 	timeout   time.Duration
@@ -75,7 +79,7 @@ type Engine struct {
 	newID     func() string
 }
 
-// New 构造引擎。
+// New constructs an engine.
 func New(reg *modules.Registry, opts ...Option) *Engine {
 	e := &Engine{
 		registry: reg,
@@ -89,14 +93,18 @@ func New(reg *modules.Registry, opts ...Option) *Engine {
 	return e
 }
 
-// Evaluate 并发调用策略中的各模块，聚合出决策。
+// Evaluate concurrently calls each module in the strategy and aggregates
+// their output into a decision.
 //
-// 这一步是纯计算，不做任何 I/O：便于回测与单元测试直接复用同一套聚合逻辑，
-// 保证"回测里怎么算的，实盘就怎么算"。
+// This step is pure computation with no I/O, so backtesting and unit tests
+// can reuse the exact same aggregation logic — guaranteeing that "however
+// the backtest computed it is exactly how live trading computes it too."
 //
-// feeds 按周期提供行情：cfg.Timeframe（触发周期）对应的那份是必需的，它决定这次决策
-// 的 Timestamp/Price；其余周期供各模块通过 ModuleConfig.Timeframe 按需取用（见
-// evaluateOne）。单周期策略只需要 map 里有一个元素。
+// feeds supplies market data per timeframe: the entry for cfg.Timeframe (the
+// trigger timeframe) is required and determines this decision's
+// Timestamp/Price; the other timeframes are available for modules to pull
+// via ModuleConfig.Timeframe as needed (see evaluateOne). A single-timeframe
+// strategy only needs one entry in the map.
 func (e *Engine) Evaluate(ctx context.Context, cfg types.StrategyConfig, feeds map[types.Timeframe]types.MarketData) (types.Decision, error) {
 	resolved, err := strategy.Validate(cfg, e.registry)
 	if err != nil {
@@ -105,10 +113,12 @@ func (e *Engine) Evaluate(ctx context.Context, cfg types.StrategyConfig, feeds m
 
 	trigger, ok := feeds[cfg.Timeframe]
 	if !ok {
-		return types.Decision{}, fmt.Errorf("缺少触发周期 %s 的行情，无法计算决策", cfg.Timeframe)
+		return types.Decision{}, fmt.Errorf("missing market data for trigger timeframe %s, cannot compute a decision", cfg.Timeframe)
 	}
 	for tf, md := range feeds {
 		if md.Symbol != "" && cfg.Symbol != md.Symbol {
+			// NOTE: kept in Chinese — engine_test.go asserts on the "隔离"
+			// substring in this message (TestEvaluateRejectsSymbolMismatch).
 			return types.Decision{}, fmt.Errorf(
 				"周期 %s 的行情标的 %q 与策略标的 %q 不一致；不同标的的策略必须严格隔离", tf, md.Symbol, cfg.Symbol)
 		}
@@ -137,11 +147,14 @@ func (e *Engine) Evaluate(ctx context.Context, cfg types.StrategyConfig, feeds m
 	}, nil
 }
 
-// evaluateModules 并发跑完所有模块，返回与 cfg.Modules 顺序一致的信号切片。
+// evaluateModules runs all modules concurrently, returning a signal slice
+// in the same order as cfg.Modules.
 //
-// 隔离是这里的核心职责：单个模块超时、报错甚至 panic，都只让该模块降级为中性信号，
-// 绝不能拖垮整个引擎或影响其它模块的结果；缺少某个模块所需周期的行情同样只降级
-// 那一个模块，不影响其它模块正常出信号。
+// Isolation is the core responsibility here: a single module timing out,
+// erroring, or even panicking must only degrade that module to a neutral
+// signal — it can never take down the whole engine or affect other
+// modules' results. Likewise, missing the market data for a module's
+// timeframe only degrades that one module, not the others.
 func (e *Engine) evaluateModules(
 	ctx context.Context, cfg types.StrategyConfig,
 	feeds map[types.Timeframe]types.MarketData, resolved map[string]map[string]any,
@@ -158,7 +171,7 @@ func (e *Engine) evaluateModules(
 		md, ok := feeds[tf]
 		if !ok {
 			signals[i] = types.DegradedSignal(mc.Module, cfg.Symbol,
-				fmt.Errorf("缺少 %s 周期的行情", tf), triggerTime)
+				fmt.Errorf("missing market data for timeframe %s", tf), triggerTime)
 			continue
 		}
 		wg.Add(1)
@@ -180,13 +193,14 @@ func (e *Engine) evaluateOne(
 		return types.DegradedSignal(mc.Module, md.Symbol, err, md.Time())
 	}
 
-	// 模块 panic 不能掀翻整个引擎：捕获后降级，并把堆栈信息留在日志里。
+	// A module panicking must not take down the whole engine: recover it,
+	// degrade the signal, and leave the panic value in the logs.
 	defer func() {
 		if r := recover(); r != nil {
-			e.logger.Error("模块 panic，已降级为中性信号",
+			e.logger.Error("module panicked, degraded to a neutral signal",
 				"module", mc.Module, "symbol", md.Symbol, "panic", r)
 			sig = types.DegradedSignal(mc.Module, md.Symbol,
-				fmt.Errorf("模块内部 panic：%v", r), md.Time())
+				fmt.Errorf("module panicked: %v", r), md.Time())
 		}
 	}()
 
@@ -202,12 +216,13 @@ func (e *Engine) evaluateOne(
 		if errors.Is(err, context.DeadlineExceeded) {
 			level = slog.LevelError
 		}
-		e.logger.Log(ctx, level, "模块未产出信号，已降级为中性",
+		e.logger.Log(ctx, level, "module produced no signal, degraded to neutral",
 			"module", mc.Module, "symbol", md.Symbol, "elapsed", elapsed, "err", err)
 		return types.DegradedSignal(mc.Module, md.Symbol, err, md.Time())
 	}
 
-	// 模块返回的信号必须自报家门，否则审计记录会张冠李戴。
+	// A signal returned by a module must self-identify, or the audit
+	// record ends up misattributed.
 	if sig.Module == "" {
 		sig.Module = mc.Module
 	}
@@ -217,10 +232,13 @@ func (e *Engine) evaluateOne(
 	return sig
 }
 
-// Process 执行一次完整流程：计算决策 → 落库审计 → 发布到消息队列。
+// Process runs the full pipeline: compute a decision → record it for audit
+// → publish it to the message queue.
 //
-// 落库先于发布是刻意的：审计留痕是合规要求，宁可发布失败也不能出现
-// "执行层已经收到并下单，审计表里却查无此决策"。
+// Recording before publishing is deliberate: the audit trail is a
+// compliance requirement, so a publish failure is preferable to ever
+// ending up with "the execution layer received and placed an order, but
+// the audit table has no record of the decision."
 func (e *Engine) Process(ctx context.Context, cfg types.StrategyConfig, feeds map[types.Timeframe]types.MarketData) (types.Decision, error) {
 	d, err := e.Evaluate(ctx, cfg, feeds)
 	if err != nil {
@@ -230,18 +248,18 @@ func (e *Engine) Process(ctx context.Context, cfg types.StrategyConfig, feeds ma
 
 	if e.auditor != nil {
 		if err := e.auditor.RecordDecision(ctx, d); err != nil {
-			return d, fmt.Errorf("决策审计落库失败，已中止发布：%w", err)
+			return d, fmt.Errorf("failed to record decision for audit, aborting publish: %w", err)
 		}
 	}
 	if e.publisher != nil {
 		if err := e.publisher.PublishDecision(ctx, d); err != nil {
-			return d, fmt.Errorf("决策发布失败（审计已落库，决策 ID %s）：%w", d.ID, err)
+			return d, fmt.Errorf("failed to publish decision (already recorded for audit, decision ID %s): %w", d.ID, err)
 		}
 	}
 	return d, nil
 }
 
-// ModuleNames 返回策略中引用的模块名，按字典序排列。
+// ModuleNames returns the module names referenced by the strategy, sorted lexically.
 func ModuleNames(cfg types.StrategyConfig) []string {
 	names := make([]string, 0, len(cfg.Modules))
 	for _, mc := range cfg.Modules {

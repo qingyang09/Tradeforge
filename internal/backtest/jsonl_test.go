@@ -10,8 +10,9 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// python/backtest 的 loaders.py 靠 "type" 字段区分 meta/decision 行，
-// 且逐个按名字取字段——这里锁死每一行的形状，防止字段名/结构漂移。
+// python/backtest's loaders.py distinguishes meta/decision lines by the
+// "type" field and reads fields one by one by name — this pins down the
+// shape of each line to prevent field-name/structure drift.
 func TestWriteJSONLShapeMatchesPythonLoader(t *testing.T) {
 	meta := Meta{
 		Type: "meta", EngineVersion: "signal-replay/1.0.0", StrategyID: "s1",
@@ -32,7 +33,7 @@ func TestWriteJSONLShapeMatchesPythonLoader(t *testing.T) {
 
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
 	if len(lines) != 2 {
-		t.Fatalf("行数 = %d，期望 2（1 行 meta + 1 行 decision）", len(lines))
+		t.Fatalf("line count = %d, want 2 (1 meta line + 1 decision line)", len(lines))
 	}
 
 	var metaRow map[string]any
@@ -41,11 +42,11 @@ func TestWriteJSONLShapeMatchesPythonLoader(t *testing.T) {
 	}
 	for _, key := range []string{"type", "engine_version", "strategy_id", "symbol", "timeframe", "combine", "bar_count", "data_start", "data_end"} {
 		if _, ok := metaRow[key]; !ok {
-			t.Errorf("meta 行缺少字段 %q：%v", key, metaRow)
+			t.Errorf("meta line missing field %q: %v", key, metaRow)
 		}
 	}
 	if metaRow["type"] != "meta" {
-		t.Errorf(`meta 行 type = %v，期望 "meta"`, metaRow["type"])
+		t.Errorf(`meta line type = %v, want "meta"`, metaRow["type"])
 	}
 
 	var decisionRow map[string]any
@@ -54,13 +55,13 @@ func TestWriteJSONLShapeMatchesPythonLoader(t *testing.T) {
 	}
 	for _, key := range []string{"type", "index", "bar_time", "direction", "score", "triggered", "price", "reason", "signals"} {
 		if _, ok := decisionRow[key]; !ok {
-			t.Errorf("decision 行缺少字段 %q：%v", key, decisionRow)
+			t.Errorf("decision line missing field %q: %v", key, decisionRow)
 		}
 	}
 	if decisionRow["type"] != "decision" {
-		t.Errorf(`decision 行 type = %v，期望 "decision"`, decisionRow["type"])
+		t.Errorf(`decision line type = %v, want "decision"`, decisionRow["type"])
 	}
 	if _, ok := decisionRow["price"].(string); !ok {
-		t.Errorf("price 应该是字符串（decimal 精度），实际类型 %T", decisionRow["price"])
+		t.Errorf("price should be a string (for decimal precision), got type %T", decisionRow["price"])
 	}
 }

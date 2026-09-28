@@ -8,10 +8,12 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// aggregate 把一组模块信号按配置的组合逻辑聚合成最终决策。
+// aggregate combines a set of module signals into a final decision according
+// to the configured combination logic.
 //
-// 两种模式共同的安全取向：拿不准就不触发。降级信号一律按中性处理，
-// 宁可错过一次机会，也不要基于残缺的信息下单。
+// Both modes share the same safety bias: when in doubt, don't trigger.
+// Degraded signals are always treated as neutral — better to miss an
+// opportunity than to place an order on incomplete information.
 func aggregate(cfg types.StrategyConfig, signals []types.Signal) (types.Direction, float64, bool, string) {
 	switch cfg.Combine {
 	case types.CombineAll:
@@ -19,19 +21,22 @@ func aggregate(cfg types.StrategyConfig, signals []types.Signal) (types.Directio
 	case types.CombineWeighted:
 		return aggregateWeighted(cfg, signals)
 	default:
-		// Validate 应当已经拦下非法组合逻辑，走到这里说明校验被绕过了。
+		// Validate should already have rejected an illegal combine mode;
+		// reaching here means validation was bypassed somehow.
 		return types.DirectionNeutral, 0, false,
-			fmt.Sprintf("未知的组合逻辑 %q，不触发", cfg.Combine)
+			fmt.Sprintf("unknown combine mode %q, not triggering", cfg.Combine)
 	}
 }
 
-// aggregateAll 要求全部模块给出同方向的非中性信号。
+// aggregateAll requires every module to emit a non-neutral signal in the
+// same direction.
 //
-// 任何一个模块中性、降级或反向，都直接判定不触发——这正是用户选择 ALL 的本意：
-// "所有条件都满足我才动手"。
+// Any module that's neutral, degraded, or pointing the opposite way blocks
+// the trigger outright — that's exactly what choosing ALL means to the
+// user: "only act when every condition is satisfied."
 func aggregateAll(signals []types.Signal) (types.Direction, float64, bool, string) {
 	if len(signals) == 0 {
-		return types.DirectionNeutral, 0, false, "没有任何模块信号"
+		return types.DirectionNeutral, 0, false, "no module signals"
 	}
 
 	var blockers []string
@@ -41,12 +46,14 @@ func aggregateAll(signals []types.Signal) (types.Direction, float64, bool, strin
 	for _, s := range signals {
 		switch {
 		case s.Degraded:
-			blockers = append(blockers, fmt.Sprintf("%s 已降级（%s）", s.Module, s.Err))
+			blockers = append(blockers, fmt.Sprintf("%s is degraded (%s)", s.Module, s.Err))
 		case s.Direction == types.DirectionNeutral:
-			blockers = append(blockers, fmt.Sprintf("%s 为中性", s.Module))
+			blockers = append(blockers, fmt.Sprintf("%s is neutral", s.Module))
 		case dir == types.DirectionNeutral:
 			dir = s.Direction
 		case s.Direction != dir:
+			// NOTE: kept in Chinese — engine_test.go asserts on the "相反"
+			// substring in this message (TestAggregateAllBlockedByOpposingModule).
 			blockers = append(blockers,
 				fmt.Sprintf("%s 方向为 %s，与其余模块的 %s 相反", s.Module, s.Direction, dir))
 		}
@@ -57,19 +64,21 @@ func aggregateAll(signals []types.Signal) (types.Direction, float64, bool, strin
 
 	if len(blockers) > 0 {
 		return types.DirectionNeutral, score, false,
-			fmt.Sprintf("ALL 组合要求全部 %d 个模块同向，但：%s",
-				len(signals), strings.Join(blockers, "；"))
+			fmt.Sprintf("ALL combine requires all %d modules to agree, but: %s",
+				len(signals), strings.Join(blockers, "; "))
 	}
 	return dir, score, true,
-		fmt.Sprintf("ALL 组合：全部 %d 个模块均给出 %s 信号，平均置信度 %.3f",
+		fmt.Sprintf("ALL combine: all %d modules gave a %s signal, average confidence %.3f",
 			len(signals), dir, score)
 }
 
-// aggregateWeighted 计算加权净方向强度。
+// aggregateWeighted computes the weighted net directional strength.
 //
-// 净强度 = (Σ 多头权重×置信度 − Σ 空头权重×置信度) / Σ 权重，落在 [-1, 1]。
-// 分母用全部模块的权重之和（含中性与降级的），这样"一半模块沉默"会如实压低强度，
-// 而不是让剩下的少数模块独自把分数顶到阈值以上。
+// Net strength = (Σ long weight×confidence − Σ short weight×confidence) / Σ weight,
+// landing in [-1, 1]. The denominator uses the sum of ALL module weights
+// (including neutral and degraded ones), so "half the modules going silent"
+// genuinely drags the strength down, instead of letting the remaining
+// minority of modules push the score past the threshold on their own.
 func aggregateWeighted(cfg types.StrategyConfig, signals []types.Signal) (types.Direction, float64, bool, string) {
 	weights := make(map[string]float64, len(cfg.Modules))
 	for _, mc := range cfg.Modules {
@@ -94,7 +103,7 @@ func aggregateWeighted(cfg types.StrategyConfig, signals []types.Signal) (types.
 	}
 
 	if totalWeight <= 0 {
-		return types.DirectionNeutral, 0, false, "全部模块权重之和为 0，无法加权"
+		return types.DirectionNeutral, 0, false, "sum of all module weights is 0, cannot weight"
 	}
 
 	score := net / totalWeight
@@ -107,14 +116,14 @@ func aggregateWeighted(cfg types.StrategyConfig, signals []types.Signal) (types.
 	note := ""
 	if len(degraded) > 0 {
 		sort.Strings(degraded)
-		note = fmt.Sprintf("（%s 已降级，按中性计入分母）", strings.Join(degraded, "、"))
+		note = fmt.Sprintf(" (%s degraded, counted as neutral in the denominator)", strings.Join(degraded, ", "))
 	}
 
 	if abs < cfg.Threshold {
 		return types.DirectionNeutral, score, false,
-			fmt.Sprintf("WEIGHTED 组合：加权净强度 %.3f，未达到阈值 %.3f%s", score, cfg.Threshold, note)
+			fmt.Sprintf("WEIGHTED combine: weighted net strength %.3f, below threshold %.3f%s", score, cfg.Threshold, note)
 	}
 	return dir, score, true,
-		fmt.Sprintf("WEIGHTED 组合：加权净强度 %.3f（%s 方向），达到阈值 %.3f%s",
+		fmt.Sprintf("WEIGHTED combine: weighted net strength %.3f (%s direction), meets threshold %.3f%s",
 			score, dir, cfg.Threshold, note)
 }

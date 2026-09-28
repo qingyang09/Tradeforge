@@ -13,10 +13,11 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// Worker 是单个策略（也即单个标的）的执行实例。
+// Worker is the execution instance for a single strategy (i.e. a single symbol).
 //
-// 一个 Worker 只服务一个策略，内部状态（持仓、风控计数）完全私有。
-// 标的之间的隔离就是靠"各自一个 Worker、互不共享状态"实现的。
+// One Worker serves exactly one strategy; its internal state (position, risk
+// counters) is entirely private. Isolation between symbols is implemented
+// precisely by "each symbol gets its own Worker, sharing no state".
 type Worker struct {
 	cfg    types.StrategyConfig
 	broker Broker
@@ -30,11 +31,12 @@ type Worker struct {
 	position types.Position
 	stats    Stats
 
-	// now 可注入，便于测试控制持仓超时等与时间相关的逻辑。
+	// now can be injected, to let tests control time-dependent logic like
+	// position holding timeouts.
 	now func() time.Time
 }
 
-// Stats 是 Worker 的运行统计。
+// Stats holds a Worker's run statistics.
 type Stats struct {
 	DecisionsSeen  int
 	OrdersPlaced   int
@@ -46,20 +48,20 @@ type Stats struct {
 	SuspendReason  string
 }
 
-// WorkerOption 配置 Worker。
+// WorkerOption configures a Worker.
 type WorkerOption func(*Worker)
 
-// WithOrderRecorder 设置订单落库通道。
+// WithOrderRecorder sets the order persistence channel.
 func WithOrderRecorder(r OrderRecorder) WorkerOption {
 	return func(w *Worker) { w.orders = r }
 }
 
-// WithRiskEventRecorder 设置风控事件落库通道。
+// WithRiskEventRecorder sets the risk-event persistence channel.
 func WithRiskEventRecorder(r RiskEventRecorder) WorkerOption {
 	return func(w *Worker) { w.events = r }
 }
 
-// WithWorkerLogger 设置日志器。
+// WithWorkerLogger sets the logger.
 func WithWorkerLogger(l *slog.Logger) WorkerOption {
 	return func(w *Worker) {
 		if l != nil {
@@ -68,7 +70,7 @@ func WithWorkerLogger(l *slog.Logger) WorkerOption {
 	}
 }
 
-// WithClock 注入时间源，仅用于测试。
+// WithClock injects a time source, for tests only.
 func WithClock(f func() time.Time) WorkerOption {
 	return func(w *Worker) {
 		if f != nil {
@@ -77,20 +79,21 @@ func WithClock(f func() time.Time) WorkerOption {
 	}
 }
 
-// NewWorker 为一个策略创建执行实例。
+// NewWorker creates the execution instance for a strategy.
 func NewWorker(cfg types.StrategyConfig, broker Broker, opts ...WorkerOption) (*Worker, error) {
 	if broker == nil {
-		return nil, fmt.Errorf("策略 %s 缺少下单通道", cfg.ID)
+		return nil, fmt.Errorf("strategy %s has no order channel", cfg.ID)
 	}
-	// 最后一道闸门：实盘通道只服务 LIVE 状态的策略。
-	// 状态机已经把关一次，这里再拦一次——这类错误的代价是真金白银。
+	// Last gate: a live channel only serves strategies in LIVE state. The
+	// state machine already checks this once; this is a second check here —
+	// this class of mistake costs real money.
 	if broker.Mode() == types.ModeLive && !strategy.CanTradeLive(cfg.State) {
-		return nil, fmt.Errorf("策略 %s 当前状态为 %s：%w",
+		return nil, fmt.Errorf("strategy %s is currently in state %s: %w",
 			cfg.ID, cfg.State, ErrLiveBrokerRequiresLiveState)
 	}
 	if broker.Mode() == types.ModePaper &&
 		!strategy.CanTradePaper(cfg.State) && !strategy.CanTradeLive(cfg.State) {
-		return nil, fmt.Errorf("策略 %s 当前状态为 %s，不允许产生任何交易", cfg.ID, cfg.State)
+		return nil, fmt.Errorf("strategy %s is currently in state %s, which is not allowed to trade at all", cfg.ID, cfg.State)
 	}
 
 	w := &Worker{
@@ -107,34 +110,35 @@ func NewWorker(cfg types.StrategyConfig, broker Broker, opts ...WorkerOption) (*
 	return w, nil
 }
 
-// Symbol 返回该 Worker 负责的标的。
+// Symbol returns the symbol this Worker is responsible for.
 func (w *Worker) Symbol() string { return w.cfg.Symbol }
 
-// StrategyID 返回该 Worker 负责的策略。
+// StrategyID returns the strategy this Worker is responsible for.
 func (w *Worker) StrategyID() string { return w.cfg.ID }
 
-// Stats 返回运行统计快照。
+// Stats returns a snapshot of the run statistics.
 func (w *Worker) Stats() Stats {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.stats
 }
 
-// Position 返回当前持仓快照。
+// Position returns a snapshot of the current position.
 func (w *Worker) Position() types.Position {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.position
 }
 
-// Suspended 报告该标的是否已被风控暂停。
+// Suspended reports whether this symbol has been suspended by risk control.
 func (w *Worker) Suspended() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.stats.Suspended
 }
 
-// Resume 解除风控暂停。这是人工操作入口，系统自身不调用。
+// Resume lifts a risk-control suspension. This is a manual-operation entry
+// point; the system itself never calls it.
 func (w *Worker) Resume() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -143,27 +147,28 @@ func (w *Worker) Resume() {
 	w.stats.SuspendReason = ""
 }
 
-// Handle 处理一条决策。
+// Handle processes a single decision.
 //
-// 它是 Worker 的唯一入口，且对错误"就地消化"：任何异常都只影响本标的，
-// 记录日志与统计后正常返回。返回 error 只是为了让调用方能观测，
-// 上层 Supervisor 不会因此中断其它标的。
+// It is the Worker's only entry point, and "absorbs" errors in place: any
+// failure affects only this symbol — it's logged, counted in stats, and
+// Handle returns normally. The returned error exists only so the caller can
+// observe it; the Supervisor above never lets it interrupt other symbols.
 func (w *Worker) Handle(ctx context.Context, d types.Decision) (err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	// 单个标的的 panic 绝不能掀翻整个执行层。
+	// A panic in a single symbol must never take down the whole execution layer.
 	defer func() {
 		if r := recover(); r != nil {
 			w.stats.Errors++
-			err = fmt.Errorf("标的 %s 的执行实例发生 panic：%v", w.cfg.Symbol, r)
-			w.logger.Error("执行实例 panic，已隔离",
+			err = fmt.Errorf("execution instance for symbol %s panicked: %v", w.cfg.Symbol, r)
+			w.logger.Error("execution instance panicked, isolated",
 				"symbol", w.cfg.Symbol, "strategy_id", w.cfg.ID, "panic", r)
 		}
 	}()
 
 	if d.StrategyID != "" && d.StrategyID != w.cfg.ID {
-		return fmt.Errorf("决策属于策略 %s，不该被路由到 %s 的执行实例",
+		return fmt.Errorf("decision belongs to strategy %s, should not have been routed to the execution instance for %s",
 			d.StrategyID, w.cfg.ID)
 	}
 	if d.Symbol != "" && d.Symbol != w.cfg.Symbol {
@@ -175,7 +180,7 @@ func (w *Worker) Handle(ctx context.Context, d types.Decision) (err error) {
 	now := w.now()
 	price := d.Price
 
-	// ---- 1. 已有持仓先过风控 ----
+	// ---- 1. an existing position goes through risk control first ----
 	if w.position.IsOpen() && price.IsPositive() {
 		if verdict := w.risk.CheckPosition(now, w.position, price); verdict.Verdict == RiskForceClose {
 			if err := w.forceClose(ctx, d, verdict, now); err != nil {
@@ -189,14 +194,14 @@ func (w *Worker) Handle(ctx context.Context, d types.Decision) (err error) {
 		return nil
 	}
 
-	// ---- 2. 反向信号先平后开 ----
+	// ---- 2. an opposite signal closes first, then opens ----
 	if w.position.IsOpen() && d.Direction == w.position.Direction.Opposite() {
 		if err := w.closePosition(ctx, d, "signal", now); err != nil {
 			return err
 		}
 	}
 
-	// ---- 3. 开仓 ----
+	// ---- 3. open a position ----
 	if !w.position.IsOpen() && d.Direction != types.DirectionNeutral {
 		return w.openPosition(ctx, d, now)
 	}
@@ -206,24 +211,30 @@ func (w *Worker) Handle(ctx context.Context, d types.Decision) (err error) {
 func (w *Worker) openPosition(ctx context.Context, d types.Decision, now time.Time) error {
 	if !d.Price.IsPositive() {
 		w.stats.Errors++
-		return fmt.Errorf("决策价格 %s 非正，无法开仓", d.Price)
+		return fmt.Errorf("decision price %s is not positive, cannot open a position", d.Price)
 	}
 
 	side, ok := types.SideFor(d.Direction)
 	if !ok {
-		return fmt.Errorf("方向 %s 没有对应的开仓动作", d.Direction)
+		return fmt.Errorf("direction %s has no corresponding open-position action", d.Direction)
 	}
 
-	// 止损的绝对价格要在下单前就算好：算不出来（比如配了 support_resistance 模式但
-	// 当前附近没有探测到支撑/阻力位）就不该开仓——用户明确要求了止损保护，没有保护地
-	// 开仓等于没忠实执行他的规则。跟 CheckOpen 的拒绝走同一套记录路径。
+	// The stop-loss's absolute price must be computed before the order is
+	// placed: if it can't be computed (e.g. support_resistance mode is
+	// configured but no support/resistance level was detected nearby right
+	// now), the position must not be opened — the user explicitly asked for
+	// stop-loss protection, and opening unprotected would mean not faithfully
+	// executing their rule. This follows the same recording path as a
+	// CheckOpen rejection.
 	//
-	// 这一步必须在算仓位之前：risk_pct 仓位模式需要止损距离才能算出仓位大小，
-	// fixed_quote 模式虽然不需要，但统一顺序，不为两种模式分别维护一套流程。
+	// This step must happen before computing the position size: the risk_pct
+	// sizing mode needs the stop-loss distance to compute the size; the
+	// fixed_quote mode doesn't need it, but the order is kept uniform rather
+	// than maintaining two separate flows for the two modes.
 	stopLossPrice, err := ResolveStopLossPrice(w.cfg.Risk, d.Direction, d.Price, d.Signals)
 	if err != nil {
 		w.stats.OrdersRejected++
-		w.logger.Info("开仓被止损条件拒绝", "symbol", w.cfg.Symbol, "err", err)
+		w.logger.Info("open rejected by stop-loss condition", "symbol", w.cfg.Symbol, "err", err)
 		w.recordRiskEvent(ctx, RiskDecision{
 			Verdict: RiskReject, Rule: "unresolved_stop_loss", Reason: err.Error(),
 		}, "reject_open", now)
@@ -233,7 +244,7 @@ func (w *Worker) openPosition(ctx context.Context, d types.Decision, now time.Ti
 	notional, err := ResolvePositionSizeQuote(w.cfg.Risk, d.Price, stopLossPrice)
 	if err != nil {
 		w.stats.OrdersRejected++
-		w.logger.Info("开仓被仓位计算拒绝", "symbol", w.cfg.Symbol, "err", err)
+		w.logger.Info("open rejected by position-size calculation", "symbol", w.cfg.Symbol, "err", err)
 		w.recordRiskEvent(ctx, RiskDecision{
 			Verdict: RiskReject, Rule: "unresolved_position_size", Reason: err.Error(),
 		}, "reject_open", now)
@@ -243,20 +254,26 @@ func (w *Worker) openPosition(ctx context.Context, d types.Decision, now time.Ti
 	verdict := w.risk.CheckOpen(now, notional)
 	if !verdict.Allowed() {
 		w.stats.OrdersRejected++
-		w.logger.Info("开仓被风控拒绝",
+		w.logger.Info("open rejected by risk control",
 			"symbol", w.cfg.Symbol, "rule", verdict.Rule, "reason", verdict.Reason)
 		w.recordRiskEvent(ctx, verdict, "reject_open", now)
 		return nil
 	}
 
-	// 止盈算不出来不拒绝开仓，只是这一笔没有止盈线——止盈不是安全机制，跟止损不对称：
-	// 突破型入场恰恰是最常见的"附近没有阻力位可当止盈目标"的情形（价格刚突破的那个位
-	// 本身变成了支撑，上方往往还没有新的阻力位聚出来），如果止盈也按止损的标准拒绝，
-	// 这个模式在突破策略上会几乎不可用。没有止盈目标不影响这笔交易的安全性，
-	// 后续还有反向信号/持仓超时等其它退出机制兜底。
+	// Failing to compute a take-profit price does not reject the open — this
+	// trade simply has no take-profit line. Take-profit is not a safety
+	// mechanism, unlike stop-loss, so the two are asymmetric: a breakout
+	// entry is precisely the most common case where "there's no resistance
+	// level nearby to use as a take-profit target" (the level price just
+	// broke through becomes the new support, and there's often no new
+	// resistance clustered above it yet). If take-profit were held to the
+	// same standard as stop-loss, this pattern would be nearly unusable for
+	// breakout strategies. Having no take-profit target doesn't affect the
+	// safety of the trade — other exit mechanisms (opposite signal, holding
+	// timeout, etc.) still back it up.
 	takeProfitPrice, err := ResolveTakeProfitPrice(w.cfg.Risk, d.Direction, d.Price, d.Signals)
 	if err != nil {
-		w.logger.Info("本次开仓算不出止盈价，先不设止盈", "symbol", w.cfg.Symbol, "err", err)
+		w.logger.Info("could not resolve a take-profit price for this open, leaving take-profit unset", "symbol", w.cfg.Symbol, "err", err)
 		takeProfitPrice = decimal.Zero
 	}
 
@@ -270,8 +287,8 @@ func (w *Worker) openPosition(ctx context.Context, d types.Decision, now time.Ti
 	})
 	if err != nil {
 		w.stats.Errors++
-		w.logger.Error("下单失败", "symbol", w.cfg.Symbol, "err", err)
-		return fmt.Errorf("标的 %s 开仓失败：%w", w.cfg.Symbol, err)
+		w.logger.Error("order placement failed", "symbol", w.cfg.Symbol, "err", err)
+		return fmt.Errorf("failed to open a position for symbol %s: %w", w.cfg.Symbol, err)
 	}
 
 	w.stats.OrdersPlaced++
@@ -288,7 +305,7 @@ func (w *Worker) openPosition(ctx context.Context, d types.Decision, now time.Ti
 		OpenedAt:        now,
 		EntryOrderID:    order.ID,
 	}
-	// 开仓手续费即刻计入当日盈亏。
+	// The opening fee is charged against the day's P&L immediately.
 	w.stats.RealizedPnL = w.stats.RealizedPnL.Sub(order.Fee)
 	w.risk.RecordRealized(now, order.Fee.Neg())
 	return nil
@@ -317,8 +334,8 @@ func (w *Worker) closePosition(ctx context.Context, d types.Decision, reason str
 	})
 	if err != nil {
 		w.stats.Errors++
-		w.logger.Error("平仓下单失败", "symbol", w.cfg.Symbol, "err", err)
-		return fmt.Errorf("标的 %s 平仓失败：%w", w.cfg.Symbol, err)
+		w.logger.Error("close-position order failed", "symbol", w.cfg.Symbol, "err", err)
+		return fmt.Errorf("failed to close the position for symbol %s: %w", w.cfg.Symbol, err)
 	}
 
 	w.stats.OrdersPlaced++
@@ -332,18 +349,21 @@ func (w *Worker) closePosition(ctx context.Context, d types.Decision, reason str
 	return nil
 }
 
-// forceClose 执行风控强平，并按规则决定是否暂停该标的。
+// forceClose executes a risk-control forced close, and decides whether to
+// suspend this symbol per the triggered rule.
 func (w *Worker) forceClose(
 	ctx context.Context, d types.Decision, verdict RiskDecision, now time.Time,
 ) error {
 	w.stats.RiskEvents++
-	w.logger.Warn("风控触发强制平仓",
+	w.logger.Warn("risk control triggered a forced close",
 		"symbol", w.cfg.Symbol, "rule", verdict.Rule, "reason", verdict.Reason)
 
 	closeErr := w.closePosition(ctx, d, verdict.Rule, now)
 
-	// 单日亏损属于"这个标的今天不该再交易"，必须暂停并等人工确认。
-	// 止损/止盈/超时只是单笔交易的正常退出，不暂停策略。
+	// A daily loss breach means "this symbol shouldn't trade again today" —
+	// it must be suspended and wait for manual confirmation. Stop-loss /
+	// take-profit / holding-timeout are just a single trade's normal exit and
+	// don't suspend the strategy.
 	action := "close"
 	if verdict.Rule == "max_daily_loss" {
 		w.risk.Halt(verdict.Rule)
@@ -355,15 +375,17 @@ func (w *Worker) forceClose(
 	return closeErr
 }
 
-// provenance 组装订单溯源信息。
+// provenance assembles the order's provenance information.
 //
-// 每笔订单都必须能回答"是哪个模块的哪个信号、什么参数触发的"，
-// 这是平台的可解释性底线，也是用户界面上要展示的内容。
+// Every order must be able to answer "which module's which signal, with what
+// parameters, triggered this" — that's the platform's baseline for
+// explainability, and also what gets shown on the user interface.
 func (w *Worker) provenance(d types.Decision, note string) types.OrderProvenance {
 	params := make(map[string]map[string]any, len(w.cfg.Modules))
 	for _, mc := range w.cfg.Modules {
-		// 存参数快照而非引用策略配置：配置随后可能被修改，
-		// 而订单必须永远能还原"当时"的参数。
+		// Store a snapshot of the params rather than a reference to the
+		// strategy config: the config may be edited afterward, but an order
+		// must always be able to reconstruct the parameters "as they were at the time".
 		snapshot := make(map[string]any, len(mc.Params))
 		for k, v := range mc.Params {
 			snapshot[k] = v
@@ -386,9 +408,10 @@ func (w *Worker) recordOrder(ctx context.Context, order types.Order) {
 		return
 	}
 	if err := w.orders.RecordOrder(ctx, order); err != nil {
-		// 落库失败不回滚订单——单已经下出去了，谎报没下更危险。
+		// A persistence failure doesn't roll back the order — the order has
+		// already been placed, and falsely claiming it wasn't is more dangerous.
 		w.stats.Errors++
-		w.logger.Error("订单落库失败（订单已成交，请人工核对）",
+		w.logger.Error("failed to persist order (order was filled, please reconcile manually)",
 			"symbol", w.cfg.Symbol, "order_id", order.ID, "err", err)
 	}
 }
@@ -412,6 +435,6 @@ func (w *Worker) recordRiskEvent(
 		Action:     action,
 		CreatedAt:  now,
 	}); err != nil {
-		w.logger.Error("风控事件落库失败", "symbol", w.cfg.Symbol, "err", err)
+		w.logger.Error("failed to persist risk event", "symbol", w.cfg.Symbol, "err", err)
 	}
 }
