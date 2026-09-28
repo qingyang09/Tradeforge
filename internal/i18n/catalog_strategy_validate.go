@@ -1,0 +1,76 @@
+package i18n
+
+// Catalog entries for internal/strategy/validate.go's ValidationError issues.
+func init() {
+	register(LangEN, map[string]string{
+		"strategy.validate.name_required":                       "Strategy name cannot be empty",
+		"strategy.validate.symbol_required":                     "Trading symbol cannot be empty",
+		"strategy.validate.timeframe_unsupported":               "Timeframe {value} is not supported; valid values are {allowed}",
+		"strategy.validate.combine_unsupported":                 "Combination logic {value} is not supported; valid values are {a} / {b}",
+		"strategy.validate.state_invalid":                       "State {value} is not a valid state",
+		"strategy.validate.modules_required":                    "A strategy must include at least one module",
+		"strategy.validate.modules_too_many":                    "Module count {count} exceeds the cap of {max}",
+		"strategy.validate.module_duplicate":                    "Module {module} appears more than once; different parameter sets for the same module aren't supported yet, keep only one",
+		"strategy.validate.module_index_error":                  "modules[{index}]: {error}",
+		"strategy.validate.module_params_error":                 "modules[{index}] ({module}): {error}",
+		"strategy.validate.module_timeframe_unsupported":        "modules[{index}] ({module}): timeframe {value} is not supported; valid values are {allowed}",
+		"strategy.validate.module_timeframe_too_fast":           "modules[{index}] ({module}): timeframe {value} is faster than the strategy's trigger timeframe {trigger}; the trigger timeframe must be the fastest (or tied-fastest) among all modules",
+		"strategy.validate.module_weight_out_of_range":          "modules[{index}] ({module}): weight {value} is outside the (0, 1] range",
+		"strategy.validate.module_weight_required_for_weighted": "modules[{index}] ({module}): every module must have a weight greater than 0 under WEIGHTED combination",
+		"strategy.validate.threshold_out_of_range":              "The trigger threshold under WEIGHTED combination must fall in (0, 1], currently {value}",
+
+		"strategy.validate.risk.max_position_required":           "Risk control: max position size per trade (max_position_size_quote) must be greater than 0",
+		"strategy.validate.risk.max_daily_loss_negative":         "Risk control: max daily loss (max_daily_loss_quote) cannot be negative -- it represents the absolute value of the loss cap",
+		"strategy.validate.risk.max_holding_negative":            "Risk control: max holding period cannot be negative",
+		"strategy.validate.risk.stop_loss_pct_out_of_range":      "Risk control: stop-loss percentage must fall in [0, 1), currently {value}",
+		"strategy.validate.risk.take_profit_pct_negative":        "Risk control: take-profit percentage cannot be negative, currently {value}",
+		"strategy.validate.risk.sizing_mode_invalid":             "Risk control: position sizing mode ({value}) is not supported; valid values are \"{a}\" / \"{b}\"",
+		"strategy.validate.risk.fixed_quote_extra_fields_set":    "Risk control: account equity (account_equity_quote) or risk-per-trade percentage (risk_per_trade_pct) should not be set when the position sizing mode is fixed_quote -- fields from the two modes can't be mixed",
+		"strategy.validate.risk.risk_pct_equity_required":        "Risk control: account equity (account_equity_quote) greater than 0 is required when the position sizing mode is risk_pct",
+		"strategy.validate.risk.risk_per_trade_pct_out_of_range": "Risk control: risk-per-trade percentage (risk_per_trade_pct) must fall in (0, 1), currently {value}",
+		"strategy.validate.risk.risk_pct_requires_stop_loss":     "Risk control: a stop loss must also be configured when the position sizing mode is risk_pct (stop_loss_pct greater than 0, or stop_loss_mode set to support_resistance / poc), otherwise the position size can't be computed from it",
+
+		"strategy.validate.risk.level.stop_loss.mode_invalid":              "Risk control: stop loss (stop_loss_mode) has value {value} which is not supported; valid values are \"{a}\" / \"{b}\" / \"{c}\"",
+		"strategy.validate.risk.level.stop_loss.missing_required_module":   "Risk control: stop-loss is set to {mode} mode, but the strategy's module list doesn't include {module} -- without it, the corresponding price level can't be computed",
+		"strategy.validate.risk.level.stop_loss.pct_set_with_level_mode":   "Risk control: stop-loss is already set to {mode} mode, a percentage shouldn't also be set -- only one can actually take effect",
+		"strategy.validate.risk.level.take_profit.mode_invalid":            "Risk control: take profit (take_profit_mode) has value {value} which is not supported; valid values are \"{a}\" / \"{b}\" / \"{c}\"",
+		"strategy.validate.risk.level.take_profit.missing_required_module": "Risk control: take-profit is set to {mode} mode, but the strategy's module list doesn't include {module} -- without it, the corresponding price level can't be computed",
+		"strategy.validate.risk.level.take_profit.pct_set_with_level_mode": "Risk control: take-profit is already set to {mode} mode, a percentage shouldn't also be set -- only one can actually take effect",
+	})
+
+	register(LangZH, map[string]string{
+		"strategy.validate.name_required":                       "策略名称不能为空",
+		"strategy.validate.symbol_required":                     "交易标的（symbol）不能为空",
+		"strategy.validate.timeframe_unsupported":               "周期 {value} 不受支持，可选值为 {allowed}",
+		"strategy.validate.combine_unsupported":                 "组合逻辑 {value} 不受支持，可选值为 {a} / {b}",
+		"strategy.validate.state_invalid":                       "策略状态 {value} 不是合法状态",
+		"strategy.validate.modules_required":                    "策略至少要包含一个模块",
+		"strategy.validate.modules_too_many":                    "模块数量 {count} 超过上限 {max}",
+		"strategy.validate.module_duplicate":                    "模块 {module} 重复出现；同一模块的不同参数组合暂不支持，请只保留一份",
+		"strategy.validate.module_index_error":                  "modules[{index}]：{error}",
+		"strategy.validate.module_params_error":                 "modules[{index}]（{module}）：{error}",
+		"strategy.validate.module_timeframe_unsupported":        "modules[{index}]（{module}）：周期 {value} 不受支持，可选值为 {allowed}",
+		"strategy.validate.module_timeframe_too_fast":           "modules[{index}]（{module}）：周期 {value} 比策略触发周期 {trigger} 更快；触发周期必须是所有模块里最快（或并列最快）的那个",
+		"strategy.validate.module_weight_out_of_range":          "modules[{index}]（{module}）：权重 {value} 超出 (0, 1] 范围",
+		"strategy.validate.module_weight_required_for_weighted": "modules[{index}]（{module}）：WEIGHTED 组合下每个模块都必须配置大于 0 的权重",
+		"strategy.validate.threshold_out_of_range":              "WEIGHTED 组合下触发阈值必须落在 (0, 1]，当前为 {value}",
+
+		"strategy.validate.risk.max_position_required":           "风控：单笔最大仓位（max_position_size_quote）必须大于 0",
+		"strategy.validate.risk.max_daily_loss_negative":         "风控：单日最大亏损（max_daily_loss_quote）不能为负数，它表示亏损额度的绝对值",
+		"strategy.validate.risk.max_holding_negative":            "风控：最大持仓时间不能为负",
+		"strategy.validate.risk.stop_loss_pct_out_of_range":      "风控：止损比例必须落在 [0, 1)，当前为 {value}",
+		"strategy.validate.risk.take_profit_pct_negative":        "风控：止盈比例不能为负，当前为 {value}",
+		"strategy.validate.risk.sizing_mode_invalid":             "风控：仓位模式（{value}）不受支持，可选 \"{a}\" / \"{b}\"",
+		"strategy.validate.risk.fixed_quote_extra_fields_set":    "风控：仓位模式为 fixed_quote 时不应该填账户权益（account_equity_quote）或单笔风险比例（risk_per_trade_pct），两种模式的字段不能混填",
+		"strategy.validate.risk.risk_pct_equity_required":        "风控：仓位模式为 risk_pct 时必须填一个大于 0 的账户权益（account_equity_quote）",
+		"strategy.validate.risk.risk_per_trade_pct_out_of_range": "风控：单笔风险比例（risk_per_trade_pct）必须落在 (0, 1)，当前为 {value}",
+		"strategy.validate.risk.risk_pct_requires_stop_loss":     "风控：仓位模式为 risk_pct 时必须同时设置止损（stop_loss_pct 大于 0，或 stop_loss_mode 用 support_resistance / poc），否则无法据此计算仓位",
+
+		"strategy.validate.risk.level.stop_loss.mode_invalid":              "风控：止损（stop_loss_mode）取值 {value} 不受支持，可选 \"{a}\" / \"{b}\" / \"{c}\"",
+		"strategy.validate.risk.level.stop_loss.missing_required_module":   "风控：止损设为 {mode} 模式，但策略的模块列表里没有 {module}，没有它就算不出对应的价位",
+		"strategy.validate.risk.level.stop_loss.pct_set_with_level_mode":   "风控：止损已设为 {mode} 模式，不应该再同时填百分比，两者只能生效一个",
+		"strategy.validate.risk.level.take_profit.mode_invalid":            "风控：止盈（take_profit_mode）取值 {value} 不受支持，可选 \"{a}\" / \"{b}\" / \"{c}\"",
+		"strategy.validate.risk.level.take_profit.missing_required_module": "风控：止盈设为 {mode} 模式，但策略的模块列表里没有 {module}，没有它就算不出对应的价位",
+		"strategy.validate.risk.level.take_profit.pct_set_with_level_mode": "风控：止盈已设为 {mode} 模式，不应该再同时填百分比，两者只能生效一个",
+	})
+}

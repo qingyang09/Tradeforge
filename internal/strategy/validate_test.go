@@ -122,7 +122,7 @@ func TestValidateRejectsModuleTimeframeFasterThanTrigger(t *testing.T) {
 	if err == nil {
 		t.Fatal("a module timeframe faster than the trigger timeframe should be rejected")
 	}
-	if !strings.Contains(err.Error(), "更快") {
+	if !strings.Contains(err.Error(), "faster") {
 		t.Errorf("error message should explain the timeframe is faster than the trigger timeframe, got: %v", err)
 	}
 }

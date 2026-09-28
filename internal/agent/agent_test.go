@@ -567,7 +567,7 @@ func TestRejectsInvalidModelOutput(t *testing.T) {
 				"modules": []any{map[string]any{"module": "volume_breakout", "params": map[string]any{}}},
 				"risk":    risk("1000"),
 			}),
-			wantErr: "不受支持",
+			wantErr: "is not supported",
 		},
 		{
 			name: "WEIGHTED missing a weight",
@@ -577,7 +577,7 @@ func TestRejectsInvalidModelOutput(t *testing.T) {
 				"modules": []any{map[string]any{"module": "volume_breakout", "params": map[string]any{}}},
 				"risk":    risk("1000"),
 			}),
-			wantErr: "权重",
+			wantErr: "weight",
 		},
 		{
 			name: "missing max position size per trade",
@@ -586,7 +586,7 @@ func TestRejectsInvalidModelOutput(t *testing.T) {
 				"modules": []any{map[string]any{"module": "volume_breakout", "params": map[string]any{}}},
 				"risk":    map[string]any{},
 			}),
-			wantErr: "单笔最大仓位",
+			wantErr: "max position size per trade",
 		},
 		{
 			name:     "outcome contradicts content: says clarify but gives a config",

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"strings"
 
+	"tradeforge/internal/i18n"
 	"tradeforge/internal/modules"
 	"tradeforge/pkg/types"
 )
@@ -28,16 +29,24 @@ const MaxModulesPerStrategy = 8
 // Collecting everything instead of returning on the first failure is
 // deliberate: the Agent needs to tell the user every problem at once,
 // instead of making them fix one, resubmit, and get told about the next.
+//
+// Issues is []types.Message (not []string): each issue is a translatable
+// key+args, resolved through internal/i18n at the point it's actually shown
+// to the user — see pkg/types/i18n.go and the plan's Class A/B split.
 type ValidationError struct {
-	Issues []string
+	Issues []types.Message
 }
 
 func (e *ValidationError) Error() string {
-	if len(e.Issues) == 1 {
-		return "策略配置校验失败：" + e.Issues[0]
+	rendered := make([]string, len(e.Issues))
+	for i, issue := range e.Issues {
+		rendered[i] = i18n.Render(i18n.LangEN, issue)
 	}
-	return fmt.Sprintf("策略配置校验失败（%d 项）：\n  - %s",
-		len(e.Issues), strings.Join(e.Issues, "\n  - "))
+	if len(rendered) == 1 {
+		return "strategy config validation failed: " + rendered[0]
+	}
+	return fmt.Sprintf("strategy config validation failed (%d issues):\n  - %s",
+		len(rendered), strings.Join(rendered, "\n  - "))
 }
 
 // Validate validates a strategy config and returns each module's normalized
@@ -48,31 +57,31 @@ func (e *ValidationError) Error() string {
 // without re-parsing on every candle.
 func Validate(cfg types.StrategyConfig, reg *modules.Registry) (map[string]map[string]any, error) {
 	v := &ValidationError{}
-	add := func(format string, args ...any) {
-		v.Issues = append(v.Issues, fmt.Sprintf(format, args...))
+	add := func(key string, args ...any) {
+		v.Issues = append(v.Issues, types.Msg(key, args...))
 	}
 
 	if strings.TrimSpace(cfg.Name) == "" {
-		add("策略名称不能为空")
+		add("strategy.validate.name_required")
 	}
 	if strings.TrimSpace(cfg.Symbol) == "" {
-		add("交易标的（symbol）不能为空")
+		add("strategy.validate.symbol_required")
 	}
 	if !cfg.Timeframe.Valid() {
-		add("周期 %q 不受支持，可选值为 %v", cfg.Timeframe, types.SupportedTimeframes)
+		add("strategy.validate.timeframe_unsupported", "value", cfg.Timeframe, "allowed", fmt.Sprint(types.SupportedTimeframes))
 	}
 	if !cfg.Combine.Valid() {
-		add("组合逻辑 %q 不受支持，可选值为 %s / %s", cfg.Combine, types.CombineAll, types.CombineWeighted)
+		add("strategy.validate.combine_unsupported", "value", cfg.Combine, "a", types.CombineAll, "b", types.CombineWeighted)
 	}
 	if cfg.State != "" && !cfg.State.Valid() {
-		add("策略状态 %q 不是合法状态", cfg.State)
+		add("strategy.validate.state_invalid", "value", cfg.State)
 	}
 
 	switch {
 	case len(cfg.Modules) == 0:
-		add("策略至少要包含一个模块")
+		add("strategy.validate.modules_required")
 	case len(cfg.Modules) > MaxModulesPerStrategy:
-		add("模块数量 %d 超过上限 %d", len(cfg.Modules), MaxModulesPerStrategy)
+		add("strategy.validate.modules_too_many", "count", len(cfg.Modules), "max", MaxModulesPerStrategy)
 	}
 
 	resolved := make(map[string]map[string]any, len(cfg.Modules))
@@ -80,19 +89,19 @@ func Validate(cfg types.StrategyConfig, reg *modules.Registry) (map[string]map[s
 
 	for i, mc := range cfg.Modules {
 		if seen[mc.Module] {
-			add("模块 %q 重复出现；同一模块的不同参数组合暂不支持，请只保留一份", mc.Module)
+			add("strategy.validate.module_duplicate", "module", mc.Module)
 			continue
 		}
 		seen[mc.Module] = true
 
 		m, err := reg.Get(mc.Module)
 		if err != nil {
-			add("modules[%d]：%v", i, err)
+			add("strategy.validate.module_index_error", "index", i, "error", err.Error())
 			continue
 		}
 		params, err := modules.ResolveParams(m, mc.Params)
 		if err != nil {
-			add("modules[%d]（%s）：%v", i, mc.Module, err)
+			add("strategy.validate.module_params_error", "index", i, "module", mc.Module, "error", err.Error())
 			continue
 		}
 		resolved[mc.Module] = params
@@ -105,12 +114,11 @@ func Validate(cfg types.StrategyConfig, reg *modules.Registry) (map[string]map[s
 		// such a config is inherently self-contradictory.
 		if mc.Timeframe != "" {
 			if !mc.Timeframe.Valid() {
-				add("modules[%d]（%s）：周期 %q 不受支持，可选值为 %v",
-					i, mc.Module, mc.Timeframe, types.SupportedTimeframes)
+				add("strategy.validate.module_timeframe_unsupported",
+					"index", i, "module", mc.Module, "value", mc.Timeframe, "allowed", fmt.Sprint(types.SupportedTimeframes))
 			} else if mc.Timeframe.Duration() < cfg.Timeframe.Duration() {
-				add("modules[%d]（%s）：周期 %s 比策略触发周期 %s 更快；"+
-					"触发周期必须是所有模块里最快（或并列最快）的那个",
-					i, mc.Module, mc.Timeframe, cfg.Timeframe)
+				add("strategy.validate.module_timeframe_too_fast",
+					"index", i, "module", mc.Module, "value", mc.Timeframe, "trigger", cfg.Timeframe)
 			}
 		}
 
@@ -118,16 +126,16 @@ func Validate(cfg types.StrategyConfig, reg *modules.Registry) (map[string]map[s
 		// reported here, so the user doesn't end up thinking their weight
 		// took effect when it didn't.
 		if mc.Weight < 0 || mc.Weight > 1 {
-			add("modules[%d]（%s）：权重 %v 超出 (0, 1] 范围", i, mc.Module, mc.Weight)
+			add("strategy.validate.module_weight_out_of_range", "index", i, "module", mc.Module, "value", mc.Weight)
 		}
 		if cfg.Combine == types.CombineWeighted && mc.Weight <= 0 {
-			add("modules[%d]（%s）：WEIGHTED 组合下每个模块都必须配置大于 0 的权重", i, mc.Module)
+			add("strategy.validate.module_weight_required_for_weighted", "index", i, "module", mc.Module)
 		}
 	}
 
 	if cfg.Combine == types.CombineWeighted {
 		if cfg.Threshold <= 0 || cfg.Threshold > 1 {
-			add("WEIGHTED 组合下触发阈值必须落在 (0, 1]，当前为 %v", cfg.Threshold)
+			add("strategy.validate.threshold_out_of_range", "value", cfg.Threshold)
 		}
 	}
 
@@ -148,13 +156,13 @@ func validateRisk(r types.RiskConfig, modules []types.ModuleConfig, add func(str
 	// fixed_quote it's the position size itself, under risk_pct it's the
 	// hard ceiling on the computed position size.
 	if !r.MaxPositionSizeQuote.IsPositive() {
-		add("风控：单笔最大仓位（max_position_size_quote）必须大于 0")
+		add("strategy.validate.risk.max_position_required")
 	}
 	if r.MaxDailyLossQuote.IsNegative() {
-		add("风控：单日最大亏损（max_daily_loss_quote）不能为负数，它表示亏损额度的绝对值")
+		add("strategy.validate.risk.max_daily_loss_negative")
 	}
 	if r.MaxHoldingPeriod < 0 {
-		add("风控：最大持仓时间不能为负")
+		add("strategy.validate.risk.max_holding_negative")
 	}
 
 	moduleNames := make(map[string]bool, len(modules))
@@ -162,14 +170,14 @@ func validateRisk(r types.RiskConfig, modules []types.ModuleConfig, add func(str
 		moduleNames[mc.Module] = true
 	}
 
-	validateLevelMode(r.StopLossMode, "止损", "stop_loss_mode", r.StopLossPct, moduleNames, add)
+	validateLevelMode(r.StopLossMode, "strategy.validate.risk.level.stop_loss", r.StopLossPct, moduleNames, add)
 	if r.StopLossMode.EffectiveOrPct() == types.RiskLevelModePct && (r.StopLossPct < 0 || r.StopLossPct >= 1) {
-		add("风控：止损比例必须落在 [0, 1)，当前为 %v", r.StopLossPct)
+		add("strategy.validate.risk.stop_loss_pct_out_of_range", "value", r.StopLossPct)
 	}
 
-	validateLevelMode(r.TakeProfitMode, "止盈", "take_profit_mode", r.TakeProfitPct, moduleNames, add)
+	validateLevelMode(r.TakeProfitMode, "strategy.validate.risk.level.take_profit", r.TakeProfitPct, moduleNames, add)
 	if r.TakeProfitMode.EffectiveOrPct() == types.RiskLevelModePct && r.TakeProfitPct < 0 {
-		add("风控：止盈比例不能为负，当前为 %v", r.TakeProfitPct)
+		add("strategy.validate.risk.take_profit_pct_negative", "value", r.TakeProfitPct)
 	}
 
 	validatePositionSizingMode(r, add)
@@ -186,32 +194,29 @@ func validateRisk(r types.RiskConfig, modules []types.ModuleConfig, add func(str
 // reject rather than pick one ambiguously.
 func validatePositionSizingMode(r types.RiskConfig, add func(string, ...any)) {
 	if !r.PositionSizingMode.Valid() {
-		add("风控：仓位模式（position_sizing_mode）取值 %q 不受支持，可选 \"%s\" / \"%s\"",
-			r.PositionSizingMode, types.PositionSizingModeFixedQuote, types.PositionSizingModeRiskPct)
+		add("strategy.validate.risk.sizing_mode_invalid",
+			"value", r.PositionSizingMode, "a", types.PositionSizingModeFixedQuote, "b", types.PositionSizingModeRiskPct)
 		return
 	}
 
 	switch r.PositionSizingMode.EffectiveOrFixed() {
 	case types.PositionSizingModeFixedQuote:
 		if r.AccountEquityQuote.IsPositive() || r.RiskPerTradePct != 0 {
-			add("风控：仓位模式为 fixed_quote 时不应该填账户权益（account_equity_quote）或" +
-				"单笔风险比例（risk_per_trade_pct），两种模式的字段不能混填")
+			add("strategy.validate.risk.fixed_quote_extra_fields_set")
 		}
 	case types.PositionSizingModeRiskPct:
 		if !r.AccountEquityQuote.IsPositive() {
-			add("风控：仓位模式为 risk_pct 时必须填一个大于 0 的账户权益（account_equity_quote）")
+			add("strategy.validate.risk.risk_pct_equity_required")
 		}
 		if r.RiskPerTradePct <= 0 || r.RiskPerTradePct >= 1 {
-			add("风控：单笔风险比例（risk_per_trade_pct）必须落在 (0, 1)，当前为 %v", r.RiskPerTradePct)
+			add("strategy.validate.risk.risk_per_trade_pct_out_of_range", "value", r.RiskPerTradePct)
 		}
 		// risk_pct depends on the stop-loss distance to compute the position
 		// size; under pct mode, StopLossPct=0 means no stop loss is set, so
 		// the distance can't be computed — this must be caught at config
 		// time.
 		if r.StopLossMode.EffectiveOrPct() == types.RiskLevelModePct && r.StopLossPct <= 0 {
-			add("风控：仓位模式为 risk_pct 时必须同时设置止损" +
-				"（stop_loss_pct 大于 0，或 stop_loss_mode 用 support_resistance / poc），" +
-				"否则无法据此计算仓位")
+			add("strategy.validate.risk.risk_pct_requires_stop_loss")
 		}
 	}
 }
@@ -223,13 +228,19 @@ func validatePositionSizingMode(r types.RiskConfig, add func(string, ...any)) {
 // level data available), and the matching percentage field must be left
 // unset — setting both at once creates ambiguity over which one actually
 // takes effect; reject rather than pick one ambiguously.
+//
+// keyPrefix picks which stop-loss/take-profit catalog entries to use (e.g.
+// "strategy.validate.risk.level.stop_loss") -- the label shown to the user
+// ("stop loss" vs "take profit") differs, everything else about the check is
+// identical, so the message keys are namespaced per call site instead of the
+// message text being passed in as a runtime string.
 func validateLevelMode(
-	mode types.RiskLevelMode, label, field string, pct float64, moduleNames map[string]bool,
+	mode types.RiskLevelMode, keyPrefix string, pct float64, moduleNames map[string]bool,
 	add func(string, ...any),
 ) {
 	if !mode.Valid() {
-		add("风控：%s（%s）取值 %q 不受支持，可选 \"%s\" / \"%s\" / \"%s\"",
-			label, field, mode, types.RiskLevelModePct, types.RiskLevelModeSupportResistance, types.RiskLevelModePOC)
+		add(keyPrefix+".mode_invalid", "value", mode,
+			"a", types.RiskLevelModePct, "b", types.RiskLevelModeSupportResistance, "c", types.RiskLevelModePOC)
 		return
 	}
 	required := mode.RequiredModule()
@@ -237,11 +248,10 @@ func validateLevelMode(
 		return
 	}
 	if !moduleNames[required] {
-		add("风控：%s 设为 %s 模式，但策略的模块列表里没有 %s，没有它就算不出对应的价位",
-			label, mode, required)
+		add(keyPrefix+".missing_required_module", "mode", mode, "module", required)
 	}
 	if pct != 0 {
-		add("风控：%s 已设为 %s 模式，不应该再同时填百分比，两者只能生效一个", label, mode)
+		add(keyPrefix+".pct_set_with_level_mode", "mode", mode)
 	}
 }
 
