@@ -121,13 +121,13 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 	if slowPeriod <= fastPeriod {
 		return types.Signal{}, &types.ParamError{
 			Module: ModuleName, Param: "slow_period",
-			Reason: fmt.Sprintf("必须大于 fast_period（%d）", fastPeriod), Given: slowPeriod,
+			Reason: types.Msg("modules.macdrsi.slow_period_too_small", "fast_period", fastPeriod), Given: slowPeriod,
 		}
 	}
 	if oversold >= overbought {
 		return types.Signal{}, &types.ParamError{
 			Module: ModuleName, Param: "rsi_oversold",
-			Reason: fmt.Sprintf("必须小于 rsi_overbought（%g）", overbought), Given: oversold,
+			Reason: types.Msg("modules.macdrsi.oversold_too_large", "rsi_overbought", overbought), Given: oversold,
 		}
 	}
 

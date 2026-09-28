@@ -95,6 +95,34 @@ func TestMessageEmbeddedInStructRoundTripsBothShapesInTheSameJSONBColumn(t *test
 	}
 }
 
+func TestRenderFallbackUsesEnglishFallbackTemplate(t *testing.T) {
+	m := MsgF("params.above_max", "{value} is above the allowed maximum of {max}", "value", "5000", "max", "1000")
+	if got := m.RenderFallback(); got != "5000 is above the allowed maximum of 1000" {
+		t.Errorf("RenderFallback() = %q", got)
+	}
+}
+
+func TestRenderFallbackReturnsRawKeyWhenNoFallbackSet(t *testing.T) {
+	m := Msg("some.key")
+	if got := m.RenderFallback(); got != "some.key" {
+		t.Errorf("RenderFallback() = %q, want the raw key", got)
+	}
+}
+
+func TestRenderFallbackReturnsLiteralUnchanged(t *testing.T) {
+	m := Message{Literal: "旧记录"}
+	if got := m.RenderFallback(); got != "旧记录" {
+		t.Errorf("RenderFallback() on a literal = %q", got)
+	}
+}
+
+func TestInterpolateLeavesUnmatchedPlaceholderVisible(t *testing.T) {
+	got := Interpolate("value is {missing}", nil)
+	if got != "value is {missing}" {
+		t.Errorf("Interpolate = %q", got)
+	}
+}
+
 func TestMessageIsZero(t *testing.T) {
 	if !(Message{}).IsZero() {
 		t.Error("empty Message should be zero")

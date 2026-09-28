@@ -84,9 +84,12 @@ func ParseLang(raw string) Lang {
 //   - A keyed message looks up catalog[lang][m.Key] and substitutes each
 //     "{name}" placeholder with m.Args["name"]. A key missing from lang's
 //     catalog falls back to the Chinese catalog (the platform's original,
-//     always-populated language), and finally to the raw key itself if it's
-//     missing from both -- a page showing one untranslated key is a bug to
-//     fix, not a reason to fail the whole render.
+//     always-populated language), then to m.RenderFallback() if an
+//     EnglishFallback was attached (see pkg/types.MsgF -- mainly for
+//     messages built in pkg/, which can't register a catalog entry
+//     themselves without an import cycle), and finally to the raw key
+//     itself -- a page showing one untranslated key is a bug to fix, not a
+//     reason to fail the whole render.
 func Render(lang Lang, m types.Message) string {
 	if m.Key == "" {
 		return m.Literal
@@ -96,9 +99,12 @@ func Render(lang Lang, m types.Message) string {
 		tmpl, ok = catalogs[LangZH][m.Key]
 	}
 	if !ok {
+		if m.EnglishFallback != "" {
+			return m.RenderFallback()
+		}
 		return m.Key
 	}
-	return interpolate(tmpl, m.Args)
+	return types.Interpolate(tmpl, m.Args)
 }
 
 // T is a convenience wrapper for call sites that want to build and render a
@@ -108,38 +114,4 @@ func Render(lang Lang, m types.Message) string {
 // around before it's rendered (that's the whole point of Class B messages).
 func T(lang Lang, key string, args ...any) string {
 	return Render(lang, types.Msg(key, args...))
-}
-
-// interpolate replaces every "{name}" placeholder in tmpl with
-// fmt.Sprint(args["name"]). A placeholder with no matching arg is left
-// as-is (visibly wrong, easy to spot and fix, rather than silently dropped).
-func interpolate(tmpl string, args map[string]any) string {
-	if len(args) == 0 || !strings.Contains(tmpl, "{") {
-		return tmpl
-	}
-	var b strings.Builder
-	b.Grow(len(tmpl))
-	for i := 0; i < len(tmpl); {
-		open := strings.IndexByte(tmpl[i:], '{')
-		if open == -1 {
-			b.WriteString(tmpl[i:])
-			break
-		}
-		open += i
-		b.WriteString(tmpl[i:open])
-		close := strings.IndexByte(tmpl[open:], '}')
-		if close == -1 {
-			b.WriteString(tmpl[open:])
-			break
-		}
-		close += open
-		name := tmpl[open+1 : close]
-		if v, ok := args[name]; ok {
-			fmt.Fprint(&b, v)
-		} else {
-			b.WriteString(tmpl[open : close+1])
-		}
-		i = close + 1
-	}
-	return b.String()
 }

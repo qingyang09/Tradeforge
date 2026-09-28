@@ -50,10 +50,18 @@ func F(v float64) *float64 { return &v }
 // It carries enough context that the Agent translation layer can relay it to the
 // user verbatim ("the lookback window of 5000 you specified is outside the
 // allowed range of 20~500") instead of having the LLM make up an explanation.
+//
+// Reason is a Message (not a string): pkg/types can't import internal/i18n's
+// catalog (that package already imports pkg/types, so the reverse would be a
+// cycle), so Reason is always built with MsgF -- a symbolic key plus an
+// English fallback template baked in at the call site. internal/i18n.Render
+// still prefers a registered catalog entry for the key when one exists (see
+// internal/i18n/catalog_types.go); the fallback just guarantees Error()
+// keeps working with readable English even without depending on the catalog.
 type ParamError struct {
 	Module string
 	Param  string
-	Reason string
+	Reason Message
 	// Given is the raw value supplied by the user/LLM.
 	Given any
 	// Allowed is a human-readable description of the allowed range.
@@ -65,7 +73,7 @@ func (e *ParamError) Error() string {
 	if e.Module != "" {
 		fmt.Fprintf(&b, "module %s: ", e.Module)
 	}
-	fmt.Fprintf(&b, "parameter %s is invalid: %s", e.Param, e.Reason)
+	fmt.Fprintf(&b, "parameter %s is invalid: %s", e.Param, e.Reason.RenderFallback())
 	if e.Allowed != "" {
 		fmt.Fprintf(&b, " (allowed: %s)", e.Allowed)
 	}
@@ -103,18 +111,18 @@ func (p ParamSpec) AllowedDesc() string {
 // checked to actually be an integer rather than silently truncating 20.7 to
 // 20 — that would be "best-effort repair", which the platform explicitly forbids.
 func (p ParamSpec) Coerce(module string, v any) (any, error) {
-	fail := func(reason string) error {
-		return &ParamError{Module: module, Param: p.Name, Reason: reason, Given: v, Allowed: p.AllowedDesc()}
+	fail := func(key, fallback string, args ...any) error {
+		return &ParamError{Module: module, Param: p.Name, Reason: MsgF(key, fallback, args...), Given: v, Allowed: p.AllowedDesc()}
 	}
 
 	switch p.Type {
 	case ParamInt:
 		f, ok := toFloat(v)
 		if !ok {
-			return nil, fail(fmt.Sprintf("expected an integer, got %T", v))
+			return nil, fail("types.param.expected_int_type", "expected an integer, got {type}", "type", fmt.Sprintf("%T", v))
 		}
 		if f != math.Trunc(f) {
-			return nil, fail(fmt.Sprintf("expected an integer, got %v", v))
+			return nil, fail("types.param.expected_int_value", "expected an integer, got {value}", "value", fmt.Sprintf("%v", v))
 		}
 		if err := p.checkRange(module, f); err != nil {
 			return nil, err
@@ -124,10 +132,10 @@ func (p ParamSpec) Coerce(module string, v any) (any, error) {
 	case ParamFloat:
 		f, ok := toFloat(v)
 		if !ok {
-			return nil, fail(fmt.Sprintf("expected a number, got %T", v))
+			return nil, fail("types.param.expected_number_type", "expected a number, got {type}", "type", fmt.Sprintf("%T", v))
 		}
 		if math.IsNaN(f) || math.IsInf(f, 0) {
-			return nil, fail("value must be finite")
+			return nil, fail("types.param.must_be_finite", "value must be finite")
 		}
 		if err := p.checkRange(module, f); err != nil {
 			return nil, err
@@ -137,7 +145,7 @@ func (p ParamSpec) Coerce(module string, v any) (any, error) {
 	case ParamString:
 		s, ok := v.(string)
 		if !ok {
-			return nil, fail(fmt.Sprintf("expected a string, got %T", v))
+			return nil, fail("types.param.expected_string_type", "expected a string, got {type}", "type", fmt.Sprintf("%T", v))
 		}
 		if len(p.Enum) > 0 {
 			for _, e := range p.Enum {
@@ -145,29 +153,33 @@ func (p ParamSpec) Coerce(module string, v any) (any, error) {
 					return s, nil
 				}
 			}
-			return nil, fail(fmt.Sprintf("%q is not in the allowed set of values", s))
+			return nil, fail("types.param.not_in_enum", "{value} is not in the allowed set of values", "value", fmt.Sprintf("%q", s))
 		}
 		return s, nil
 
 	case ParamBool:
 		b, ok := v.(bool)
 		if !ok {
-			return nil, fail(fmt.Sprintf("expected a bool, got %T", v))
+			return nil, fail("types.param.expected_bool_type", "expected a bool, got {type}", "type", fmt.Sprintf("%T", v))
 		}
 		return b, nil
 	}
 
-	return nil, fail(fmt.Sprintf("unknown parameter type %q", p.Type))
+	return nil, fail("types.param.unknown_type", "unknown parameter type {type}", "type", fmt.Sprintf("%q", p.Type))
 }
 
 func (p ParamSpec) checkRange(module string, f float64) error {
 	if p.Min != nil && f < *p.Min {
 		return &ParamError{Module: module, Param: p.Name,
-			Reason: fmt.Sprintf("%g is below the allowed minimum of %g", f, *p.Min), Given: f, Allowed: p.AllowedDesc()}
+			Reason: MsgF("types.param.below_minimum", "{value} is below the allowed minimum of {min}",
+				"value", fmt.Sprintf("%g", f), "min", fmt.Sprintf("%g", *p.Min)),
+			Given: f, Allowed: p.AllowedDesc()}
 	}
 	if p.Max != nil && f > *p.Max {
 		return &ParamError{Module: module, Param: p.Name,
-			Reason: fmt.Sprintf("%g is above the allowed maximum of %g", f, *p.Max), Given: f, Allowed: p.AllowedDesc()}
+			Reason: MsgF("types.param.above_maximum", "{value} is above the allowed maximum of {max}",
+				"value", fmt.Sprintf("%g", f), "max", fmt.Sprintf("%g", *p.Max)),
+			Given: f, Allowed: p.AllowedDesc()}
 	}
 	return nil
 }
@@ -221,7 +233,7 @@ func ResolveParams(module string, specs []ParamSpec, given map[string]any) (map[
 		return nil, &ParamError{
 			Module: module,
 			Param:  strings.Join(unknown, ", "),
-			Reason: "this module has no such parameter",
+			Reason: MsgF("types.param.unknown_param", "this module has no such parameter"),
 			Allowed: strings.Join(func() []string {
 				names := make([]string, 0, len(specs))
 				for _, s := range specs {
@@ -239,11 +251,11 @@ func ResolveParams(module string, specs []ParamSpec, given map[string]any) (map[
 		if !ok || raw == nil {
 			if s.Required {
 				return nil, &ParamError{Module: module, Param: s.Name,
-					Reason: "missing required parameter", Allowed: s.AllowedDesc()}
+					Reason: MsgF("types.param.required_missing", "missing required parameter"), Allowed: s.AllowedDesc()}
 			}
 			if s.Default == nil {
 				return nil, &ParamError{Module: module, Param: s.Name,
-					Reason: "parameter not provided and has no default", Allowed: s.AllowedDesc()}
+					Reason: MsgF("types.param.no_default", "parameter not provided and has no default"), Allowed: s.AllowedDesc()}
 			}
 			raw = s.Default
 		}

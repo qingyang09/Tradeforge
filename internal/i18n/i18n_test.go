@@ -35,6 +35,20 @@ func TestRenderFallsBackToChineseWhenEnglishKeyMissing(t *testing.T) {
 	}
 }
 
+// This is the pkg/types.ParamError scenario: a Message built with MsgF in a
+// package that can't register a catalog entry for itself (pkg/ can't import
+// internal/i18n) should still render something readable via its
+// EnglishFallback, even before/without a real catalog entry existing.
+func TestRenderUsesEnglishFallbackWhenKeyMissingFromBothCatalogs(t *testing.T) {
+	m := types.MsgF("test.never_registered", "value {v} is out of range", "v", 42)
+	if got := Render(LangEN, m); got != "value 42 is out of range" {
+		t.Errorf("Render(en) = %q", got)
+	}
+	if got := Render(LangZH, m); got != "value 42 is out of range" {
+		t.Errorf("Render(zh) = %q, expected the English fallback since there's no Chinese catalog entry either", got)
+	}
+}
+
 func TestRenderFallsBackToRawKeyWhenMissingEverywhere(t *testing.T) {
 	m := types.Msg("test.does_not_exist")
 	if got := Render(LangEN, m); got != "test.does_not_exist" {

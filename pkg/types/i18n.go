@@ -1,6 +1,10 @@
 package types
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+)
 
 // Message is a translatable piece of text. Any package that produces text a
 // viewer might eventually see, but that doesn't itself know the viewer's
@@ -23,6 +27,18 @@ type Message struct {
 	Key     string         `json:"key,omitempty"`
 	Args    map[string]any `json:"args,omitempty"`
 	Literal string         `json:"-"`
+	// EnglishFallback is a "{name}"-style template (same substitution syntax
+	// as the internal/i18n catalog) rendered by RenderFallback when no
+	// catalog is reachable. It exists for packages under pkg/ that can't
+	// import internal/i18n themselves -- internal/i18n already imports
+	// pkg/types to use this very type, so the reverse import would be a
+	// cycle. pkg/types.ParamError is the motivating case: its Error() method
+	// needs *some* readable rendering without depending on a catalog.
+	// internal/i18n.Render still prefers its own registered catalog entry
+	// for Key when one exists (so the actual bilingual wording only has to
+	// live in one place); this is strictly a safety net, not a substitute
+	// for registering the key.
+	EnglishFallback string `json:"-"`
 }
 
 // Msg builds a Message from a symbolic key and alternating name/value
@@ -44,6 +60,66 @@ func Msg(key string, args ...any) Message {
 		}
 	}
 	return m
+}
+
+// MsgF is like Msg but also attaches an English fallback template (see
+// Message.EnglishFallback) -- for call sites in pkg/ that need their own
+// Error()-style method to produce readable text without a catalog.
+func MsgF(key, englishFallback string, args ...any) Message {
+	m := Msg(key, args...)
+	m.EnglishFallback = englishFallback
+	return m
+}
+
+// RenderFallback renders this Message using EnglishFallback (or Literal, if
+// that's what's set) instead of a catalog lookup -- see EnglishFallback's
+// doc comment for when this is the right tool. Returns the raw Key as a last
+// resort if neither is set, same "never blank, never panic" philosophy as
+// internal/i18n.Render.
+func (m Message) RenderFallback() string {
+	if m.Key == "" {
+		return m.Literal
+	}
+	if m.EnglishFallback == "" {
+		return m.Key
+	}
+	return Interpolate(m.EnglishFallback, m.Args)
+}
+
+// Interpolate substitutes each "{name}" placeholder in tmpl with
+// fmt.Sprint(args["name"]). A placeholder with no matching arg is left
+// as-is (visibly wrong and easy to spot, rather than silently dropped).
+// Exported so internal/i18n's catalog-backed Render can reuse the exact
+// same substitution logic instead of maintaining a second copy of it.
+func Interpolate(tmpl string, args map[string]any) string {
+	if len(args) == 0 || !strings.Contains(tmpl, "{") {
+		return tmpl
+	}
+	var b strings.Builder
+	b.Grow(len(tmpl))
+	for i := 0; i < len(tmpl); {
+		open := strings.IndexByte(tmpl[i:], '{')
+		if open == -1 {
+			b.WriteString(tmpl[i:])
+			break
+		}
+		open += i
+		b.WriteString(tmpl[i:open])
+		closeIdx := strings.IndexByte(tmpl[open:], '}')
+		if closeIdx == -1 {
+			b.WriteString(tmpl[open:])
+			break
+		}
+		closeIdx += open
+		name := tmpl[open+1 : closeIdx]
+		if v, ok := args[name]; ok {
+			fmt.Fprint(&b, v)
+		} else {
+			b.WriteString(tmpl[open : closeIdx+1])
+		}
+		i = closeIdx + 1
+	}
+	return b.String()
 }
 
 // IsZero reports whether this Message carries no text at all -- neither a
