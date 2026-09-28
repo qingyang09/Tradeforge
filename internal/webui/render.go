@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"tradeforge/internal/i18n"
 	"tradeforge/pkg/types"
 )
 
@@ -26,6 +27,15 @@ func parseTemplates() (*template.Template, error) {
 		"lower":     strings.ToLower,
 		"duration":  holdingDuration,
 		"feeDrag":   formatFeeDragRatio,
+		// msg renders a types.Message (see pkg/types/i18n.go) -- a symbolic
+		// key + args produced by a package that doesn't know the viewer's
+		// language (internal/strategy's gate checks, at the moment).
+		// Fixed to i18n.DefaultLang (Chinese) for now, matching this app's
+		// current Chinese-only behavior exactly; Phase 4 of the bilingual
+		// webui work replaces this with a per-request closure bound to the
+		// viewer's actual chosen language via template.Clone()+Funcs(),
+		// without needing to change any template that already calls {{msg ...}}.
+		"msg": func(m types.Message) string { return i18n.Render(i18n.DefaultLang, m) },
 	}
 	return template.New("root").Funcs(funcs).ParseFS(templatesFS,
 		"templates/*.html", "templates/partials/*.html")

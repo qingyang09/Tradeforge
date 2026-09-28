@@ -5,66 +5,80 @@ import (
 	"fmt"
 	"time"
 
+	"tradeforge/internal/i18n"
 	"tradeforge/pkg/types"
 )
 
-// 状态机是平台的安全闸门，不是流程装饰。
+// The state machine is the platform's safety gate, not a UX flourish.
 //
-// 合法流转固定为：
+// The legal path is fixed:
 //
 //	DRAFT → BACKTESTED → PAPER_TRADING → LIVE_ELIGIBLE → LIVE
 //
-// 三条不可绕过的规则：
-//  1. 每一步都必须逐级推进，不允许跳级（尤其是 DRAFT 直达 LIVE）
-//  2. 除最后一步外，每步推进都要有数据支撑（回测结果 / 模拟盘统计）
-//  3. LIVE_ELIGIBLE → LIVE 必须是用户的显式手动操作，系统永不自动推进
+// Three rules that may never be bypassed:
+//  1. Every step must advance one level at a time, no skipping (especially DRAFT
+//     straight to LIVE)
+//  2. Every step except the last must be backed by data (a backtest result / paper
+//     trading statistics)
+//  3. LIVE_ELIGIBLE → LIVE must be the user's explicit manual action, the system may
+//     never advance this automatically
 
-// allowedTransitions 是唯一的流转白名单。不在表里的一律拒绝。
+// allowedTransitions is the single whitelist of legal transitions. Anything not in
+// this table is rejected.
 var allowedTransitions = map[types.StrategyState][]types.StrategyState{
 	types.StateDraft:        {types.StateBacktested},
 	types.StateBacktested:   {types.StatePaperTrading, types.StateDraft},
 	types.StatePaperTrading: {types.StateLiveEligible, types.StateSuspended},
 	types.StateLiveEligible: {types.StateLive, types.StateSuspended},
 	types.StateLive:         {types.StateSuspended},
-	// 暂停后只能回到模拟盘重新验证，不能直接恢复实盘——
-	// 触发过风控的策略必须重新证明自己。
+	// After a pause, the only way back is through paper trading again -- a
+	// strategy that tripped a risk control has to re-prove itself, it can't
+	// resume live trading directly.
 	types.StateSuspended: {types.StatePaperTrading},
 }
 
-// Actor 标识发起流转的主体。
+// Actor identifies who initiated a transition.
 type Actor string
 
 const (
-	// ActorSystem 表示由系统基于数据自动推进（回测完成、模拟盘达标等）。
+	// ActorSystem means the system advanced this automatically based on data
+	// (backtest completed, paper trading cleared the gate, etc.).
 	ActorSystem Actor = "system"
-	// ActorUser 表示由用户手动操作。
+	// ActorUser means a human did this manually.
 	ActorUser Actor = "user"
 )
 
-// Gate 是推进到某状态所需的门槛配置。
+// Gate is the set of thresholds required to advance to a given state.
 type Gate struct {
-	// MinOutOfSampleSharpe 是进入 PAPER_TRADING 所需的最低样本外夏普比率。
+	// MinOutOfSampleSharpe is the minimum out-of-sample Sharpe ratio required to
+	// enter PAPER_TRADING.
 	MinOutOfSampleSharpe float64
-	// MaxDrawdownLimit 是允许的最大回撤上限（0.5 表示 50%）。
+	// MaxDrawdownLimit is the allowed max-drawdown ceiling (0.5 means 50%).
 	MaxDrawdownLimit float64
-	// MinOutOfSampleTrades 是样本外区间所需的最少交易笔数。
-	// 一两笔交易的样本外指标没有统计意义，等于没验证过。
+	// MinOutOfSampleTrades is the minimum trade count required in the
+	// out-of-sample segment. Metrics from one or two trades aren't
+	// statistically meaningful -- that's equivalent to not having been
+	// verified at all.
 	MinOutOfSampleTrades int
-	// MaxFeeDragRatio 是样本外区间手续费占毛利润的比例上限（0.5 表示 50%）。
-	// 0 表示不启用这条检查。夏普/收益本身已经是扣完手续费之后的数字，
-	// 这条是额外的、独立的信号：换手率过高、靠很薄的价差反复进出的策略，
-	// 净指标可能刚好卡过门槛，但对手续费/滑点的变动极度敏感，值得单独标出来。
+	// MaxFeeDragRatio is the cap on what fraction of out-of-sample gross
+	// profit fees are allowed to consume (0.5 means 50%). 0 disables this
+	// check. Sharpe/return are already fee-adjusted numbers on their own;
+	// this is a separate, independent signal: a strategy with very high
+	// turnover trading on thin edges might just barely clear the other gates
+	// on net numbers while being extremely sensitive to fee/slippage
+	// changes, which is worth flagging on its own.
 	MaxFeeDragRatio float64
-	// MinPaperDuration 是模拟盘的最短运行时长。
+	// MinPaperDuration is the minimum paper-trading run duration.
 	MinPaperDuration time.Duration
-	// MinPaperTrades 是模拟盘的最少交易笔数。
+	// MinPaperTrades is the minimum number of paper-trading fills.
 	MinPaperTrades int
 }
 
-// DefaultGate 是平台默认门槛。
+// DefaultGate is the platform's default set of thresholds.
 //
-// 数值取得保守是有意的：门槛太松等于没有门槛，
-// 而用户随时可以在配置里调高，却不该轻易调低。
+// Conservative defaults are intentional: a gate that's too loose is
+// equivalent to no gate at all, and a user can always raise it in their own
+// config -- but shouldn't casually be able to lower it.
 func DefaultGate() Gate {
 	return Gate{
 		MinOutOfSampleSharpe: 0,
@@ -76,14 +90,15 @@ func DefaultGate() Gate {
 	}
 }
 
-// PaperStats 是模拟盘的运行统计，用于判断能否进入 LIVE_ELIGIBLE。
+// PaperStats is a strategy's paper-trading run statistics, used to decide
+// whether it can advance to LIVE_ELIGIBLE.
 type PaperStats struct {
 	StartedAt  time.Time
 	Now        time.Time
 	TradeCount int
 }
 
-// Duration 返回模拟盘已运行的时长。
+// Duration returns how long paper trading has been running.
 func (p PaperStats) Duration() time.Duration {
 	if p.StartedAt.IsZero() || p.Now.IsZero() {
 		return 0
@@ -91,59 +106,71 @@ func (p PaperStats) Duration() time.Duration {
 	return p.Now.Sub(p.StartedAt)
 }
 
-// TransitionRequest 是一次状态推进请求。
+// TransitionRequest is one request to advance a strategy's state.
 type TransitionRequest struct {
 	From types.StrategyState
 	To   types.StrategyState
-	// Actor 是发起者。LIVE_ELIGIBLE → LIVE 只接受 ActorUser。
+	// Actor is who initiated this. LIVE_ELIGIBLE → LIVE only accepts ActorUser.
 	Actor Actor
-	// ActorID 是具体的操作者标识，写入审计日志。
+	// ActorID is the specific operator identity, written to the audit log.
 	ActorID string
-	// Reason 是推进理由，必填。
+	// Reason is why this transition is happening; required.
 	Reason string
-	// Backtest 是支撑 DRAFT → BACKTESTED 的回测结果。
+	// Backtest backs a DRAFT → BACKTESTED transition.
 	Backtest *types.BacktestResult
-	// Paper 是支撑 PAPER_TRADING → LIVE_ELIGIBLE 的模拟盘统计。
+	// Paper backs a PAPER_TRADING → LIVE_ELIGIBLE transition.
 	Paper *PaperStats
 }
 
-// TransitionError 表示一次流转被拒绝。
+// TransitionError means a transition was rejected. Reason is the structured,
+// translatable explanation -- render it with internal/i18n.Render(lang, ...)
+// for a user-facing message; Error() renders it in English as a stable,
+// language-independent string for logs and Go error-handling code that just
+// wants *a* message, not a UI-quality one.
 type TransitionError struct {
 	From, To types.StrategyState
-	Reason   string
+	Reason   types.Message
+	// wrapped lets errors.Is/As see through to a sentinel (e.g. ErrManualOnly)
+	// when this error was built around one.
+	wrapped error
 }
 
 func (e *TransitionError) Error() string {
-	return fmt.Sprintf("拒绝从 %s 推进到 %s：%s", e.From, e.To, e.Reason)
+	return fmt.Sprintf("transition rejected from %s to %s: %s", e.From, e.To, i18n.Render(i18n.LangEN, e.Reason))
 }
 
-// ErrManualOnly 表示该流转必须由用户手动发起。
-var ErrManualOnly = errors.New("该流转必须由用户显式手动操作，系统不得自动推进")
+func (e *TransitionError) Unwrap() error { return e.wrapped }
 
-// Evidence 是本次推进所依据的数据快照，写入审计日志。
+// ErrManualOnly means this transition must be initiated manually by a user.
+var ErrManualOnly = errors.New("this transition must be an explicit manual user action; the system may not advance it automatically")
+
+// Evidence is the data snapshot a transition was decided on, written to the
+// audit log.
 type Evidence map[string]any
 
-// CheckTransition 校验一次流转是否被允许，并返回写入审计的依据快照。
+// CheckTransition validates whether a transition is allowed, and returns the
+// evidence snapshot to write to the audit log.
 //
-// 它是纯函数：不碰数据库、不改状态。这样状态机的全部规则都能被单元测试
-// 直接覆盖，不必搭起一整套基础设施。
+// It's a pure function: it never touches the database or mutates state. That
+// means every rule in the state machine can be covered directly by unit
+// tests, without standing up any infrastructure.
 func CheckTransition(req TransitionRequest, gate Gate) (Evidence, error) {
 	if !req.From.Valid() {
-		return nil, &TransitionError{req.From, req.To, fmt.Sprintf("源状态 %q 不合法", req.From)}
+		return nil, &TransitionError{req.From, req.To, types.Msg("strategy.transition.invalid_from_state", "state", string(req.From)), nil}
 	}
 	if !req.To.Valid() {
-		return nil, &TransitionError{req.From, req.To, fmt.Sprintf("目标状态 %q 不合法", req.To)}
+		return nil, &TransitionError{req.From, req.To, types.Msg("strategy.transition.invalid_to_state", "state", string(req.To)), nil}
 	}
 	if req.From == req.To {
-		return nil, &TransitionError{req.From, req.To, "源状态与目标状态相同"}
+		return nil, &TransitionError{req.From, req.To, types.Msg("strategy.transition.same_state"), nil}
 	}
 	if req.Reason == "" {
-		return nil, &TransitionError{req.From, req.To, "必须说明推进理由，审计日志不接受空理由"}
+		return nil, &TransitionError{req.From, req.To, types.Msg("strategy.transition.reason_required"), nil}
 	}
 
 	if !isAllowed(req.From, req.To) {
-		return nil, &TransitionError{req.From, req.To,
-			fmt.Sprintf("不是合法的流转路径；%s 只能推进到 %v", req.From, allowedTransitions[req.From])}
+		return nil, &TransitionError{req.From, req.To, types.Msg("strategy.transition.illegal_path",
+			"from", string(req.From), "allowed", fmt.Sprint(allowedTransitions[req.From])), nil}
 	}
 
 	switch {
@@ -151,12 +178,14 @@ func CheckTransition(req TransitionRequest, gate Gate) (Evidence, error) {
 		return checkBacktestGate(req, gate)
 
 	case req.To == types.StateLive:
-		// 平台最重要的一道闸门：实盘只能由人点头。
+		// The platform's most important gate: live trading can only be
+		// nodded through by a human.
 		if req.Actor != ActorUser {
-			return nil, fmt.Errorf("从 %s 推进到 %s：%w", req.From, req.To, ErrManualOnly)
+			return nil, &TransitionError{req.From, req.To,
+				types.Msg("strategy.transition.manual_only", "from", string(req.From), "to", string(req.To)), ErrManualOnly}
 		}
 		if req.ActorID == "" {
-			return nil, &TransitionError{req.From, req.To, "手动解锁实盘必须记录操作者身份"}
+			return nil, &TransitionError{req.From, req.To, types.Msg("strategy.transition.live_requires_actor_id"), nil}
 		}
 		return Evidence{
 			"unlocked_by": req.ActorID,
@@ -167,7 +196,8 @@ func CheckTransition(req TransitionRequest, gate Gate) (Evidence, error) {
 		return checkPaperGate(req, gate)
 
 	default:
-		// 其余流转（进入模拟盘、暂停、退回草稿）没有数据门槛。
+		// Every other transition (entering paper trading, pausing, reverting
+		// to draft) has no data gate.
 		return Evidence{"actor": string(req.Actor), "actor_id": req.ActorID}, nil
 	}
 }
@@ -181,75 +211,86 @@ func isAllowed(from, to types.StrategyState) bool {
 	return false
 }
 
-// GateCriterion 是门槛里的一条具体检查项：当前值、要求值、是否达标。
+// GateCriterion is one specific check within a gate: its current value,
+// required value, and whether it passes.
 //
-// EvaluateBacktestGate/EvaluatePaperGate 和 checkBacktestGate/checkPaperGate
-// 共用同一份计算——界面上"距离下一步还差什么"要展示的每一行，跟真正决定能不能
-// 推进状态的判断必须是同一处代码算出来的，不能各写一份、慢慢就对不上了。
+// EvaluateBacktestGate/EvaluatePaperGate is the exact same computation
+// checkBacktestGate/checkPaperGate uses to make the real pass/fail call --
+// every row the UI shows under "what's left before the next step" has to
+// come from the same code that decides whether the state can actually
+// advance, or the two will quietly drift apart from each other.
 type GateCriterion struct {
-	// Label 是检查项名称，如"样本外夏普比率"。
-	Label string
-	// Current 是当前值的展示文案。
-	Current string
-	// Required 是门槛的展示文案，如 "> 0.000"。
-	Required string
+	// Label is the name of this check, e.g. "Out-of-sample Sharpe ratio".
+	Label types.Message
+	// Current is the display text for the current value.
+	Current types.Message
+	// Required is the display text for the threshold, e.g. "> 0.000".
+	Required types.Message
 	Pass     bool
-	// Reason 只在 Pass=false 时有意义，是拒绝流转时 TransitionError 的具体理由。
-	Reason string
+	// Reason only matters when Pass=false -- it's the specific explanation a
+	// TransitionError uses when this criterion is what rejected the transition.
+	Reason types.Message
 }
 
-// EvaluateBacktestGate 逐条算出回测门槛的检查结果。
+// plainValue wraps an already-formatted number/duration/etc. with no
+// translatable words around it -- the same text in every language, just
+// routed through the catalog for a consistent rendering path.
+func plainValue(v string) types.Message { return types.Msg("strategy.gate.plain", "value", v) }
+
+// EvaluateBacktestGate works out the backtest gate's checks one at a time.
 //
-// 只看样本外指标：样本内的漂亮数字可能只是参数在那段数据上过拟合的结果，
-// 拿它当门槛等于没有门槛。
+// Only out-of-sample metrics are considered: good-looking in-sample numbers
+// might just be parameters overfit to that segment's data -- using them as
+// the gate would be equivalent to having no gate.
 func EvaluateBacktestGate(bt *types.BacktestResult, gate Gate) []GateCriterion {
 	oos := bt.OutOfSample
 	criteria := []GateCriterion{
 		{
-			Label:    "样本外交易笔数",
-			Current:  fmt.Sprintf("%d 笔", oos.TradeCount),
-			Required: fmt.Sprintf(">= %d 笔", gate.MinOutOfSampleTrades),
+			Label:    types.Msg("strategy.gate.oos_trades.label"),
+			Current:  types.Msg("strategy.gate.count_trades", "count", oos.TradeCount),
+			Required: types.Msg("strategy.gate.min_trades", "count", gate.MinOutOfSampleTrades),
 			Pass:     oos.TradeCount >= gate.MinOutOfSampleTrades,
-			Reason: fmt.Sprintf(
-				"样本外只有 %d 笔交易，低于要求的 %d 笔；样本太少时的指标没有统计意义，等同于未验证",
-				oos.TradeCount, gate.MinOutOfSampleTrades),
+			Reason: types.Msg("strategy.gate.oos_trades.reason",
+				"count", oos.TradeCount, "min", gate.MinOutOfSampleTrades),
 		},
 		{
-			Label:    "样本外夏普比率",
-			Current:  fmt.Sprintf("%.3f", oos.SharpeRatio),
-			Required: fmt.Sprintf("> %.3f", gate.MinOutOfSampleSharpe),
+			Label:    types.Msg("strategy.gate.oos_sharpe.label"),
+			Current:  plainValue(fmt.Sprintf("%.3f", oos.SharpeRatio)),
+			Required: types.Msg("strategy.gate.gt", "value", fmt.Sprintf("%.3f", gate.MinOutOfSampleSharpe)),
 			Pass:     oos.SharpeRatio > gate.MinOutOfSampleSharpe,
-			Reason:   fmt.Sprintf("样本外夏普 %.3f 未超过门槛 %.3f", oos.SharpeRatio, gate.MinOutOfSampleSharpe),
+			Reason: types.Msg("strategy.gate.oos_sharpe.reason",
+				"value", fmt.Sprintf("%.3f", oos.SharpeRatio), "min", fmt.Sprintf("%.3f", gate.MinOutOfSampleSharpe)),
 		},
 	}
 	if gate.MaxDrawdownLimit > 0 {
 		criteria = append(criteria, GateCriterion{
-			Label:    "样本外最大回撤",
-			Current:  fmt.Sprintf("%.2f%%", oos.MaxDrawdown*100),
-			Required: fmt.Sprintf("<= %.2f%%", gate.MaxDrawdownLimit*100),
+			Label:    types.Msg("strategy.gate.oos_drawdown.label"),
+			Current:  types.Msg("strategy.gate.pct", "pct", fmt.Sprintf("%.2f", oos.MaxDrawdown*100)),
+			Required: types.Msg("strategy.gate.lte_pct", "pct", fmt.Sprintf("%.2f", gate.MaxDrawdownLimit*100)),
 			Pass:     oos.MaxDrawdown <= gate.MaxDrawdownLimit,
-			Reason: fmt.Sprintf("样本外最大回撤 %.2f%% 超过上限 %.2f%%",
-				oos.MaxDrawdown*100, gate.MaxDrawdownLimit*100),
+			Reason: types.Msg("strategy.gate.oos_drawdown.reason",
+				"pct", fmt.Sprintf("%.2f", oos.MaxDrawdown*100), "max", fmt.Sprintf("%.2f", gate.MaxDrawdownLimit*100)),
 		})
 	}
 	if gate.MaxFeeDragRatio > 0 {
 		if feeDrag, ok := oos.FeeDragRatio(); ok {
 			criteria = append(criteria, GateCriterion{
-				Label:    "手续费占毛利润比例",
-				Current:  fmt.Sprintf("%.1f%%", feeDrag*100),
-				Required: fmt.Sprintf("<= %.1f%%", gate.MaxFeeDragRatio*100),
+				Label:    types.Msg("strategy.gate.fee_drag.label"),
+				Current:  types.Msg("strategy.gate.pct", "pct", fmt.Sprintf("%.1f", feeDrag*100)),
+				Required: types.Msg("strategy.gate.lte_pct", "pct", fmt.Sprintf("%.1f", gate.MaxFeeDragRatio*100)),
 				Pass:     feeDrag <= gate.MaxFeeDragRatio,
-				Reason: fmt.Sprintf(
-					"样本外毛利润里有 %.1f%% 被手续费吃掉，超过上限 %.1f%%；换手率过高，对手续费/滑点太敏感",
-					feeDrag*100, gate.MaxFeeDragRatio*100),
+				Reason: types.Msg("strategy.gate.fee_drag.reason",
+					"pct", fmt.Sprintf("%.1f", feeDrag*100), "max", fmt.Sprintf("%.1f", gate.MaxFeeDragRatio*100)),
 			})
 		} else {
-			// 毛利润非正、算不出比例时不拦截（跟下面的判断逻辑一致），但仍然展示
-			// 这一项，界面上不能悄悄漏掉一条门槛。
+			// No positive gross profit means no ratio to compute -- this
+			// doesn't block the gate (matches the check below), but the
+			// criterion still needs to be shown; the UI shouldn't quietly
+			// drop a gate row.
 			criteria = append(criteria, GateCriterion{
-				Label:    "手续费占毛利润比例",
-				Current:  "—（还没有正的毛利润，暂时算不出比例）",
-				Required: fmt.Sprintf("<= %.1f%%", gate.MaxFeeDragRatio*100),
+				Label:    types.Msg("strategy.gate.fee_drag.label"),
+				Current:  types.Msg("strategy.gate.fee_drag.unknown"),
+				Required: types.Msg("strategy.gate.lte_pct", "pct", fmt.Sprintf("%.1f", gate.MaxFeeDragRatio*100)),
 				Pass:     true,
 			})
 		}
@@ -257,10 +298,10 @@ func EvaluateBacktestGate(bt *types.BacktestResult, gate Gate) []GateCriterion {
 	return criteria
 }
 
-// checkBacktestGate 校验回测结果是否达标。
+// checkBacktestGate validates whether a backtest result clears the gate.
 func checkBacktestGate(req TransitionRequest, gate Gate) (Evidence, error) {
 	if req.Backtest == nil {
-		return nil, &TransitionError{req.From, req.To, "缺少回测结果，无法判断是否达标"}
+		return nil, &TransitionError{req.From, req.To, types.Msg("strategy.transition.missing_backtest"), nil}
 	}
 	oos := req.Backtest.OutOfSample
 
@@ -282,46 +323,52 @@ func checkBacktestGate(req TransitionRequest, gate Gate) (Evidence, error) {
 
 	for _, c := range EvaluateBacktestGate(req.Backtest, gate) {
 		if !c.Pass {
-			return nil, &TransitionError{req.From, req.To, c.Reason}
+			return nil, &TransitionError{req.From, req.To, c.Reason, nil}
 		}
 	}
 
 	return ev, nil
 }
 
-// EvaluatePaperGate 逐条算出模拟盘门槛的检查结果。
+// EvaluatePaperGate works out the paper-trading gate's checks one at a time.
 //
-// 时长和笔数都要满足：只跑够时长但一笔没成交，说明策略在真实行情里根本不触发；
-// 只跑够笔数但时间太短，说明只见过一种市况。
+// Both duration and trade count must be satisfied: clearing the duration bar
+// with zero fills means the strategy essentially never triggers in real
+// market conditions; clearing the trade-count bar in too short a time means
+// it's only ever seen one kind of market.
 func EvaluatePaperGate(paper *PaperStats, gate Gate) []GateCriterion {
 	elapsed := paper.Duration()
-	// 展示用的时长四舍五入到秒——elapsed 本身是"现在减去起始时间"算出来的，
-	// 带着一串没意义的纳秒尾数（比如 72h0m17.1800002s），秒级精度对人已经够看了；
-	// 判定通过与否仍然用未取整的 elapsed，不受这行展示格式影响。
+	// Rounded to the second for display -- elapsed is "now minus start time"
+	// and carries a meaningless string of nanosecond digits (e.g.
+	// 72h0m17.1800002s); second-level precision is plenty for a human to
+	// read. Pass/fail still uses the unrounded elapsed, unaffected by this
+	// display formatting.
 	elapsedDisplay := elapsed.Round(time.Second)
 	return []GateCriterion{
 		{
-			Label:    "模拟盘运行时长",
-			Current:  elapsedDisplay.String(),
-			Required: fmt.Sprintf(">= %s", gate.MinPaperDuration),
+			Label:    types.Msg("strategy.gate.paper_duration.label"),
+			Current:  plainValue(elapsedDisplay.String()),
+			Required: types.Msg("strategy.gate.gte_value", "value", gate.MinPaperDuration.String()),
 			Pass:     elapsed >= gate.MinPaperDuration,
-			Reason:   fmt.Sprintf("模拟盘只运行了 %s，未达到要求的 %s", elapsedDisplay, gate.MinPaperDuration),
+			Reason: types.Msg("strategy.gate.paper_duration.reason",
+				"duration", elapsedDisplay.String(), "min", gate.MinPaperDuration.String()),
 		},
 		{
-			Label:    "模拟盘成交笔数",
-			Current:  fmt.Sprintf("%d 笔", paper.TradeCount),
-			Required: fmt.Sprintf(">= %d 笔", gate.MinPaperTrades),
+			Label:    types.Msg("strategy.gate.paper_trades.label"),
+			Current:  types.Msg("strategy.gate.count_trades", "count", paper.TradeCount),
+			Required: types.Msg("strategy.gate.min_trades", "count", gate.MinPaperTrades),
 			Pass:     paper.TradeCount >= gate.MinPaperTrades,
-			Reason: fmt.Sprintf("模拟盘只成交了 %d 笔，未达到要求的 %d 笔",
-				paper.TradeCount, gate.MinPaperTrades),
+			Reason: types.Msg("strategy.gate.paper_trades.reason",
+				"count", paper.TradeCount, "min", gate.MinPaperTrades),
 		},
 	}
 }
 
-// checkPaperGate 校验模拟盘是否跑够时长与笔数。
+// checkPaperGate validates whether paper trading has run long enough and
+// filled enough trades.
 func checkPaperGate(req TransitionRequest, gate Gate) (Evidence, error) {
 	if req.Paper == nil {
-		return nil, &TransitionError{req.From, req.To, "缺少模拟盘统计，无法判断是否达标"}
+		return nil, &TransitionError{req.From, req.To, types.Msg("strategy.transition.missing_paper_stats"), nil}
 	}
 	elapsed := req.Paper.Duration()
 
@@ -335,27 +382,30 @@ func checkPaperGate(req TransitionRequest, gate Gate) (Evidence, error) {
 
 	for _, c := range EvaluatePaperGate(req.Paper, gate) {
 		if !c.Pass {
-			return nil, &TransitionError{req.From, req.To, c.Reason}
+			return nil, &TransitionError{req.From, req.To, c.Reason, nil}
 		}
 	}
 
 	return ev, nil
 }
 
-// CanTradeLive 报告某状态下是否允许下真实单。
+// CanTradeLive reports whether a state is allowed to place real orders.
 //
-// 执行层在每次下单前都应当调用它。把这个判断集中在一处，
-// 是为了避免"某个分支忘了检查状态"这类错误直接变成真金白银的损失。
+// The execution layer should call this before every single order placement.
+// Centralizing this check in one place exists specifically to avoid "one
+// branch forgot to check the state" turning directly into a real financial
+// loss.
 func CanTradeLive(state types.StrategyState) bool {
 	return state == types.StateLive
 }
 
-// CanTradePaper 报告某状态下是否允许跑模拟交易。
+// CanTradePaper reports whether a state is allowed to run paper trading.
 func CanTradePaper(state types.StrategyState) bool {
 	return state == types.StatePaperTrading || state == types.StateLiveEligible
 }
 
-// NextStates 返回某状态的全部合法后继，供界面展示可用操作。
+// NextStates returns every legal successor of a state, for the UI to show
+// which actions are available.
 func NextStates(state types.StrategyState) []types.StrategyState {
 	out := make([]types.StrategyState, len(allowedTransitions[state]))
 	copy(out, allowedTransitions[state])

@@ -2,7 +2,6 @@ package strategy
 
 import (
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -215,10 +214,10 @@ func TestEvaluateBacktestGateFlagsFailingCriterionOnly(t *testing.T) {
 
 	var sharpe *GateCriterion
 	for i := range criteria {
-		if criteria[i].Label == "样本外夏普比率" {
+		if criteria[i].Label.Key == "strategy.gate.oos_sharpe.label" {
 			sharpe = &criteria[i]
 		} else if !criteria[i].Pass {
-			t.Errorf("只有夏普不达标，但 %q 也被标记成未达标", criteria[i].Label)
+			t.Errorf("只有夏普不达标，但 %q 也被标记成未达标", criteria[i].Label.Key)
 		}
 	}
 	if sharpe == nil {
@@ -235,20 +234,20 @@ func TestBacktestGate(t *testing.T) {
 	cases := []struct {
 		name    string
 		mutate  func(*types.BacktestResult)
-		wantErr string
+		wantKey string
 	}{
 		{"样本外夏普为负", func(b *types.BacktestResult) {
 			b.OutOfSample.SharpeRatio = -0.5
-		}, "夏普"},
+		}, "strategy.gate.oos_sharpe.reason"},
 		{"样本外夏普刚好等于门槛（不算通过）", func(b *types.BacktestResult) {
 			b.OutOfSample.SharpeRatio = 0
-		}, "夏普"},
+		}, "strategy.gate.oos_sharpe.reason"},
 		{"样本外交易太少", func(b *types.BacktestResult) {
 			b.OutOfSample.TradeCount = 2
-		}, "笔交易"},
+		}, "strategy.gate.oos_trades.reason"},
 		{"样本外回撤过大", func(b *types.BacktestResult) {
 			b.OutOfSample.MaxDrawdown = 0.8
-		}, "回撤"},
+		}, "strategy.gate.oos_drawdown.reason"},
 	}
 
 	for _, tc := range cases {
@@ -262,8 +261,12 @@ func TestBacktestGate(t *testing.T) {
 			if err == nil {
 				t.Fatal("未达标的回测不应放行")
 			}
-			if !strings.Contains(err.Error(), tc.wantErr) {
-				t.Errorf("错误信息未说明原因 %q，实际：%v", tc.wantErr, err)
+			var te *TransitionError
+			if !errors.As(err, &te) {
+				t.Fatalf("期望 *TransitionError，得到 %T", err)
+			}
+			if te.Reason.Key != tc.wantKey {
+				t.Errorf("Reason.Key = %q，期望 %q（渲染文案：%s）", te.Reason.Key, tc.wantKey, err.Error())
 			}
 		})
 	}
@@ -286,8 +289,12 @@ func TestBacktestGateRejectsHighFeeDrag(t *testing.T) {
 	if err == nil {
 		t.Fatal("手续费吃掉六成毛利润，不应该放行")
 	}
-	if !strings.Contains(err.Error(), "手续费") {
-		t.Errorf("错误信息未说明是手续费占比超标，实际：%v", err)
+	var te *TransitionError
+	if !errors.As(err, &te) {
+		t.Fatalf("期望 *TransitionError，得到 %T", err)
+	}
+	if te.Reason.Key != "strategy.gate.fee_drag.reason" {
+		t.Errorf("Reason.Key = %q，期望说明是手续费占比超标（渲染文案：%s）", te.Reason.Key, err.Error())
 	}
 }
 
@@ -356,17 +363,17 @@ func TestPaperGate(t *testing.T) {
 	cases := []struct {
 		name    string
 		mutate  func(*PaperStats)
-		wantErr string
+		wantKey string
 	}{
 		{"时长不足", func(p *PaperStats) {
 			p.Now = p.StartedAt.Add(2 * 24 * time.Hour)
-		}, "只运行了"},
+		}, "strategy.gate.paper_duration.reason"},
 		{"笔数不足", func(p *PaperStats) {
 			p.TradeCount = 3
-		}, "只成交了"},
+		}, "strategy.gate.paper_trades.reason"},
 		{"跑够时间但一笔没成交", func(p *PaperStats) {
 			p.TradeCount = 0
-		}, "只成交了"},
+		}, "strategy.gate.paper_trades.reason"},
 	}
 
 	for _, tc := range cases {
@@ -380,8 +387,12 @@ func TestPaperGate(t *testing.T) {
 			if err == nil {
 				t.Fatal("未达标的模拟盘不应放行")
 			}
-			if !strings.Contains(err.Error(), tc.wantErr) {
-				t.Errorf("错误信息未说明原因 %q，实际：%v", tc.wantErr, err)
+			var te *TransitionError
+			if !errors.As(err, &te) {
+				t.Fatalf("期望 *TransitionError，得到 %T", err)
+			}
+			if te.Reason.Key != tc.wantKey {
+				t.Errorf("Reason.Key = %q，期望 %q（渲染文案：%s）", te.Reason.Key, tc.wantKey, err.Error())
 			}
 		})
 	}

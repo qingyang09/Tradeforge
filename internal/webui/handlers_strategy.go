@@ -113,10 +113,16 @@ func (s *Server) loadStrategyDetail(ctx context.Context, userID, id string) (str
 }
 
 // gateProgressItem 是"距离下一步还差什么"表格里的一行。
+//
+// Label/Current/Required 是 types.Message（key+args），不是现成字符串——
+// strategy.GateCriterion 这次改成了可翻译的结构化消息，模板要通过 {{msg .Label}}
+// 这类调用渲染，不能再直接 {{.Label}}。目前 render.go 的 msg 函数固定用中文渲染
+// （这个界面本身还没接语言切换），等 Phase 4 做真正的语言开关时会把它换成按当次
+// 请求语言渲染，这里的结构不用再改。
 type gateProgressItem struct {
-	Label    string
-	Current  string
-	Required string
+	Label    types.Message
+	Current  types.Message
+	Required types.Message
 	Pass     bool
 }
 

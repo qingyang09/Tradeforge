@@ -30,9 +30,9 @@
     <tr><th>检查项</th><th>当前值</th><th>门槛要求</th><th>是否达标</th></tr>
     {{range .GateProgress.Items}}
     <tr>
-      <td>{{.Label}}</td>
-      <td>{{.Current}}</td>
-      <td>{{.Required}}</td>
+      <td>{{msg .Label}}</td>
+      <td>{{msg .Current}}</td>
+      <td>{{msg .Required}}</td>
       <td>{{if .Pass}}<span class="gate-pass">✓ 达标</span>{{else}}<span class="gate-fail">✗ 未达标</span>{{end}}</td>
     </tr>
     {{end}}
