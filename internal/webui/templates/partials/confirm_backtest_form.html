@@ -1,0 +1,14 @@
+{{define "confirm_backtest_form"}}
+<p class="note">确认后会重新核对最新一次回测的样本外指标是否达标，达标才会推进到 BACKTESTED；不达标会原样告诉你差在哪。</p>
+<form class="inline" method="post" action="/strategies/{{.Strategy.ID}}/confirm-backtest">
+  <div>
+    <label for="cb_actor_id">操作者标识</label>
+    <input id="cb_actor_id" name="actor_id" required>
+  </div>
+  <div>
+    <label for="cb_reason">理由</label>
+    <input id="cb_reason" name="reason" required style="min-width:16rem;">
+  </div>
+  <button type="submit">确认回测结果</button>
+</form>
+{{end}}

@@ -1,0 +1,14 @@
+{{define "wizard_result_fragment"}}
+{{if .Success}}
+  <div class="banner-ok">已保存，策略 ID：{{.StrategyID}}（当前状态：DRAFT）。下一步：跑回测，未通过回测与模拟盘之前该策略无法进入实盘。</div>
+  <p><a href="/strategies/{{.StrategyID}}">查看策略详情</a> · <a href="/wizard">再建一个</a></p>
+{{else}}
+  <div class="banner-err">{{.Message}}</div>
+  <p><a href="/wizard">重新开始</a></p>
+{{end}}
+{{end}}
+
+{{define "wizard_error_fragment"}}
+<div class="banner-err">{{.Message}}</div>
+<p><a href="/wizard">重新开始</a></p>
+{{end}}

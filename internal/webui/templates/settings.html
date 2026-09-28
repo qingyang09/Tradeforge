@@ -1,0 +1,229 @@
+{{define "settings_content"}}
+<h1>设置</h1>
+<p class="note">配置 Agent 翻译层使用的大语言模型。有登录密码的话（生产启动路径总会有），
+  API key 会用它加密后存进数据库，重启服务会自动恢复，不用每次都重新填；
+  没有登录密码时退回旧行为，只在进程内存里生效。</p>
+
+{{if .Message}}<div class="banner-ok">{{.Message}}</div>{{end}}
+{{if .Error}}<div class="banner-err">{{.Error}}</div>{{end}}
+
+<div class="card">
+  <h2>当前状态</h2>
+  {{if .Status.Configured}}
+    <p>
+      已配置：{{if .Status.Provider}}{{.Status.Provider.Label}}{{else}}通过环境变量配置，具体供应商未知{{end}}
+      {{if .Status.Model}} · 模型 {{.Status.Model}}{{end}}
+      · key {{.Status.KeyHint}}
+      {{if .Status.ProfileID}} · 来自已保存的配置{{else}} · 仅本次进程内存生效{{end}}
+    </p>
+  {{else}}
+    <p class="warn">尚未配置任何模型，向导页面不可用。</p>
+  {{end}}
+  {{if .Status.LastErr}}<p class="warn">最近一次保存尝试失败：{{.Status.LastErr}}</p>{{end}}
+</div>
+
+{{if .Profiles}}
+<div class="card">
+  <h2>已保存的配置</h2>
+  <table>
+    <tr><th>名称</th><th>供应商</th><th>模型</th><th>key</th><th></th></tr>
+    {{range .Profiles}}
+    <tr{{if .IsActive}} class="active-row"{{end}}>
+      <td>{{.Label}}{{if .IsActive}}（当前生效）{{end}}</td>
+      <td>{{.Provider}}</td>
+      <td>{{if .Model}}{{.Model}}{{else}}（默认）{{end}}</td>
+      <td>{{.KeyHint}}</td>
+      <td>
+        {{if not .IsActive}}
+        <form method="post" action="/settings/profiles/{{.ID}}/activate" style="display:inline;">
+          <button type="submit">使用这份</button>
+        </form>
+        {{end}}
+        <form method="post" action="/settings/profiles/{{.ID}}/delete" style="display:inline;">
+          <button type="submit" class="secondary">删除</button>
+        </form>
+      </td>
+    </tr>
+    {{end}}
+  </table>
+</div>
+{{end}}
+
+<div class="card">
+  <h2>新增配置</h2>
+  <p class="note">除 Anthropic、OpenAI 外，其余供应商都是通过它们各自的 OpenAI 兼容接口对接的；
+    默认 API 地址/模型来自公开文档，没有逐一用真实 key 验证过，接入前建议对照对应厂商
+    最新文档核对一遍。选"自定义"可以接任何 OpenAI 协议兼容的服务（自建网关、本地模型等）。</p>
+  <form method="post" action="/settings">
+    <input type="hidden" name="action" value="save">
+    <label for="label">名称（留空则用供应商名称，方便在上面的列表里区分多份配置）</label>
+    <input id="label" name="label" placeholder="如「我的 Claude」">
+    <label for="provider">供应商</label>
+    <select id="provider" name="provider">
+      {{range .Providers}}<option value="{{.}}">{{.Label}}</option>{{end}}
+    </select>
+    <label for="api_key">API key</label>
+    <input type="password" id="api_key" name="api_key" autocomplete="off" required>
+    <label for="model">模型（留空使用该供应商的默认值；选"自定义"时必填）</label>
+    <input id="model" name="model" placeholder="如 claude-opus-5 / gpt-4o / deepseek-chat">
+    <label for="base_url">API 地址（只有"自定义"需要填，其余供应商用各自的默认地址）</label>
+    <input id="base_url" name="base_url" placeholder="如 https://your-gateway.example.com/v1">
+    <div style="margin-top:0.75rem;"><button type="submit">保存并启用</button></div>
+  </form>
+</div>
+
+{{if .Status.Configured}}
+<div class="card">
+  <form method="post" action="/settings">
+    <input type="hidden" name="action" value="clear">
+    <button type="submit" class="secondary">清除当前配置</button>
+  </form>
+</div>
+{{end}}
+
+<h1 style="margin-top:2rem;">交易所下单通道</h1>
+<p class="note">配置交易所的下单凭据，供独立运行的 <code>cmd/executor</code> 使用
+  （<code>go run ./cmd/executor -broker binance-testnet</code> 或 <code>-broker okx-demo</code>）。
+  这里保存的凭据不会让网页本身去下单——网页只负责准备好凭据，真正接交易所下单的是
+  另一个独立进程；保存后启动该进程时会自动读取这里"当前生效"的一份，不用再靠环境变量传。
+  当前版本只支持各交易所的测试网/模拟盘，不接真实资金账户。</p>
+
+{{if .BrokerProfiles}}
+<div class="card">
+  <h2>已保存的交易所配置</h2>
+  <table>
+    <tr><th>名称</th><th>下单通道</th><th>key</th><th></th></tr>
+    {{range .BrokerProfiles}}
+    <tr{{if .IsActive}} class="active-row"{{end}}>
+      <td>{{.Label}}{{if .IsActive}}（当前生效）{{end}}</td>
+      <td>{{.Broker}}</td>
+      <td>{{.KeyHint}}</td>
+      <td>
+        {{if not .IsActive}}
+        <form method="post" action="/settings/brokers/{{.ID}}/activate" style="display:inline;">
+          <button type="submit">使用这份</button>
+        </form>
+        {{end}}
+        <form method="post" action="/settings/brokers/{{.ID}}/delete" style="display:inline;">
+          <button type="submit" class="secondary">删除</button>
+        </form>
+      </td>
+    </tr>
+    {{end}}
+  </table>
+</div>
+{{end}}
+
+<div class="card">
+  <h2>新增交易所配置</h2>
+  <p class="note">Binance 测试网需要 API key + secret；OKX 模拟盘除 key + secret 外还要
+    passphrase（OKX 生成 API key 时自己设置的第三个密码）。凭据用登录密码加密后落库，
+    没有登录密码时无法保存（这类凭据不允许明文落库）。</p>
+  <form method="post" action="/settings/brokers">
+    <label for="broker-label">名称（留空则用下单通道名称）</label>
+    <input id="broker-label" name="label" placeholder="如「我的 OKX 模拟盘」">
+    <label for="broker-kind">下单通道</label>
+    <select id="broker-kind" name="broker">
+      {{range .BrokerKinds}}<option value="{{.}}">{{.Label}}</option>{{end}}
+    </select>
+    <label for="broker-api-key">API key</label>
+    <input type="password" id="broker-api-key" name="api_key" autocomplete="off" required>
+    <label for="broker-api-secret">API secret</label>
+    <input type="password" id="broker-api-secret" name="api_secret" autocomplete="off" required>
+    <label for="broker-passphrase">Passphrase（只有 OKX 需要）</label>
+    <input type="password" id="broker-passphrase" name="passphrase" autocomplete="off">
+    <div style="margin-top:0.75rem;"><button type="submit">保存并启用</button></div>
+  </form>
+</div>
+
+{{if .NotificationChannels}}
+<div class="card">
+  <h2>已配置的提醒渠道</h2>
+  <table>
+    <tr><th>类型</th><th>名称</th><th>目标</th><th>状态</th><th></th></tr>
+    {{range .NotificationChannels}}
+    <tr{{if .IsEnabled}} class="active-row"{{end}}>
+      <td>{{.Kind}}</td>
+      <td>{{.Label}}</td>
+      <td>{{.KeyHint}}</td>
+      <td>{{if .IsEnabled}}已启用{{else}}已停用{{end}}</td>
+      <td>
+        <form method="post" action="/settings/notifications/{{.ID}}/toggle" style="display:inline;">
+          <button type="submit" class="secondary">{{if .IsEnabled}}停用{{else}}启用{{end}}</button>
+        </form>
+        <form method="post" action="/settings/notifications/{{.ID}}/delete" style="display:inline;">
+          <button type="submit" class="secondary">删除</button>
+        </form>
+      </td>
+    </tr>
+    {{end}}
+  </table>
+</div>
+{{end}}
+
+<div class="card">
+  <h2>新增提醒渠道</h2>
+  <p class="note">策略触发信号时（模拟盘预览或实盘均会提醒），系统会按你在这里开启的渠道
+    发送事实性通知——只描述信号计算出的方向/强度/价格/原因，不构成投资建议。</p>
+  <form method="post" action="/settings/notifications">
+    <label for="notif-kind">类型</label>
+    <select id="notif-kind" name="kind">
+      <option value="email">邮件</option>
+      <option value="telegram">Telegram</option>
+      <option value="webhook">Webhook</option>
+    </select>
+    <label for="notif-label">名称（留空则用类型名）</label>
+    <input id="notif-label" name="label">
+    <label for="notif-address">邮箱地址（仅邮件）</label>
+    <input id="notif-address" name="address">
+    <label for="notif-chatid">Telegram chat_id（仅 Telegram，需先私聊机器人获取）</label>
+    <input id="notif-chatid" name="chat_id">
+    <label for="notif-url">Webhook 地址（仅 webhook，必须是 https://）</label>
+    <input id="notif-url" name="url">
+    <label for="notif-secret">签名密钥（可选，仅 webhook）</label>
+    <input id="notif-secret" name="secret" autocomplete="off">
+    <div style="margin-top:0.75rem;"><button type="submit">保存并启用</button></div>
+  </form>
+</div>
+
+<div class="card">
+  <h2>浏览器推送</h2>
+  <p class="note">把 TradeForge 安装成 App 后，可以直接在这台设备上接收推送提醒，
+    不需要额外配置。</p>
+  <button id="webpush-subscribe-btn" type="button">在此设备上启用推送</button>
+  <!-- 唯一需要原生 JS 的地方：Web Push 订阅是浏览器 API，htmx 覆盖不了。 -->
+  <script>
+    function urlBase64ToUint8Array(base64String) {
+      const padding = '='.repeat((4 - base64String.length % 4) % 4);
+      const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+      const raw = atob(base64);
+      return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+    }
+    document.getElementById('webpush-subscribe-btn').addEventListener('click', async () => {
+      if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+        alert('当前浏览器不支持推送通知。');
+        return;
+      }
+      try {
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array('{{.VAPIDPublicKey}}'),
+        });
+        const key = sub.getKey('p256dh'), auth = sub.getKey('auth');
+        await fetch('/settings/notifications/webpush-subscribe', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            endpoint: sub.endpoint,
+            p256dh: btoa(String.fromCharCode(...new Uint8Array(key))),
+            auth: btoa(String.fromCharCode(...new Uint8Array(auth))),
+          }),
+        });
+        location.reload();
+      } catch (e) {
+        alert('启用推送失败：' + e);
+      }
+    });
+  </script>
+</div>
+{{end}}

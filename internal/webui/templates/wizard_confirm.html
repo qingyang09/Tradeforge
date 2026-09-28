@@ -1,0 +1,62 @@
+{{define "wizard_confirm_fragment"}}
+<h3>我理解你的策略是这样</h3>
+<p>{{.Restatement}}</p>
+
+<table>
+  <tr><th>标的</th><td>{{.Config.Symbol}}</td></tr>
+  <tr><th>周期</th><td>{{.Config.Timeframe}}</td></tr>
+  <tr><th>组合方式</th><td>{{.Config.Combine}}{{if eq (print .Config.Combine) "WEIGHTED"}}（阈值 {{.Config.Threshold}}）{{end}}</td></tr>
+</table>
+
+<h4>模块</h4>
+<table>
+  <tr><th>模块</th><th>权重</th><th>参数</th></tr>
+  {{range .Config.Modules}}
+  <tr>
+    <td>{{.Module}}</td>
+    <td>{{if gt .Weight 0.0}}{{.Weight}}{{else}}—{{end}}</td>
+    <td>
+      {{if .Params}}
+        {{range $k, $v := .Params}}{{$k}}={{$v}} {{end}}
+      {{else}}
+        全部使用系统默认值
+      {{end}}
+    </td>
+  </tr>
+  {{end}}
+</table>
+
+<h4>风控</h4>
+<table>
+  <tr><th>单笔最大仓位</th><td>{{.Config.Risk.MaxPositionSizeQuote}}</td></tr>
+  {{if .Config.Risk.MaxDailyLossQuote.IsPositive}}<tr><th>单日最大亏损</th><td>{{.Config.Risk.MaxDailyLossQuote}}</td></tr>{{end}}
+  {{if eq (print .Config.Risk.StopLossMode) "support_resistance"}}
+    <tr><th>止损</th><td>跌破开仓时最近的支撑位</td></tr>
+  {{else if eq (print .Config.Risk.StopLossMode) "poc"}}
+    <tr><th>止损</th><td>收回开仓时的成交量分布重心（POC）</td></tr>
+  {{else if gt .Config.Risk.StopLossPct 0.0}}
+    <tr><th>止损</th><td>{{pct .Config.Risk.StopLossPct}}</td></tr>
+  {{end}}
+  {{if eq (print .Config.Risk.TakeProfitMode) "support_resistance"}}
+    <tr><th>止盈</th><td>触及开仓时最近的阻力位</td></tr>
+  {{else if eq (print .Config.Risk.TakeProfitMode) "poc"}}
+    <tr><th>止盈</th><td>触及开仓时的成交量分布重心（POC）</td></tr>
+  {{else if gt .Config.Risk.TakeProfitPct 0.0}}
+    <tr><th>止盈</th><td>{{pct .Config.Risk.TakeProfitPct}}</td></tr>
+  {{end}}
+  {{if gt .Config.Risk.MaxHoldingPeriod.Std.Seconds 0.0}}<tr><th>最长持仓</th><td>{{.Config.Risk.MaxHoldingPeriod}}</td></tr>{{end}}
+</table>
+
+<p class="note">确认后配置会以 DRAFT 状态存入系统，之后必须先过回测、再跑模拟盘，才能进入实盘。</p>
+
+<form hx-post="/wizard/confirm" hx-target="#wizard-step" hx-swap="innerHTML">
+  <input type="hidden" name="state" value="{{.State}}">
+  <button type="submit" name="decision" value="confirm">确认无误，保存</button>
+  <button type="submit" name="decision" value="cancel" class="secondary">重来</button>
+</form>
+{{/* 可视化建策的画板页会找这个元素、把这份还没入库的配置实际画到图上（见
+     builder.html 的 applyStrategyConfig）；文字向导页面不读它，多出来的隐藏元素
+     对它没有任何影响。用 data 属性而不是 <script> 标签装 JSON，是为了让
+     html/template 走普通的 HTML 属性转义，不用操心 <script> 上下文里转义规则的差异。 */}}
+<div id="wizard-proposal-config" style="display:none" data-config="{{.ConfigJSON}}"></div>
+{{end}}

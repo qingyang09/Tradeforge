@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tradeforge-backtest"
+version = "1.0.0"
+description = "TradeForge 回测引擎：撮合模拟、手续费滑点建模与绩效统计"
+requires-python = ">=3.10"
+# 核心逻辑刻意零依赖：decimal / csv / json / math 都在标准库里。
+# 引入 pandas 只会带来一个诱惑——把 Decimal 换成 float64。
+dependencies = []
+
+[project.optional-dependencies]
+# 落库用。不装也能跑回测，只是 --no-save 变成必选。
+db = ["psycopg[binary]>=3.1"]
+dev = ["pytest>=7.4"]
+
+[project.scripts]
+tradeforge-backtest = "tradeforge_backtest.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["tradeforge_backtest*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

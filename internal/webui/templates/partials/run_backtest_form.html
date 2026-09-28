@@ -1,0 +1,14 @@
+{{define "run_backtest_form"}}
+<p class="note">
+  点击后会实时向 OKX 拉取真实历史K线、在本机重放一遍信号、再交给撮合引擎算出完整
+  结果并写库——不需要手动跑 backtest-runner/tradeforge_backtest 这些命令行工具。
+  运行期间可能需要几十秒到几分钟，取决于回看根数和网络。
+</p>
+<form class="inline" method="post" action="/strategies/{{.Strategy.ID}}/run-backtest">
+  <div>
+    <label for="rb_lookback">回看根数</label>
+    <input id="rb_lookback" name="lookback" type="number" min="50" max="5000" placeholder="默认 1000">
+  </div>
+  <button type="submit">运行回测</button>
+</form>
+{{end}}

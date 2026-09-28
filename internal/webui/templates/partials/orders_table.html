@@ -1,0 +1,49 @@
+{{define "orders_table"}}
+{{if not .}}
+  <p class="note">暂无订单。</p>
+{{else}}
+<table>
+  <tr><th>时间</th><th>模式</th><th>方向</th><th>状态</th><th>数量</th><th>成交价</th><th>手续费</th><th>触发依据</th></tr>
+  {{range .}}
+  {{$order := .}}
+  <tr>
+    <td>{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
+    <td>{{.Mode}}</td>
+    <td>{{.Side}}</td>
+    <td>{{.Status}}{{if eq (print .Status) "REJECTED"}}（{{.RejectReason}}）{{end}}</td>
+    <td>{{.Quantity}}</td>
+    <td>{{if .FilledPrice.IsPositive}}{{.FilledPrice}}{{else}}—{{end}}</td>
+    <td>{{if .Fee.IsPositive}}{{.Fee}}{{else}}—{{end}}</td>
+    <td>{{template "provenance_detail" .Provenance}}</td>
+  </tr>
+  {{end}}
+</table>
+{{end}}
+{{end}}
+
+{{/* provenance_detail 展开一笔订单/决策背后的完整触发依据：聚合方式、强度、
+     每个参与模块的信号（方向/置信度/原因，降级的单独标出），以及当时生效的模块参数
+     快照。这是阶段 6 明确要求的"哪个模块的哪个信号、什么参数触发的"落到界面上。 */}}
+{{define "provenance_detail"}}
+<details>
+  <summary class="note">
+    {{.Combine}}{{if gt .Threshold 0.0}}（阈值 {{printf "%.2f" .Threshold}}）{{end}} · 强度 {{printf "%.2f" .Score}}
+  </summary>
+  <div class="provenance">
+    {{if .Note}}<p class="note">{{.Note}}</p>{{end}}
+    <table class="provenance-signals">
+      <tr><th>模块</th><th>方向</th><th>置信度</th><th>原因</th><th>生效参数</th></tr>
+      {{range .Signals}}
+      {{$params := index $.ModuleParams .Module}}
+      <tr{{if .Degraded}} class="degraded"{{end}}>
+        <td>{{.Module}}</td>
+        <td>{{.Direction}}</td>
+        <td>{{printf "%.2f" .Confidence}}</td>
+        <td class="note">{{.Reason}}{{if .Degraded}}（降级{{if .Err}}：{{.Err}}{{end}}）{{end}}</td>
+        <td class="note">{{if $params}}{{range $k, $v := $params}}{{$k}}={{$v}} {{end}}{{else}}—{{end}}</td>
+      </tr>
+      {{end}}
+    </table>
+  </div>
+</details>
+{{end}}

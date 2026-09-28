@@ -1,0 +1,41 @@
+{
+  "id": "9f8e7d6c-5b4a-4392-8180-1a2b3c4d5e6f",
+  "name": "BTC 突破放量订单流三重确认",
+  "symbol": "BTCUSDT",
+  "timeframe": "1h",
+  "modules": [
+    {
+      "module": "support_resistance",
+      "params": {
+        "min_touches": 2,
+        "pivot_strength": 1
+      }
+    },
+    {
+      "module": "volume_breakout",
+      "params": {
+        "multiplier": 2,
+        "window": 20
+      }
+    },
+    {
+      "module": "cvd_orderflow",
+      "params": {
+        "imbalance_threshold": 0.2,
+        "window": 50
+      }
+    }
+  ],
+  "combine": "ALL",
+  "risk": {
+    "max_position_size_quote": "1000",
+    "max_daily_loss_quote": "200",
+    "max_holding_period": "24h0m0s",
+    "stop_loss_pct": 0.03,
+    "take_profit_pct": 0.06
+  },
+  "state": "DRAFT",
+  "created_at": "0001-01-01T00:00:00Z",
+  "updated_at": "0001-01-01T00:00:00Z",
+  "source_utterance": "BTC 一小时线，突破关键阻力位、同时放量到均量两倍、且主动买盘占优时做多；单笔最多 1000U，止损 3%，止盈 6%，最多持仓一天"
+}

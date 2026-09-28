@@ -1,0 +1,17 @@
+{{define "transitions_table"}}
+{{if not .}}
+  <p class="note">暂无流转记录。</p>
+{{else}}
+<table>
+  <tr><th>时间</th><th>流转</th><th>操作者</th><th>理由</th></tr>
+  {{range .}}
+  <tr>
+    <td>{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
+    <td>{{if .From}}{{.From}} → {{end}}{{.To}}</td>
+    <td>{{.Actor}}</td>
+    <td class="note">{{.Reason}}</td>
+  </tr>
+  {{end}}
+</table>
+{{end}}
+{{end}}

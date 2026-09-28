@@ -1,0 +1,34 @@
+# Go
+/bin/
+*.exe
+*.test
+*.out
+
+# Env and secrets: never commit
+.env
+.env.*
+!.env.example
+!.env.prod.example
+configs/local.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Data and build output
+/data/
+*.db
+/python/backtest/output/
+
+# Editors
+.idea/
+.vscode/
+.DS_Store
+
+# Claude Code local tool state: personal, absolute-path, session-specific
+.claude/

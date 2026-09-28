@@ -1,0 +1,133 @@
+{{/* symbol_autocomplete_style/_script 给一个标的输入框接上"输入即搜索"下拉建议。
+     两个 define 分别包一层 <style>/<script>，方便页面各自决定往哪塞（列表页是嵌进
+     后台布局的内容片段，图表/画板页是独立深色文档），互不依赖对方的 CSS 上下文——
+     下拉框的颜色是写死的浅色卡片，不管套在哪个主题里都能看清。 */}}
+
+{{define "symbol_autocomplete_style"}}
+<style>
+  .symbol-ac { position: relative; }
+  .symbol-ac-list {
+    display: none;
+    position: absolute; z-index: 50; top: 100%; left: 0; right: 0; margin-top: 2px;
+    background: #fff; border: 1px solid #d0d5dd; border-radius: 6px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+    max-height: 260px; overflow-y: auto;
+  }
+  .symbol-ac-list.open { display: block; }
+  .symbol-ac-item {
+    padding: 0.4rem 0.7rem; font-size: 0.85rem; color: #1a1a1a; cursor: pointer;
+  }
+  .symbol-ac-item:hover, .symbol-ac-item.active { background: #eef2ff; }
+</style>
+{{end}}
+
+{{define "symbol_autocomplete_script"}}
+<script>
+(function () {
+  // initSymbolAutocomplete 把一个 <input> 包一层容器、挂一个下拉建议列表，数据来自
+  // GET /api/symbols（真实的 OKX 现货标的，不是本地瞎猜）。接口暂时不通或者用户
+  // 不选建议、直接原样提交，都不影响输入框原有的提交路径——这是增强，不是替代。
+  window.initSymbolAutocomplete = function (input) {
+    if (!input || input.dataset.acBound) return;
+    input.dataset.acBound = "1";
+
+    var wrap = document.createElement("div");
+    wrap.className = "symbol-ac";
+    input.parentNode.insertBefore(wrap, input);
+    wrap.appendChild(input);
+
+    var list = document.createElement("div");
+    list.className = "symbol-ac-list";
+    wrap.appendChild(list);
+
+    var items = [];
+    var activeIndex = -1;
+    var debounceTimer = null;
+    var requestSeq = 0;
+
+    function close() {
+      list.classList.remove("open");
+      list.innerHTML = "";
+      items = [];
+      activeIndex = -1;
+    }
+
+    function selectItem(symbol) {
+      input.value = symbol;
+      close();
+      var form = input.closest("form");
+      if (form) { if (form.requestSubmit) form.requestSubmit(); else form.submit(); }
+    }
+
+    function highlight() {
+      var children = list.children;
+      for (var i = 0; i < children.length; i++) {
+        children[i].classList.toggle("active", i === activeIndex);
+      }
+    }
+
+    function render(matches) {
+      items = matches || [];
+      activeIndex = -1;
+      list.innerHTML = "";
+      if (!items.length) { close(); return; }
+      items.forEach(function (sym) {
+        var el = document.createElement("div");
+        el.className = "symbol-ac-item";
+        el.textContent = sym;
+        // mousedown（而不是 click）是故意的：input 的 blur 关闭下拉也是监听 blur，
+        // click 会晚于 blur 触发，那时下拉已经被清空，选项点了等于没点。
+        el.addEventListener("mousedown", function (e) {
+          e.preventDefault();
+          selectItem(sym);
+        });
+        list.appendChild(el);
+      });
+      list.classList.add("open");
+    }
+
+    function search(q) {
+      var seq = ++requestSeq;
+      fetch("/api/symbols?q=" + encodeURIComponent(q))
+        .then(function (r) { return r.ok ? r.json() : []; })
+        .then(function (data) {
+          if (seq !== requestSeq) return; // 过期响应：用户已经又输入了新内容
+          render(data);
+        })
+        .catch(function () { /* 建议拉取失败不影响手动输入正常提交 */ });
+    }
+
+    input.addEventListener("input", function () {
+      var q = input.value.trim();
+      clearTimeout(debounceTimer);
+      if (!q) { close(); return; }
+      debounceTimer = setTimeout(function () { search(q); }, 180);
+    });
+
+    input.addEventListener("keydown", function (e) {
+      if (!list.classList.contains("open")) return;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        activeIndex = Math.min(activeIndex + 1, items.length - 1);
+        highlight();
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        activeIndex = Math.max(activeIndex - 1, 0);
+        highlight();
+      } else if (e.key === "Enter") {
+        if (activeIndex >= 0 && items[activeIndex]) {
+          e.preventDefault();
+          selectItem(items[activeIndex]);
+        }
+      } else if (e.key === "Escape") {
+        close();
+      }
+    });
+
+    input.addEventListener("blur", function () {
+      setTimeout(close, 120);
+    });
+  };
+})();
+</script>
+{{end}}

@@ -1,0 +1,17 @@
+{{define "live_unlock_form"}}
+<p class="warn">解锁后，该策略触发信号时会通过你已开启的提醒渠道发送实盘提醒（而不是模拟盘
+  预览提醒）。这一步本身不会自动下单——如果你另外运行了 cmd/executor -state LIVE 并为
+  这个用户配置了交易所凭据，它会独立地开始下真实单；如果没有运行，就只有提醒，没有下单。
+  这一步系统不会自动做，必须由你确认。</p>
+<form class="inline" method="post" action="/strategies/{{.Strategy.ID}}/unlock-live">
+  <div>
+    <label for="actor_id">操作者标识</label>
+    <input id="actor_id" name="actor_id" required>
+  </div>
+  <div>
+    <label for="reason">理由</label>
+    <input id="reason" name="reason" required style="min-width:16rem;">
+  </div>
+  <button type="submit" class="danger">解锁实盘</button>
+</form>
+{{end}}

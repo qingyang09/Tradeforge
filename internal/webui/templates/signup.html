@@ -1,0 +1,54 @@
+{{define "signup_page"}}
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>注册 · TradeForge</title>
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#0d1117">
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js');
+    }
+  </script>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      font-family: -apple-system, "Segoe UI", "PingFang SC", sans-serif; margin: 0;
+      background: #0d1117; color: #d1d4dc;
+      display: flex; align-items: center; justify-content: center; min-height: 100vh;
+    }
+    .card { background: #12161f; border: 1px solid #1e222d; border-radius: 8px; padding: 2rem 2.25rem; width: 22rem; max-width: 90vw; }
+    h1 { font-size: 1.2rem; margin: 0 0 1.25rem; color: #fff; }
+    label { display: block; font-size: 0.82rem; color: #9aa0a8; margin-bottom: 0.3rem; }
+    input {
+      font: inherit; padding: 0.5rem 0.6rem; border: 1px solid #2a2e39; border-radius: 6px;
+      background: #1e222d; color: #d1d4dc;
+      width: 100%; box-sizing: border-box; margin-bottom: 1rem;
+    }
+    button {
+      font: inherit; padding: 0.5rem 1rem; border-radius: 6px; border: 1px solid #2962ff;
+      background: #2962ff; color: #fff; cursor: pointer; width: 100%; font-weight: 600;
+    }
+    .warn { color: #f87171; font-size: 0.88rem; margin-bottom: 1rem; }
+    .alt { text-align: center; margin-top: 1rem; font-size: 0.85rem; color: #9aa0a8; }
+    .alt a { color: #5b9dff; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>注册 TradeForge 账号</h1>
+    {{if .Error}}<p class="warn">{{.Error}}</p>{{end}}
+    <form method="post" action="/signup">
+      <label for="email">邮箱</label>
+      <input id="email" name="email" type="email" autofocus required>
+      <label for="password">密码</label>
+      <input id="password" name="password" type="password" minlength="8" required>
+      <button type="submit">注册</button>
+    </form>
+    <p class="alt">已经有账号？<a href="/login">登录</a></p>
+  </div>
+</body>
+</html>
+{{end}}

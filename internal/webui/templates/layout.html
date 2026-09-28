@@ -1,0 +1,113 @@
+{{define "layout"}}
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}} · TradeForge</title>
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#0d1117">
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js');
+    }
+  </script>
+  <script src="{{htmxSrc}}"></script>
+  <style>
+    /* 深色主题，跟画板/看盘页（builder.html）用同一套色板——之前这里是单独一套浅色
+       后台管理风格，在导航栏"K 线图 / 建策"和其它任何一项之间切换，观感上像换了
+       个应用。统一成一套之后，画板页仍然是自己独立的文档（有自己的 <style>，
+       不吃这份布局），这里只覆盖套了 layout 的几个页面：状态看板、新建策略、
+       设置、策略详情。*/
+    :root { color-scheme: dark; }
+    body { font-family: -apple-system, "Segoe UI", "PingFang SC", sans-serif; margin: 0; background: #0d1117; color: #d1d4dc; }
+    header { background: #131722; color: #fff; padding: 0.9rem 1.5rem; display: flex; align-items: center; gap: 1.5rem; border-bottom: 1px solid #1e222d; }
+    header a { color: #fff; text-decoration: none; font-weight: 600; }
+    header nav a { color: #9aa0a8; font-weight: 400; margin-right: 1rem; }
+    header nav a:hover { color: #fff; }
+    header .user-email { margin-left: auto; color: #9aa0a8; font-size: 0.85rem; }
+    header form.logout button {
+      font: inherit; font-size: 0.85rem; background: none; border: 1px solid #2a2e39;
+      color: #9aa0a8; border-radius: 6px; padding: 0.3rem 0.75rem; cursor: pointer;
+    }
+    header form.logout button:hover { color: #fff; border-color: #565d6b; }
+    main { max-width: 980px; margin: 0 auto; padding: 1.5rem; }
+    h1, h2, h3 { font-weight: 600; color: #fff; }
+    table { border-collapse: collapse; width: 100%; margin: 0.75rem 0; }
+    th, td { text-align: left; padding: 0.45rem 0.6rem; border-bottom: 1px solid #1e222d; font-size: 0.92rem; }
+    /* 列多、单元格内容本身不换行的表格（逐笔交易时间戳/价格、按月份铺开的收益表）
+       撑宽度会超出 980px 的容器，之前没有兜底，整个页面被撑出水平滚动条、
+       右侧内容被裁切。改成表格自己在一个能横向滚动的盒子里，页面本身不受影响，
+       宽表格照样能看全，只是要在这个盒子内部左右滑。 */
+    .table-scroll { overflow-x: auto; margin: 0.75rem 0; }
+    .table-scroll table { margin: 0; white-space: nowrap; }
+    th { color: #787b86; font-weight: 500; }
+    .card { background: #12161f; border: 1px solid #1e222d; border-radius: 8px; padding: 1rem 1.25rem; margin: 1rem 0; }
+    .badge { display: inline-block; padding: 0.15rem 0.55rem; border-radius: 999px; font-size: 0.78rem; font-weight: 600; background: #1e222d; color: #9aa0a8; }
+    .badge-draft { background: #1e222d; color: #9aa0a8; }
+    .badge-backtested { background: #132743; color: #5b9bf7; }
+    .badge-paper_trading { background: #3a2f14; color: #f5c451; }
+    .badge-live_eligible { background: #241b3a; color: #b794f6; }
+    .badge-live { background: #0f2818; color: #4ade80; }
+    .badge-suspended { background: #2a1414; color: #f87171; }
+    .oos-box { border: 2px solid #2962ff; border-radius: 8px; padding: 0.9rem 1.1rem; background: #12192e; }
+    .oos-box h3 { margin-top: 0; color: #5b9bf7; }
+    .note { color: #787b86; font-size: 0.88rem; }
+    details summary { cursor: pointer; }
+    details summary:hover { color: #fff; }
+    /* 策略详情页这次加了不少内容，页面变得很长——加一条粘性小导航，滚动时能
+       快速跳到某个板块，不用一路滚下去找。*/
+    .page-nav {
+      position: sticky; top: 0; z-index: 10;
+      display: flex; gap: 0.4rem; flex-wrap: wrap;
+      background: #0d1117; padding: 0.6rem 0; margin: 0.5rem 0 1rem;
+      border-bottom: 1px solid #1e222d;
+    }
+    .page-nav a {
+      color: #9aa0a8; text-decoration: none; font-size: 0.82rem;
+      padding: 0.25rem 0.65rem; border: 1px solid #2a2e39; border-radius: 999px;
+    }
+    .page-nav a:hover { color: #fff; border-color: #565d6b; }
+    .provenance { margin-top: 0.5rem; }
+    table.provenance-signals { margin: 0.4rem 0; }
+    table.provenance-signals th, table.provenance-signals td { font-size: 0.82rem; padding: 0.3rem 0.5rem; }
+    table.provenance-signals tr.degraded td { color: #f87171; }
+    .warn { color: #f87171; font-size: 0.88rem; }
+    .gate-pass { color: #4ade80; }
+    .gate-fail { color: #f87171; }
+    tr.active-row td { background: #0f2818; font-weight: 500; }
+    form.inline { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: end; margin: 0.75rem 0; }
+    label { display: block; font-size: 0.82rem; color: #9aa0a8; margin-bottom: 0.2rem; }
+    input, textarea, select {
+      font: inherit; padding: 0.4rem 0.5rem; border: 1px solid #2a2e39; border-radius: 6px;
+      background: #1e222d; color: #d1d4dc;
+    }
+    textarea { width: 100%; box-sizing: border-box; min-height: 4.5rem; }
+    button { font: inherit; padding: 0.45rem 1rem; border-radius: 6px; border: 1px solid #2962ff; background: #2962ff; color: #fff; cursor: pointer; font-weight: 600; }
+    button.secondary { background: #1e222d; color: #d1d4dc; border-color: #2a2e39; }
+    button.danger { background: #ef5350; border-color: #ef5350; }
+    .banner-ok { border: 1px solid #26a69a; background: #0f2320; color: #4ade80; padding: 0.6rem 0.9rem; border-radius: 6px; margin-bottom: 1rem; }
+    .banner-err { border: 1px solid #ef5350; background: #2a1414; color: #f87171; padding: 0.6rem 0.9rem; border-radius: 6px; margin-bottom: 1rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/">TradeForge</a>
+    <nav>
+      <a href="/">状态看板</a>
+      <a href="/wizard">新建策略</a>
+      <a href="/wizard/batch">批量扫描</a>
+      <a href="/builder">K 线图 / 建策</a>
+      <a href="/settings">设置</a>
+    </nav>
+    <span class="user-email">{{.UserEmail}}</span>
+    <form class="logout" method="post" action="/logout">
+      <button type="submit">退出登录</button>
+    </form>
+  </header>
+  <main>
+    {{.Body}}
+  </main>
+</body>
+</html>
+{{end}}

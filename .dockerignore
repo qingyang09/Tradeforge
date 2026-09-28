@@ -1,0 +1,9 @@
+.git
+.claude
+*.md
+!README.md
+python/backtest/.pytest_cache
+python/backtest/**/__pycache__
+python/backtest/**/*.pyc
+python/backtest/.venv
+**/*.log

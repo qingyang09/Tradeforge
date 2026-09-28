@@ -1,0 +1,115 @@
+{{define "backtest_summary"}}
+{{if not .Backtest}}
+  <p class="note">尚无回测结果。</p>
+{{else}}
+  <p class="note">
+    数据区间 {{.Backtest.DataStart.Format "2006-01-02"}} ~ {{.Backtest.DataEnd.Format "2006-01-02"}}，
+    引擎版本 {{.Backtest.EngineVersion}}，运行于 {{.Backtest.RanAt.Format "2006-01-02 15:04"}}。
+    手续费 taker {{pct .Backtest.FeeModel.TakerFeeRate}}，滑点 {{.Backtest.FeeModel.SlippageBps}} bps。
+  </p>
+
+  <div class="oos-box">
+    <h3>样本外——判断能否进入模拟盘的唯一依据</h3>
+    {{if eq .Backtest.OutOfSample.TradeCount 0}}
+      <p class="warn">样本外区间没有产生任何交易，以下指标均为零值，不代表已验证。</p>
+    {{end}}
+    {{template "metrics_row" .Backtest.OutOfSample}}
+  </div>
+
+  <h3 style="margin-top:1rem;">样本内</h3>
+  <p class="note">参数如经过调整，是在这段数据上调的，不能作为预期表现。</p>
+  {{template "metrics_row" .Backtest.InSample}}
+
+  <h3 style="margin-top:1rem;">全区间</h3>
+  {{template "metrics_row" .Backtest.Overall}}
+
+  <h3 style="margin-top:1rem;">{{if .Chart.IsRealEquityCurve}}权益 / 回撤曲线{{else}}累计盈亏（近似）{{end}}</h3>
+  {{if .Chart.HasTrades}}
+    <svg width="{{.Chart.Width}}" height="{{.Chart.Height}}" viewBox="0 0 {{.Chart.Width}} {{.Chart.Height}}" style="max-width:100%; background:#0d1117; border:1px solid #1e222d; border-radius:6px;">
+      {{if .Chart.IsRealEquityCurve}}
+        {{if .Chart.DrawdownAreaPoints}}<polygon points="{{.Chart.DrawdownAreaPoints}}" fill="#ef535033" stroke="none"/>{{end}}
+        {{if .Chart.PeakPoints}}<polyline points="{{.Chart.PeakPoints}}" fill="none" stroke="#565d6b" stroke-width="1" stroke-dasharray="3,3"/>{{end}}
+      {{end}}
+      {{if .Chart.InSamplePoints}}<polyline points="{{.Chart.InSamplePoints}}" fill="none" stroke="#9aa0a8" stroke-width="2"/>{{end}}
+      {{if .Chart.OutOfSamplePoints}}<polyline points="{{.Chart.OutOfSamplePoints}}" fill="none" stroke="#5b9bf7" stroke-width="2"/>{{end}}
+    </svg>
+    {{if .Chart.IsRealEquityCurve}}
+      <p class="note">
+        灰色为样本内、蓝色为样本外的真实权益曲线（含持仓浮动盈亏，逐根K线采样）；
+        虚线是历史新高包络线，红色阴影是回撤区间（权益比历史新高低多少）。
+        区间 {{.Chart.MinLabel}} ~ {{.Chart.MaxLabel}}。
+      </p>
+    {{else}}
+      <p class="note">
+        本次回测早于权益曲线持久化上线，只能退回近似画法：灰色为样本内、蓝色为样本外的
+        累计已实现盈亏（按开仓时间排序的逐笔 PnL 累加），看不出持仓中途的浮动回撤。
+        区间 {{.Chart.MinLabel}} ~ {{.Chart.MaxLabel}}。
+      </p>
+    {{end}}
+  {{else}}
+    <p class="note">没有交易记录，无法绘制曲线。</p>
+  {{end}}
+
+  {{if .MonthlyReturns}}
+  <h3 style="margin-top:1rem;">月度收益</h3>
+  <div class="table-scroll">
+  <table>
+    <tr>{{range .MonthlyReturns}}<th>{{.Month}}</th>{{end}}</tr>
+    <tr>{{range .MonthlyReturns}}<td>{{signedPct .Return}}</td>{{end}}</tr>
+  </table>
+  </div>
+  {{end}}
+
+  <h3 style="margin-top:1rem;">逐笔交易</h3>
+  {{if .Backtest.Trades}}
+  <div class="table-scroll">
+  <table>
+    <tr>
+      <th>开仓时间</th><th>平仓时间</th><th>持仓时长</th><th>方向</th><th>开仓价</th>
+      <th>平仓价</th><th>数量</th><th>盈亏</th><th>手续费</th><th>平仓原因</th><th>区间</th>
+    </tr>
+    {{range .Backtest.Trades}}
+    <tr>
+      <td>{{.EntryTime.Format "2006-01-02 15:04"}}</td>
+      <td>{{.ExitTime.Format "2006-01-02 15:04"}}</td>
+      <td>{{duration .EntryTime .ExitTime}}</td>
+      <td>{{.Direction}}</td>
+      <td>{{.EntryPrice}}</td>
+      <td>{{.ExitPrice}}</td>
+      <td>{{.Quantity}}</td>
+      <td>{{.PnL}}</td>
+      <td>{{.Fees}}</td>
+      <td>{{.ExitReason}}</td>
+      <td>{{.Segment}}</td>
+    </tr>
+    {{end}}
+  </table>
+  </div>
+  {{else}}
+    <p class="note">没有交易明细。</p>
+  {{end}}
+{{end}}
+{{end}}
+
+{{define "metrics_row"}}
+<div class="table-scroll">
+<table>
+  <tr>
+    <th>总收益</th><th>年化</th><th>夏普</th><th>索提诺</th><th>最大回撤</th><th>胜率</th><th>盈亏比</th>
+    <th>交易笔数</th><th>总手续费</th><th>手续费/毛利润</th>
+  </tr>
+  <tr>
+    <td>{{signedPct .TotalReturn}}</td>
+    <td>{{signedPct .AnnualizedReturn}}</td>
+    <td>{{printf "%.2f" .SharpeRatio}}</td>
+    <td>{{printf "%.2f" .SortinoRatio}}</td>
+    <td>{{pct .MaxDrawdown}}</td>
+    <td>{{pct .WinRate}}</td>
+    <td>{{printf "%.2f" .ProfitFactor}}</td>
+    <td>{{.TradeCount}}</td>
+    <td>{{.TotalFees}}</td>
+    <td>{{feeDrag .}}</td>
+  </tr>
+</table>
+</div>
+{{end}}

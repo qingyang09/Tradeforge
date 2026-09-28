@@ -1,0 +1,23 @@
+{{define "batch_result_fragment"}}
+{{if .Success}}
+  <div class="banner-ok">{{.Message}}</div>
+{{else}}
+  <div class="banner-err">{{.Message}}</div>
+{{end}}
+{{if .Rows}}
+<table>
+  <tr><th>标的</th><th>结果</th></tr>
+  {{range .Rows}}
+  <tr>
+    <td>{{.Symbol}}</td>
+    {{if .Skipped}}
+      <td class="warn">跳过：{{.Reason}}</td>
+    {{else}}
+      <td><a href="/strategies/{{.StrategyID}}">查看详情</a>（DRAFT）</td>
+    {{end}}
+  </tr>
+  {{end}}
+</table>
+{{end}}
+<p><a href="/">回看板</a> · <a href="/wizard/batch">再扫描一次</a></p>
+{{end}}

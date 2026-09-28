@@ -1,0 +1,44 @@
+{{define "decisions_table"}}
+{{if not .}}
+  <p class="note">暂无决策记录。</p>
+{{else}}
+<table>
+  <tr><th>行情时间</th><th>方向</th><th>强度</th><th>是否触发</th><th>原因</th><th>各模块信号</th></tr>
+  {{range .}}
+  <tr>
+    <td>{{.Timestamp.Format "2006-01-02 15:04"}}</td>
+    <td>{{.Direction}}</td>
+    <td>{{printf "%.2f" .Score}}</td>
+    <td>{{if .Triggered}}是{{else}}否{{end}}</td>
+    <td class="note">{{.Reason}}</td>
+    <td>{{template "decision_signals_detail" .Signals}}</td>
+  </tr>
+  {{end}}
+</table>
+{{end}}
+{{end}}
+
+{{/* decision_signals_detail 展开这条决策当时每个模块各自给出的信号——方向、置信度、
+     原因，降级的单独标出。跟订单那边的 provenance_detail 是同一件事的两个视角：
+     决策记录的是"引擎聚合时看到了什么"，订单的 provenance 额外多了下单那一刻的
+     模块参数快照。 */}}
+{{define "decision_signals_detail"}}
+{{if not .}}
+  <span class="note">—</span>
+{{else}}
+<details>
+  <summary class="note">{{len .}} 个模块</summary>
+  <table class="provenance-signals">
+    <tr><th>模块</th><th>方向</th><th>置信度</th><th>原因</th></tr>
+    {{range .}}
+    <tr{{if .Degraded}} class="degraded"{{end}}>
+      <td>{{.Module}}</td>
+      <td>{{.Direction}}</td>
+      <td>{{printf "%.2f" .Confidence}}</td>
+      <td class="note">{{.Reason}}{{if .Degraded}}（降级{{if .Err}}：{{.Err}}{{end}}）{{end}}</td>
+    </tr>
+    {{end}}
+  </table>
+</details>
+{{end}}
+{{end}}

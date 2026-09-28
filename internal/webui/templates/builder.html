@@ -1,0 +1,1716 @@
+{{define "builder_list_content"}}
+{{template "symbol_autocomplete_style"}}
+<h1>可视化建策</h1>
+<p class="note">
+  直接在价格图上摆模块：拖一条成交量阈值线、拖一条止损线，不用打字描述规则。
+  生成配置摘要那一步，Agent（配置了模型的话）或者一份不需要模型的确定性复述，
+  会把你摆好的东西转成大白话，确认无误后跟文字向导走同一条保存流程。
+</p>
+
+<div class="card">
+  <h2>输入标的</h2>
+  <form class="inline" action="/builder" method="get">
+    <div>
+      <label for="sym">标的</label>
+      <input id="sym" name="symbol" placeholder="如 BTCUSDT" autocomplete="off" required>
+    </div>
+    <button type="submit">开始建策</button>
+  </form>
+</div>
+
+{{if .Symbols}}
+<div class="card">
+  <h2>已有策略用到的标的</h2>
+  <table>
+    <tr><th>标的</th><th></th></tr>
+    {{range .Symbols}}
+    <tr><td>{{.}}</td><td><a href="/builder/{{.}}">在这个标的上建策</a></td></tr>
+    {{end}}
+  </table>
+</div>
+{{end}}
+{{template "symbol_autocomplete_script"}}
+<script>window.initSymbolAutocomplete(document.getElementById("sym"));</script>
+{{end}}
+
+{{define "builder_view_page"}}
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>可视化建策 · {{.Symbol}} · TradeForge</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#0d1117">
+<script>
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js');
+  }
+</script>
+<script src="{{htmxSrc}}"></script>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<script src="https://s3.tradingview.com/tv.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #0d1117; color: #d1d4dc; font-family: -apple-system, "Segoe UI", "PingFang SC", sans-serif; }
+  .topbar {
+    display: flex; align-items: center; gap: 0.9rem; flex-wrap: wrap;
+    min-height: 52px; padding: 0.5rem 1rem;
+    background: #131722; border-bottom: 1px solid #1e222d;
+  }
+  .topbar a.back { color: #787b86; text-decoration: none; font-size: 0.85rem; }
+  .topbar a.back:hover { color: #d1d4dc; }
+  .topbar .symbol { font-size: 1.05rem; font-weight: 600; color: #fff; }
+  .topbar select, .topbar input[type=text] {
+    background: #1e222d; border: 1px solid #2a2e39; color: #d1d4dc;
+    border-radius: 4px; padding: 0.3rem 0.5rem; font-size: 0.82rem;
+  }
+  .topbar button.primary {
+    margin-left: auto; background: #2962ff; border: none; color: #fff; border-radius: 4px;
+    padding: 0.4rem 1rem; font-size: 0.85rem; cursor: pointer; font-weight: 600;
+  }
+  /* 看盘/建策切换：同一个标的、同一张画板页里切两套完全不同的图表引擎——
+     建策用的是下面这套能画策略预览线、能拖止损线的 lightweight-charts；
+     看盘用回 TradingView 免费组件（画线工具、内置指标都在，但画不出策略预览线，
+     也没法在上面操作模块/风控）。两套图表技术上没法合并成一份代码，只能切换
+     显示哪一份，不是同时叠加。 */
+  #view-mode-toggle { display: flex; border: 1px solid #2a2e39; border-radius: 4px; overflow: hidden; }
+  #view-mode-toggle button {
+    background: #1e222d; border: none; color: #9aa0a8; padding: 0.35rem 0.8rem;
+    font-size: 0.82rem; cursor: pointer;
+  }
+  #view-mode-toggle button + button { border-left: 1px solid #2a2e39; }
+  #view-mode-toggle button.active { background: #2962ff; color: #fff; }
+  #watch-layout { display: none; flex-direction: column; height: calc(100vh - 53px); }
+  #watch-note { padding: 0.45rem 1rem; color: #787b86; font-size: 0.76rem; border-bottom: 1px solid #1e222d; margin: 0; }
+  #tv-chart-wrap { flex: 1 1 auto; min-height: 0; }
+  #tv_chart { width: 100%; height: 100%; }
+  .layout { display: flex; align-items: stretch; }
+  .chart-col { flex: 1 1 auto; min-width: 0; padding: 0.75rem; }
+  /* 高度用视口比例撑满，而不是写死的像素值——之前固定 420px 时，图表只占了左侧
+     屏幕的上半部分，下面一大片全是空白。拖拽调整高度靠下面 #chart-resize-handle
+     这条独立的手柄（不是原生 CSS resize）：图表本身是一整块 canvas，原生 resize
+     手柄的那几个像素会被 canvas 自己的鼠标事件（拖拽平移、十字线）抢走，
+     试过之后确认根本拖不动——所以另起一条不挡在 canvas 上面的窄条，
+     自己写 mousedown/mousemove 处理拖拽，是本项目里给可拖拽止损线用过的
+     同一套思路（避免又一次赌某个浏览器行为是否好使）。 */
+  #main-chart {
+    width: 100%; height: calc(100vh - 230px); min-height: 360px; max-height: 82vh;
+    border: 1px solid #1e222d; border-radius: 6px 6px 0 0; position: relative; overflow: hidden;
+  }
+  #chart-resize-handle {
+    height: 11px; cursor: ns-resize; user-select: none;
+    background: #131722; border: 1px solid #1e222d; border-top: none; border-radius: 0 0 6px 6px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #chart-resize-handle:hover, #chart-resize-handle.dragging { background: #1e222d; }
+  #chart-resize-handle::before {
+    content: ""; width: 32px; height: 3px; border-radius: 2px; background: #3a3f4b;
+  }
+  #chart-resize-handle:hover::before, #chart-resize-handle.dragging::before { background: #565d6b; }
+  .subpane { width: 100%; height: 150px; margin-top: 0.6rem; border: 1px solid #1e222d; border-radius: 6px; position: relative; }
+  .subpane-label {
+    position: absolute; top: 4px; left: 8px; z-index: 5; font-size: 0.72rem; color: #787b86;
+    background: rgba(19, 23, 34, 0.7); padding: 0.1rem 0.4rem; border-radius: 3px;
+  }
+  .drag-handle {
+    position: absolute; left: 0; right: 0; height: 1px; z-index: 4; cursor: ns-resize;
+    display: flex; align-items: center;
+  }
+  .drag-handle::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 1px; background: currentColor; opacity: 0.9; }
+  .drag-handle .drag-tab {
+    position: absolute; right: 6px; top: -8px; font-size: 0.68rem; padding: 0.05rem 0.35rem;
+    border-radius: 3px; background: currentColor; color: #0d1117; font-weight: 700; white-space: nowrap;
+  }
+  /* 竖直的"分析窗口起点"标记：跟上面的横向 .drag-handle 是同一个思路，只是换成
+     标时间而不是标价格——不可拖拽，纯粹用来回答"系统这次算参考线，看的是从哪根
+     K 线开始的历史"。 */
+  .time-marker {
+    position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed currentColor;
+    opacity: 0.55; z-index: 3; pointer-events: none;
+  }
+  .time-marker .time-marker-tab {
+    position: absolute; top: 4px; left: 4px; font-size: 0.68rem; padding: 0.05rem 0.35rem;
+    border-radius: 3px; background: currentColor; color: #0d1117; font-weight: 700; white-space: nowrap;
+  }
+  .sidebar {
+    flex: 0 0 360px; padding: 0.75rem; border-left: 1px solid #1e222d;
+    max-height: calc(100vh - 52px); overflow-y: auto;
+  }
+  .sidebar h3 { font-size: 0.85rem; color: #787b86; text-transform: uppercase; letter-spacing: 0.04em; margin: 1.1rem 0 0.5rem; }
+  .sidebar h3:first-child { margin-top: 0; }
+  .field { margin-bottom: 0.55rem; }
+  .field label { display: block; font-size: 0.78rem; color: #9aa0a8; margin-bottom: 0.2rem; }
+  .field input, .field select, .field textarea {
+    width: 100%; background: #1e222d; border: 1px solid #2a2e39; color: #d1d4dc;
+    border-radius: 4px; padding: 0.35rem 0.5rem; font-size: 0.85rem; font-family: inherit;
+  }
+  .field textarea { resize: vertical; }
+  .nl-plan-btn {
+    background: #2962ff; border: none; color: #fff; border-radius: 4px;
+    padding: 0.4rem 0.9rem; font-size: 0.85rem; cursor: pointer; font-weight: 600;
+  }
+  .nl-plan-reset-btn {
+    background: transparent; border: 1px solid #2a2e39; color: #9aa0a8; border-radius: 4px;
+    padding: 0.4rem 0.9rem; font-size: 0.85rem; cursor: pointer; margin-left: 0.5rem;
+  }
+  .nl-plan-reset-btn:hover { border-color: #565d6b; color: #d1d4dc; }
+  .field-row { display: flex; gap: 0.5rem; }
+  .field-row .field { flex: 1; }
+  .add-module-row { display: flex; gap: 0.4rem; }
+  .add-module-row select { flex: 1; }
+  .add-module-row button {
+    background: #1e222d; border: 1px solid #2a2e39; color: #d1d4dc; border-radius: 4px;
+    padding: 0.35rem 0.7rem; cursor: pointer; font-size: 0.82rem;
+  }
+  .module-card { border: 1px solid #2a2e39; border-radius: 6px; padding: 0.6rem 0.7rem; margin-bottom: 0.6rem; background: #12161f; }
+  .module-card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.3rem; }
+  .module-card-head strong { font-size: 0.88rem; color: #fff; }
+  /* 完整说明文字都还在（塞进 title，鼠标停留就能看到），默认只露一行——之前每个
+     模块卡片、每个参数都把整段说明常驻显示，侧栏被文字撑得又长又乱。截断+悬浮
+     提示两不误：想知道细节的人能查到，不想看的人不用先扫过一堆文字才能找到
+     真正要操作的输入框。 */
+  .truncate-1 {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: help;
+  }
+  .module-card .desc { font-size: 0.74rem; color: #6b7280; margin: 0 0 0.4rem; }
+  .module-card .remove-btn {
+    background: none; border: none; color: #787b86; cursor: pointer; font-size: 0.9rem; line-height: 1;
+  }
+  .module-card .remove-btn:hover { color: #ef5350; }
+  .draggable-hint { font-size: 0.7rem; color: #2962ff; margin: 0 0 0.4rem; }
+  /* 预览算出来的实际数值，用文字兜底——图上的线可能因为不在当前可见价格区间、
+     或者本来就没找到而看不出来，文字不会有这个问题，点开模块就能看到"现在到底
+     算出了什么"，不用去图上大海捞针。 */
+  .preview-status { font-size: 0.74rem; color: #9aa0a8; margin: 0.3rem 0; padding: 0.3rem 0.5rem; background: #1a1e29; border-radius: 4px; }
+  .preview-status.not-found { color: #787b86; font-style: italic; }
+  .preview-status.hit { color: #ff9800; font-weight: 600; }
+  .empty-note { font-size: 0.8rem; color: #6b7280; }
+  .hint-note { font-size: 0.74rem; color: #6b7280; margin: 0 0 0.5rem; }
+  #chart-empty-hint {
+    position: absolute; z-index: 3; top: 12px; left: 12px; right: 12px;
+    font-size: 0.8rem; color: #787b86; background: rgba(19, 23, 34, 0.85);
+    border: 1px dashed #2a2e39; border-radius: 6px; padding: 0.5rem 0.7rem; pointer-events: none;
+  }
+  #chart-error-banner {
+    display: none;
+    position: absolute; z-index: 4; top: 12px; left: 12px; right: 12px;
+    font-size: 0.82rem; color: #ef5350; background: rgba(41, 15, 17, 0.92);
+    border: 1px solid #ef5350; border-radius: 6px; padding: 0.6rem 0.8rem;
+  }
+  #wizard-step { margin-top: 1rem; }
+  #wizard-step:empty { display: none; }
+  #wizard-step .card, #wizard-step table, #wizard-step h3, #wizard-step h4, #wizard-step p, #wizard-step form, #wizard-step button {
+    background: #12161f; color: #d1d4dc; border-color: #2a2e39;
+  }
+  #wizard-step table th, #wizard-step table td { border-bottom: 1px solid #2a2e39; padding: 0.35rem 0.5rem; font-size: 0.82rem; text-align: left; }
+  #wizard-step button { border-radius: 4px; padding: 0.4rem 0.9rem; cursor: pointer; border: 1px solid #2962ff; background: #2962ff; color: #fff; margin-right: 0.4rem; }
+  #wizard-step button.secondary { background: transparent; border-color: #2a2e39; color: #d1d4dc; }
+  #wizard-step .note { color: #9aa0a8; font-size: 0.82rem; }
+  #wizard-step .warn { color: #ef9a9a; font-size: 0.82rem; }
+</style>
+</head>
+<body>
+  {{if .InitialConfigJSON}}
+  <!-- 策略详情页"去画板查看"带 ?strategy=<id> 跳过来时，服务端已经确认过这条策略
+       属于当前用户，这里是那条策略当前配置的线格式 JSON，跟 wizard_confirm.html 的
+       #wizard-proposal-config 是同一个约定：画板页的 init() 读到它就调
+       applyStrategyConfig 把模块/止损止盈画回图上，而不是永远落回空白画布。 -->
+  <div id="builder-initial-config" style="display:none" data-config="{{.InitialConfigJSON}}"></div>
+  {{end}}
+  <div class="topbar">
+    <a class="back" href="/">← 看板</a>
+    <a class="back" href="/builder">切换标的</a>
+    <span class="symbol">{{.Symbol}}</span>
+    <div id="view-mode-toggle">
+      <button type="button" class="active" data-mode="build">建策</button>
+      <button type="button" data-mode="watch">看盘</button>
+    </div>
+    <select id="timeframe-select">
+      <option value="1m" {{if eq .Timeframe "1m"}}selected{{end}}>1m</option>
+      <option value="5m" {{if eq .Timeframe "5m"}}selected{{end}}>5m</option>
+      <option value="15m" {{if eq .Timeframe "15m"}}selected{{end}}>15m</option>
+      <option value="1h" {{if eq .Timeframe "1h"}}selected{{end}}>1h</option>
+      <option value="4h" {{if eq .Timeframe "4h"}}selected{{end}}>4h</option>
+      <option value="1d" {{if eq .Timeframe "1d"}}selected{{end}}>1d</option>
+    </select>
+    <input type="text" id="strategy-name" placeholder="策略名称" value="{{.Symbol}} 画板策略">
+    <button class="primary" id="describe-btn">生成配置摘要</button>
+  </div>
+
+  <div id="watch-layout">
+    <p id="watch-note" class="truncate-1"
+      title="嵌入的是 TradingView 官方免费图表组件（数据源 OKX），指标是组件自己算的，跟平台信号模块无关，画不出策略预览线，也不能在这里操作模块/风控">
+      TradingView 参考图，仅供看盘，不能在这里操作模块/风控——需要建策请切回"建策"。
+    </p>
+    <div id="tv-chart-wrap"><div id="tv_chart"></div></div>
+  </div>
+
+  <div class="layout" id="build-layout">
+    <div class="chart-col">
+      <div id="main-chart">
+        <div id="chart-empty-hint">还没有添加模块，图上不会有任何可拖拽的线——先在右侧"模块"栏添加一个（比如 volume_breakout），成交量区会立刻出现一条可拖拽的阈值线。</div>
+        <div id="chart-error-banner"></div>
+      </div>
+      <div id="chart-resize-handle" title="按住拖拽调整图表高度"></div>
+      <div id="subpanes"></div>
+    </div>
+
+    <div class="sidebar">
+      <h3>用自己的话描述交易计划</h3>
+      {{if .AgentReady}}
+      <p class="hint-note">
+        直接说你想怎么做，比如"成交量放大到 1.5 倍且突破阻力位时做多，止损 2%，止盈 5%"，
+        会直接画到左边图上，确认前不保存。
+      </p>
+      <form id="nl-plan-form" hx-post="/builder/{{.Symbol}}/translate" hx-target="#wizard-step" hx-swap="innerHTML">
+        <div class="field">
+          <textarea id="nl-plan-input" name="utterance" rows="4"
+            placeholder="例如：价格突破阻力位且成交量放大到 1.5 倍时做多，止损 2%，止盈 5%" required></textarea>
+        </div>
+        <button type="submit" id="nl-plan-btn" class="nl-plan-btn">生成到图上</button>
+        <button type="button" id="nl-plan-reset-btn" class="nl-plan-reset-btn"
+          title="清空当前这轮追问和输入框，重新完整描述一遍——避免改主意时（比如把周期从1小时改成4小时）新旧说法同时留在对话历史里，让 Agent 拿不准该信哪个">重新开始</button>
+      </form>
+      {{else}}
+      <p class="hint-note">这个入口需要先配置模型（设置页面）。没配置也完全不影响下面手动添加模块、拖拽调整——画板本身不依赖它。</p>
+      {{end}}
+
+      <h3>组合方式</h3>
+      <div class="field-row">
+        <div class="field">
+          <label for="combine-select">聚合方式</label>
+          <select id="combine-select">
+            <option value="ALL">ALL（全部同向才触发）</option>
+            <option value="WEIGHTED">WEIGHTED（加权阈值）</option>
+          </select>
+        </div>
+        <div class="field" id="threshold-field" style="display:none;">
+          <label for="threshold-input">触发阈值 (0-1]</label>
+          <input type="number" id="threshold-input" min="0" max="1" step="0.05" value="0.5">
+        </div>
+      </div>
+
+      <h3>模块</h3>
+      <p class="hint-note" title="图表本身不带独立的画线工具，参考线都是各模块按当前参数算出来的">选一个模块并添加，参考线会出现在图上。</p>
+      <div class="add-module-row">
+        <select id="module-select"></select>
+        <button type="button" id="add-module-btn">添加</button>
+      </div>
+      <div id="module-list"></div>
+
+      <h3>风控（基于最新价估算）</h3>
+      <div class="field">
+        <label for="risk-sizing-mode">仓位计算方式</label>
+        <select id="risk-sizing-mode">
+          <option value="fixed_quote">固定金额</option>
+          <option value="risk_pct">按账户权益的风险百分比</option>
+        </select>
+      </div>
+      <div class="field-row" id="risk-pct-sizing-fields" style="display:none;">
+        <div class="field">
+          <label for="risk-account-equity" title="计价货币">账户权益</label>
+          <input type="number" id="risk-account-equity" min="0" step="1" value="0">
+        </div>
+        <div class="field">
+          <label for="risk-per-trade-pct" title="占账户权益的百分比">单笔风险比例 %</label>
+          <input type="number" id="risk-per-trade-pct" min="0" max="100" step="0.1" value="0">
+        </div>
+      </div>
+      <p class="hint-note" id="risk-sizing-mode-hint" style="display:none;"
+        title="账户权益是自己填报的静态数字，不会从交易所实时同步；需要先设置好止损才能算出止损距离">
+        仓位 = 账户权益 × 风险比例 ÷ 止损距离；超过下方硬上限直接拒绝，不会自动缩小。
+      </p>
+      <div class="field">
+        <label for="risk-max-pos" title="计价货币，任何模式下都是硬上限">单笔最大仓位</label>
+        <input type="number" id="risk-max-pos" min="0" step="1" value="1000">
+      </div>
+      <div class="field">
+        <label for="risk-max-daily-loss" title="留空表示不设置">单日最大亏损</label>
+        <input type="number" id="risk-max-daily-loss" min="0" step="1">
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="risk-stop-loss-mode">止损方式</label>
+          <select id="risk-stop-loss-mode">
+            <option value="pct">固定百分比</option>
+            <option value="support_resistance">支撑/阻力位（跌破支撑）</option>
+            <option value="poc">成交量分布重心（POC，跌破/收回）</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="risk-take-profit-mode">止盈方式</label>
+          <select id="risk-take-profit-mode">
+            <option value="pct">固定百分比</option>
+            <option value="support_resistance">支撑/阻力位（触及阻力）</option>
+            <option value="poc">成交量分布重心（POC）</option>
+          </select>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field" id="risk-stop-loss-field">
+          <label for="risk-stop-loss" title="可在主图上拖红线">止损 %</label>
+          <input type="number" id="risk-stop-loss" min="0" max="90" step="0.5" value="0">
+        </div>
+        <div class="field" id="risk-take-profit-field">
+          <label for="risk-take-profit" title="可在主图上拖绿线">止盈 %</label>
+          <input type="number" id="risk-take-profit" min="0" step="0.5" value="0">
+        </div>
+      </div>
+      <p class="hint-note" id="risk-level-mode-hint" style="display:none;"
+        title="会自动加入对应模块（如果还没加）；价位以开仓那一刻算出的支撑/阻力位或POC为准，不是这里能直接拖拽的独立线，POC 是基于K线的粗粒度近似">
+        止损/止盈按支撑阻力位或 POC 实时计算，图上有虚线预览。
+      </p>
+      <div class="field">
+        <label for="risk-max-holding" title="留空不限制">最长持仓</label>
+        <input type="text" id="risk-max-holding" placeholder="4h">
+      </div>
+
+      <div id="wizard-step"></div>
+    </div>
+  </div>
+
+<script>
+(function () {
+  "use strict";
+
+  var SYMBOL = "{{.Symbol}}";
+  var state = {
+    timeframe: "{{.Timeframe}}",
+    modules: [],   // [{name, params: {...}, weight: null}]
+    candles: [],
+    loadingMoreHistory: false, // 防止拖动时重复触发翻页请求
+    noMoreHistory: false       // 已经拖到 OKX 能提供的最早一根，不用再往回请求了
+  };
+  var moduleCatalog = [];   // 来自 /api/modules
+  var moduleByName = {};
+  var mainChart, candleSeries, volumeSeries;
+  var subpanes = {};        // moduleName -> { chart, series, lines }
+  var dragLines = {};       // key -> controller，见 createDragLine
+  var srPreviewLines = [];  // support_resistance 预览画出来的参考线（不可拖）
+  var srPreviewTimer = null;
+  var fakeoutPreviewLines = []; // fakeout 预览画出来的参考线 + 命中时的醒目标注线
+  var fakeoutPreviewTimer = null;
+  var pocPreviewLines = [];     // poc 预览画出来的参考线
+  var pocPreviewTimer = null;
+
+  var els = {
+    timeframeSelect: document.getElementById("timeframe-select"),
+    strategyName: document.getElementById("strategy-name"),
+    describeBtn: document.getElementById("describe-btn"),
+    combineSelect: document.getElementById("combine-select"),
+    thresholdField: document.getElementById("threshold-field"),
+    thresholdInput: document.getElementById("threshold-input"),
+    moduleSelect: document.getElementById("module-select"),
+    addModuleBtn: document.getElementById("add-module-btn"),
+    moduleList: document.getElementById("module-list"),
+    riskSizingMode: document.getElementById("risk-sizing-mode"),
+    riskPctSizingFields: document.getElementById("risk-pct-sizing-fields"),
+    riskAccountEquity: document.getElementById("risk-account-equity"),
+    riskPerTradePct: document.getElementById("risk-per-trade-pct"),
+    riskSizingModeHint: document.getElementById("risk-sizing-mode-hint"),
+    riskMaxPos: document.getElementById("risk-max-pos"),
+    riskMaxDailyLoss: document.getElementById("risk-max-daily-loss"),
+    riskStopLossMode: document.getElementById("risk-stop-loss-mode"),
+    riskStopLoss: document.getElementById("risk-stop-loss"),
+    riskStopLossField: document.getElementById("risk-stop-loss-field"),
+    riskTakeProfitMode: document.getElementById("risk-take-profit-mode"),
+    riskTakeProfit: document.getElementById("risk-take-profit"),
+    riskTakeProfitField: document.getElementById("risk-take-profit-field"),
+    riskLevelModeHint: document.getElementById("risk-level-mode-hint"),
+    riskMaxHolding: document.getElementById("risk-max-holding"),
+    wizardStep: document.getElementById("wizard-step"),
+    mainChartEl: document.getElementById("main-chart"),
+    subpanesEl: document.getElementById("subpanes"),
+    viewModeToggle: document.getElementById("view-mode-toggle"),
+    buildLayout: document.getElementById("build-layout"),
+    watchLayout: document.getElementById("watch-layout"),
+    tvChartEl: document.getElementById("tv_chart"),
+    nlPlanForm: document.getElementById("nl-plan-form"),
+    nlPlanBtn: document.getElementById("nl-plan-btn"),
+    nlPlanInput: document.getElementById("nl-plan-input"),
+    nlPlanResetBtn: document.getElementById("nl-plan-reset-btn")
+  };
+
+  // ---------- 主图 ----------
+
+  function initMainChart() {
+    mainChart = LightweightCharts.createChart(els.mainChartEl, chartOptions(els.mainChartEl));
+    candleSeries = mainChart.addCandlestickSeries({
+      upColor: "#26a69a", downColor: "#ef5350", borderVisible: false,
+      wickUpColor: "#26a69a", wickDownColor: "#ef5350"
+    });
+    volumeSeries = mainChart.addHistogramSeries({
+      color: "#4b5563", priceFormat: { type: "volume" }, priceScaleId: "volume"
+    });
+    mainChart.priceScale("volume").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+    mainChart.timeScale().subscribeVisibleLogicalRangeChange(repositionAllDragLines);
+    mainChart.timeScale().subscribeVisibleLogicalRangeChange(maybeLoadMoreHistory);
+
+    // lightweight-charts 不会自己感知容器尺寸变化，必须显式告诉它新的宽高。
+    // 用 ResizeObserver 而不是只听 window 的 resize 事件，是因为图表现在支持
+    // 用户从右下角拖拽调整高度（见 #main-chart 的 CSS resize: vertical）——
+    // 那个动作不会触发 window resize，只有 ResizeObserver 能感知到容器本身变了。
+    var applySize = function () {
+      mainChart.applyOptions({ width: els.mainChartEl.clientWidth, height: els.mainChartEl.clientHeight });
+      repositionAllDragLines();
+    };
+    if (window.ResizeObserver) {
+      new ResizeObserver(applySize).observe(els.mainChartEl);
+    } else {
+      window.addEventListener("resize", applySize);
+    }
+  }
+
+  // initChartResizeHandle 让 #chart-resize-handle 这条窄条可以拖拽调整图表高度。
+  // 直接改 #main-chart 的内联 height，已经挂在 initMainChart 里的 ResizeObserver
+  // 会自动感知到这个变化并让 lightweight-charts 的画布跟着重新铺满——这里不需要
+  // 再手动调用 mainChart.applyOptions。
+  function initChartResizeHandle() {
+    var handle = document.getElementById("chart-resize-handle");
+    if (!handle) return;
+    var dragging = false, startY = 0, startHeight = 0;
+    var minHeight = 360;
+
+    handle.addEventListener("mousedown", function (e) {
+      dragging = true;
+      startY = e.clientY;
+      startHeight = els.mainChartEl.getBoundingClientRect().height;
+      handle.classList.add("dragging");
+      document.body.style.userSelect = "none";
+      e.preventDefault();
+    });
+    window.addEventListener("mousemove", function (e) {
+      if (!dragging) return;
+      var maxHeight = window.innerHeight * 0.85;
+      var next = startHeight + (e.clientY - startY);
+      next = Math.max(minHeight, Math.min(maxHeight, next));
+      els.mainChartEl.style.height = next + "px";
+    });
+    window.addEventListener("mouseup", function () {
+      if (!dragging) return;
+      dragging = false;
+      handle.classList.remove("dragging");
+      document.body.style.userSelect = "";
+    });
+  }
+
+  // ---------- 看盘/建策切换：见上面 #view-mode-toggle 的 CSS 注释——两套图表引擎
+  // 不能叠加，只能切换显示哪一份。TradingView 组件懒初始化（第一次切到"看盘"才建），
+  // 且只在切进来时按需重建（时机是切换那一刻，不是每次 timeframe-select 变化都重建，
+  // 图表隐藏在背后时没必要跟着重算）。----------
+
+  var TV_INTERVAL_BY_TIMEFRAME = { "1m": "1", "5m": "5", "15m": "15", "1h": "60", "4h": "240", "1d": "D" };
+  var tvBuiltForTimeframe = null; // 上一次真正建出 TradingView 组件时用的周期
+
+  function ensureTVWidget() {
+    if (tvBuiltForTimeframe === state.timeframe) return;
+    if (typeof TradingView === "undefined") return; // 组件脚本还没加载完/加载失败，静默跳过
+    els.tvChartEl.innerHTML = "";
+    new TradingView.widget({
+      autosize: true,
+      symbol: "OKX:" + SYMBOL,
+      interval: TV_INTERVAL_BY_TIMEFRAME[state.timeframe] || "60",
+      timezone: "Etc/UTC",
+      theme: "dark",
+      style: "1",
+      locale: "zh_CN",
+      toolbar_bg: "#131722",
+      enable_publishing: false,
+      allow_symbol_change: false, // 这里的标的是画板固定的，组件里改符号不会同步到策略上下文，干脆禁用避免误解
+      hide_top_toolbar: false,
+      withdateranges: true,
+      studies: ["MASimple@tv-basicstudies", "RSI@tv-basicstudies", "MACD@tv-basicstudies"],
+      container_id: "tv_chart"
+    });
+    tvBuiltForTimeframe = state.timeframe;
+  }
+
+  function setViewMode(mode) {
+    var toWatch = mode === "watch";
+    els.watchLayout.style.display = toWatch ? "flex" : "none";
+    els.buildLayout.style.display = toWatch ? "none" : "";
+    Array.prototype.forEach.call(els.viewModeToggle.querySelectorAll("button"), function (btn) {
+      btn.classList.toggle("active", btn.getAttribute("data-mode") === mode);
+    });
+    if (toWatch) {
+      ensureTVWidget();
+    } else if (mainChart) {
+      // 切回建策模式时 #main-chart 从 display:none 变回可见，尺寸从 0 变回真实值——
+      // 显式告诉 lightweight-charts 一次新的宽高，不指望它自己感知到这个变化。
+      mainChart.applyOptions({ width: els.mainChartEl.clientWidth, height: els.mainChartEl.clientHeight });
+      repositionAllDragLines();
+    }
+  }
+
+  function initViewModeToggle() {
+    Array.prototype.forEach.call(els.viewModeToggle.querySelectorAll("button"), function (btn) {
+      btn.addEventListener("click", function () { setViewMode(btn.getAttribute("data-mode")); });
+    });
+  }
+
+  function chartOptions(el) {
+    return {
+      width: el.clientWidth, height: el.clientHeight,
+      layout: { background: { color: "#0d1117" }, textColor: "#d1d4dc" },
+      grid: { vertLines: { color: "#1a1e29" }, horzLines: { color: "#1a1e29" } },
+      timeScale: { borderColor: "#2a2e39" },
+      rightPriceScale: { borderColor: "#2a2e39" },
+      crosshair: { mode: LightweightCharts.CrosshairMode.Normal }
+    };
+  }
+
+  function lastClose() {
+    if (!state.candles.length) return 0;
+    return state.candles[state.candles.length - 1].close;
+  }
+
+  function showChartError(message) {
+    var banner = document.getElementById("chart-error-banner");
+    if (!banner) return;
+    banner.textContent = message;
+    banner.style.display = message ? "block" : "none";
+  }
+
+  function loadCandles() {
+    return fetch("/api/candles/" + encodeURIComponent(SYMBOL) + "?timeframe=" + state.timeframe + "&limit=300")
+      .then(function (r) {
+        if (!r.ok) {
+          return r.text().then(function (body) {
+            throw new Error(body || ("加载 K 线失败：" + r.status));
+          });
+        }
+        return r.json();
+      })
+      .then(function (data) {
+        showChartError("");
+        state.candles = data || [];
+        // 换标的/换主周期都是走这条路径重新拉数据，之前拖到底记下的"没有更早历史了"
+        // 不该继续带着——新的一份数据有它自己的最早边界，要重新探测。
+        state.noMoreHistory = false;
+        state.loadingMoreHistory = false;
+        candleSeries.setData(state.candles.map(function (c) {
+          return { time: c.time, open: c.open, high: c.high, low: c.low, close: c.close };
+        }));
+        volumeSeries.setData(state.candles.map(function (c) {
+          return { time: c.time, value: c.volume, color: c.close >= c.open ? "#26a69a55" : "#ef535055" };
+        }));
+        mainChart.timeScale().fitContent();
+        repositionAllDragLines();
+        refreshRiskLines();
+        refreshSupportResistancePreview();
+        refreshFakeoutPreview();
+        refreshPOCPreview();
+        Object.keys(subpanes).forEach(refreshSubpaneSeries);
+      })
+      .catch(function (err) {
+        showChartError(err.message || String(err));
+      });
+  }
+
+  // ---------- 往回翻页：图表左拖到已加载数据的最左端时，继续往回补历史K线 ----------
+  //
+  // loadCandles 一次只拿 300 根（OKX 单次请求上限），用户把图往左拖、拖到这 300 根
+  // 的起点，之前的做法是"没有更多数据"，图会突然停在那里，拖不动也看不到更早的行情。
+  // maybeLoadMoreHistory 订阅在 visibleLogicalRangeChange 上，逻辑区间的左端点
+  // （range.from）快接近 0（数据数组的起点）时就触发 loadMoreHistory，往回再拉一页
+  // 拼到 state.candles 前面。
+
+  var LOAD_MORE_THRESHOLD = 20; // 剩余不到 20 根可见空间时就该提前去拿了，不用等到刚好拖没
+
+  function maybeLoadMoreHistory(range) {
+    if (!range || state.loadingMoreHistory || state.noMoreHistory) return;
+    if (range.from < LOAD_MORE_THRESHOLD) loadMoreHistory();
+  }
+
+  function loadMoreHistory() {
+    if (state.loadingMoreHistory || state.noMoreHistory || !state.candles.length) return;
+    state.loadingMoreHistory = true;
+
+    var earliest = state.candles[0].time;
+    var prevRange = mainChart.timeScale().getVisibleLogicalRange();
+
+    fetch("/api/candles/" + encodeURIComponent(SYMBOL) + "?timeframe=" + state.timeframe +
+        "&limit=300&before=" + earliest)
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error("加载更多历史K线失败：" + r.status)); })
+      .then(function (older) {
+        older = (older || []).filter(function (c) { return c.time < earliest; });
+        if (!older.length) { state.noMoreHistory = true; return; }
+
+        state.candles = older.concat(state.candles);
+        candleSeries.setData(state.candles.map(function (c) {
+          return { time: c.time, open: c.open, high: c.high, low: c.low, close: c.close };
+        }));
+        volumeSeries.setData(state.candles.map(function (c) {
+          return { time: c.time, value: c.volume, color: c.close >= c.open ? "#26a69a55" : "#ef535055" };
+        }));
+
+        // setData 会把 lightweight-charts 的逻辑坐标系整个重新编号（新拼进去的这批
+        // 历史K线现在占据了索引 0 开始的那一段），不把用户当前看着的那一段视觉位置
+        // 跟着平移，拖动会像"猛地跳了一下"。往右平移 older.length 个逻辑单位，
+        // 让画面看起来跟拖之前完全没变，只是左边可以继续拖了。
+        if (prevRange) {
+          mainChart.timeScale().setVisibleLogicalRange({
+            from: prevRange.from + older.length,
+            to: prevRange.to + older.length
+          });
+        }
+        repositionAllDragLines();
+        Object.keys(subpanes).forEach(refreshSubpaneSeries);
+      })
+      .catch(function (err) {
+        // 翻页失败不该打断用户正在做的拖动/看图，控制台留个痕迹就够了。
+        console.warn(err.message || String(err));
+      })
+      .then(function () { state.loadingMoreHistory = false; });
+  }
+
+  // ---------- 可拖拽水平线：用 priceToCoordinate/coordinateToPrice 手写拖拽，
+  // 不依赖某个具体版本的原生 draggable price line API（各版本这块 API 不稳定，
+  // 手写这层薄封装能确定行为是可控、可验证的）。----------
+
+  function createDragLine(key, chart, series, containerEl, initialPrice, colorCss, label, onChange) {
+    removeDragLine(key);
+    var priceLine = series.createPriceLine({
+      price: initialPrice, color: colorCss, lineWidth: 1,
+      lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: label
+    });
+    var handle = document.createElement("div");
+    handle.className = "drag-handle";
+    handle.style.color = colorCss;
+    var tab = document.createElement("div");
+    tab.className = "drag-tab";
+    tab.textContent = label;
+    handle.appendChild(tab);
+    containerEl.appendChild(handle);
+
+    var dragging = false;
+    var price = initialPrice;
+
+    function reposition() {
+      var y = series.priceToCoordinate(price);
+      if (y === null || y === undefined) { handle.style.display = "none"; return; }
+      handle.style.display = "flex";
+      handle.style.top = y + "px";
+    }
+
+    handle.addEventListener("mousedown", function (e) {
+      dragging = true;
+      e.preventDefault();
+    });
+    window.addEventListener("mousemove", function (e) {
+      if (!dragging) return;
+      var rect = containerEl.getBoundingClientRect();
+      var y = e.clientY - rect.top;
+      var p = series.coordinateToPrice(y);
+      if (p === null || p === undefined) return;
+      price = p;
+      priceLine.applyOptions({ price: price });
+      reposition();
+      onChange(price);
+    });
+    window.addEventListener("mouseup", function () { dragging = false; });
+
+    reposition();
+    dragLines[key] = {
+      reposition: reposition,
+      setPrice: function (p) { price = p; priceLine.applyOptions({ price: p }); reposition(); },
+      destroy: function () { series.removePriceLine(priceLine); handle.remove(); }
+    };
+    return dragLines[key];
+  }
+
+  function removeDragLine(key) {
+    if (dragLines[key]) { dragLines[key].destroy(); delete dragLines[key]; }
+  }
+
+  function repositionAllDragLines() {
+    Object.keys(dragLines).forEach(function (k) { dragLines[k].reposition(); });
+  }
+
+  // createTimeMarker 画一条不可拖拽的竖直虚线，标出某个时间点——用来回答"系统这次
+  // 算参考线，看的是从哪根 K 线开始的历史"这个问题（模块的 window_start）。跟横向的
+  // createDragLine 是同一个思路，用 lightweight-charts 换算出的坐标手写一个绝对
+  // 定位的 div；复用同一份 dragLines 注册表，这样平移/缩放时已有的
+  // repositionAllDragLines() 会自动把它也带上，不需要另外维护一套更新逻辑。
+  function createTimeMarker(key, chart, containerEl, timeSec, colorCss, label) {
+    removeDragLine(key);
+    var el = document.createElement("div");
+    el.className = "time-marker";
+    el.style.color = colorCss;
+    var tab = document.createElement("div");
+    tab.className = "time-marker-tab";
+    tab.textContent = label;
+    el.appendChild(tab);
+    containerEl.appendChild(el);
+
+    function reposition() {
+      var x = chart.timeScale().timeToCoordinate(timeSec);
+      if (x === null || x === undefined) { el.style.display = "none"; return; }
+      el.style.display = "block";
+      el.style.left = x + "px";
+    }
+
+    reposition();
+    dragLines[key] = {
+      reposition: reposition,
+      setPrice: function () {}, // 时间标记不对应价格，占位满足统一接口
+      destroy: function () { el.remove(); }
+    };
+    return dragLines[key];
+  }
+
+  // ---------- 风控线：止损/止盈，基于最新收盘价估算 ----------
+
+  // support_resistance 模式下不画独立的止损/止盈拖拽线：那个价位本来就是
+  // support_resistance 模块算出来的，图上已经有它的预览虚线了（refreshSupportResistancePreview），
+  // 再画一条基于百分比估算的线只会造成"两条线代表什么"的混淆。这里只负责在切到
+  // pct 模式时把线画出来，切到 support_resistance 模式时把之前画的线撤掉。
+  function refreshRiskLines() {
+    var close = lastClose();
+    var slMode = els.riskStopLossMode.value;
+    var tpMode = els.riskTakeProfitMode.value;
+
+    if (slMode === "pct" && close) {
+      var slPct = parseFloat(els.riskStopLoss.value) || 0;
+      if (slPct > 0) {
+        var slPrice = close * (1 - slPct / 100);
+        if (dragLines["risk_sl"]) dragLines["risk_sl"].setPrice(slPrice);
+        else createDragLine("risk_sl", mainChart, candleSeries, els.mainChartEl, slPrice, "#ef5350", "止损", function (p) {
+          var pct = Math.max(0, (1 - p / close) * 100);
+          els.riskStopLoss.value = pct.toFixed(2);
+        });
+      } else {
+        removeDragLine("risk_sl");
+      }
+    } else {
+      removeDragLine("risk_sl");
+    }
+
+    if (tpMode === "pct" && close) {
+      var tpPct = parseFloat(els.riskTakeProfit.value) || 0;
+      if (tpPct > 0) {
+        var tpPrice = close * (1 + tpPct / 100);
+        if (dragLines["risk_tp"]) dragLines["risk_tp"].setPrice(tpPrice);
+        else createDragLine("risk_tp", mainChart, candleSeries, els.mainChartEl, tpPrice, "#26a69a", "止盈", function (p) {
+          var pct = Math.max(0, (p / close - 1) * 100);
+          els.riskTakeProfit.value = pct.toFixed(2);
+        });
+      } else {
+        removeDragLine("risk_tp");
+      }
+    } else {
+      removeDragLine("risk_tp");
+    }
+  }
+  els.riskStopLoss.addEventListener("input", refreshRiskLines);
+  els.riskTakeProfit.addEventListener("input", refreshRiskLines);
+
+  // 止损/止盈的"方式"下拉框，值本身就是依赖的模块名（pct 除外，不依赖任何模块）——
+  // 切到 support_resistance/poc 时自动把对应模块加入模块列表（用户可能压根没手动加过），
+  // 并显示/隐藏对应的 % 输入框。
+  function onRiskModeChanged() {
+    var slMode = els.riskStopLossMode.value;
+    var tpMode = els.riskTakeProfitMode.value;
+    var slLevel = slMode !== "pct";
+    var tpLevel = tpMode !== "pct";
+    els.riskStopLossField.style.display = slLevel ? "none" : "";
+    els.riskTakeProfitField.style.display = tpLevel ? "none" : "";
+    els.riskLevelModeHint.style.display = (slLevel || tpLevel) ? "" : "none";
+    [slMode, tpMode].forEach(function (mode) {
+      if (mode !== "pct" && !state.modules.some(function (m) { return m.name === mode; })) {
+        addModule(mode);
+      }
+    });
+    refreshRiskLines();
+  }
+  els.riskStopLossMode.addEventListener("change", onRiskModeChanged);
+  els.riskTakeProfitMode.addEventListener("change", onRiskModeChanged);
+
+  // 仓位计算方式：固定金额 vs 按账户权益的风险百分比，跟止损/止盈模式是同一套
+  // "下拉框 + 联动显示/隐藏字段"写法（onRiskModeChanged 的姊妹函数）。
+  function onRiskSizingModeChanged() {
+    var pctMode = els.riskSizingMode.value === "risk_pct";
+    els.riskPctSizingFields.style.display = pctMode ? "" : "none";
+    els.riskSizingModeHint.style.display = pctMode ? "" : "none";
+  }
+  els.riskSizingMode.addEventListener("change", onRiskSizingModeChanged);
+
+  // ---------- support_resistance：预览走真实的 Go 模块，不在 JS 里重新算一遍
+  // 聚类算法（避免出现"预览"和"真正跑起来"两份可能互相漂移的实现）。----------
+
+  // srPreviewGen 及下面 fakeout/poc 各自的同名变量，是防止预览重复画线的关键：
+  // 这几个 refresh 函数会从好几个地方被调用（loadCandles 里、切模块参数时、
+  // 应用 Agent 翻译结果时……），一旦两次调用前后脚发生（哪怕间隔几十毫秒），
+  // 后发出的 fetch 有可能先落地，先发出的 fetch 后落地——如果谁落地都无条件画线，
+  // 后落地的那次会在"清空旧线"这一步只清掉自己知道的那份，把先前那次已经画上去
+  // 但键名相同的线覆盖掉引用而不是真的删掉，图上就会留下再也清不掉的重影线
+  // （这正是这次真实复现到的 bug：POC 参考线在图上出现了两条一模一样的）。
+  // 用一个自增计数器给每次调用发一个"版本号"，fetch 落地时只有版本号还是最新的
+  // 那次才允许清线、画线，过期的响应直接丢弃——不管调用顺序、落地顺序怎么交错，
+  // 最终图上只会剩下最后一次调用画的线。
+  var srPreviewGen = 0;
+
+  function refreshSupportResistancePreview() {
+    var myGen = ++srPreviewGen;
+    var mod = state.modules.find(function (m) { return m.name === "support_resistance"; });
+    if (!mod || !state.candles.length) {
+      srPreviewLines.forEach(function (key) { removeDragLine(key); });
+      srPreviewLines = [];
+      return;
+    }
+
+    var suffix = tfSuffix(mod);
+    fetch("/api/preview/support-resistance/" + encodeURIComponent(SYMBOL) + "?" + previewQuery(mod).toString())
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (myGen !== srPreviewGen) return; // 已经有更新的请求发出了，这份过期结果不要用
+        srPreviewLines.forEach(function (key) { removeDragLine(key); });
+        srPreviewLines = [];
+        var levels = (data && data.levels) || [];
+        if (!levels.length) {
+          setPreviewStatus("support_resistance", "当前参数下未找到任何关键位（试试调大 lookback 或调小 min_touches）" + suffix, "not-found");
+        } else {
+          setPreviewStatus("support_resistance", "找到 " + levels.length + " 个关键位，价位见图上虚线" + suffix);
+        }
+        if (data && data.window_start) {
+          var wsKey = "sr_window_start";
+          createTimeMarker(wsKey, mainChart, els.mainChartEl, data.window_start, "#565d6b", "分析窗口起点" + suffix);
+          srPreviewLines.push(wsKey);
+        }
+        levels.forEach(function (lv, i) {
+          var key = "sr_preview_" + i;
+          var color = lv.kind === "high" ? "#ef9a9a" : "#80cbc4";
+          var line = candleSeries.createPriceLine({
+            price: lv.price, color: color, lineWidth: 1,
+            lineStyle: LightweightCharts.LineStyle.Dotted, axisLabelVisible: true,
+            title: (lv.kind === "high" ? "阻力" : "支撑") + " ×" + lv.touches + suffix
+          });
+          dragLines[key] = { reposition: function () {}, setPrice: function () {}, destroy: function () { candleSeries.removePriceLine(line); } };
+          srPreviewLines.push(key);
+        });
+      })
+      .catch(function () { /* 预览失败不影响建策本身，静默即可 */ });
+  }
+
+  function scheduleSupportResistancePreview() {
+    if (srPreviewTimer) clearTimeout(srPreviewTimer);
+    srPreviewTimer = setTimeout(refreshSupportResistancePreview, 400);
+  }
+
+  // 通用的"拿模块当前参数拼查询串"逻辑，fakeout/poc 预览跟 support_resistance
+  // 预览是同一套做法，抽成一个小函数避免三份重复。查询用的周期是模块自己的
+  // timeframe（留空则跟随图表当前显示的主周期）——预览必须反映"这个模块实际会用
+  // 哪份行情算"，不能永远用图表正在显示的那个周期，否则多周期策略的背景模块
+  // 预览出来的线就是错的（拿 15 分钟数据算出了本该用 1 小时数据算的关键位）。
+  function previewQuery(mod) {
+    var qs = new URLSearchParams({ timeframe: mod.timeframe || state.timeframe, limit: "300" });
+    Object.keys(mod.params || {}).forEach(function (k) {
+      if (mod.params[k] !== null && mod.params[k] !== undefined && mod.params[k] !== "") {
+        qs.set(k, mod.params[k]);
+      }
+    });
+    return qs;
+  }
+
+  // tfSuffix 返回一个可以直接拼进价格线标题/预览文字的后缀（如 "（1h）"）——
+  // 不管模块自己是显式选了周期、还是没选、跟随主图当前显示的周期，都老实标出来，
+  // 不做"跟主图一样就不用标了"这种省略。之前就是省略掉这种情况，结果真实复现过
+  // 一次混淆：模块没显式设周期（留了"跟随主周期"），用户为了看另一个模块把主图
+  // 切到了别的周期，这个模块的"前高"就悄悄跟着切了，但因为跟主图当前周期"恰好
+  // 一样"，标签上完全看不出来这是被动跟随的，不是真的按用户想要的周期算的——
+  // 现在无条件显示，用户随时能看出"这条线到底是按哪个周期算的"，不用去猜。
+  function tfSuffix(mod) {
+    return "（" + (mod.timeframe || state.timeframe) + "）";
+  }
+
+  // ---------- fakeout：预览走真实的 Go 模块。fakeout 只盯着一个盘整区间的高/低点，
+  // 不是一堆细碎关键位，所以正常情况下只画两条虚线（区间高点/低点）。命中假突破时
+  // 额外画一条更醒目的线——这条线画不画得出来，直接回答"系统有没有理解用户说的
+  // 假突破"。
+  // ----------
+
+  var fakeoutPreviewGen = 0; // 同 srPreviewGen，防止重复/重叠请求在图上留下重影线
+
+  function refreshFakeoutPreview() {
+    var myGen = ++fakeoutPreviewGen;
+    var mod = state.modules.find(function (m) { return m.name === "fakeout"; });
+    if (!mod || !state.candles.length) {
+      fakeoutPreviewLines.forEach(function (key) { removeDragLine(key); });
+      fakeoutPreviewLines = [];
+      return;
+    }
+
+    var suffix = tfSuffix(mod);
+    fetch("/api/preview/fakeout/" + encodeURIComponent(SYMBOL) + "?" + previewQuery(mod).toString())
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (myGen !== fakeoutPreviewGen) return; // 过期响应，丢弃
+        fakeoutPreviewLines.forEach(function (key) { removeDragLine(key); });
+        fakeoutPreviewLines = [];
+        // 不管找没找到区间都先画分析窗口起点——没找到时用户尤其需要知道"系统看了
+        // 这么长一段，只是没找到"，而不是以为系统压根没在看。
+        if (data && data.window_start) {
+          var wsKey = "fakeout_window_start";
+          createTimeMarker(wsKey, mainChart, els.mainChartEl, data.window_start, "#565d6b", "分析窗口起点" + suffix);
+          fakeoutPreviewLines.push(wsKey);
+        }
+        if (!data || !data.range_found) {
+          setPreviewStatus("fakeout",
+            "当前参数下未找到有效盘整区间（试试调大 range_tightness，或调大 range_lookback"+
+            "让它往回看更远）" + suffix, "not-found");
+          return;
+        }
+        var statusText = "前高 " + data.range_high + " / 前低 " + data.range_low +
+          "（" + data.range_bars + " 根K线的盘整区间）" + suffix;
+        if (data.event && data.event !== "none") {
+          statusText += "，⚠ 当前已检测到" + (data.event === "fakeout_resistance" ? "假突破" : "假跌破") +
+            "（" + data.direction + "），触发价 " + data.level_price;
+          setPreviewStatus("fakeout", statusText, "hit");
+        } else {
+          setPreviewStatus("fakeout", statusText);
+        }
+        var rangeLabel = (data.range_bars ? "（" + data.range_bars + " 根K线的盘整区间）" : "") + suffix;
+        var hiKey = "fakeout_range_high";
+        var hiLine = candleSeries.createPriceLine({
+          price: data.range_high, color: "#ef9a9a", lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.Dotted, axisLabelVisible: true,
+          title: "前高" + rangeLabel
+        });
+        fakeoutPreviewLines.push(hiKey);
+        dragLines[hiKey] = { reposition: function () {}, setPrice: function () {}, destroy: function () { candleSeries.removePriceLine(hiLine); } };
+
+        var loKey = "fakeout_range_low";
+        var loLine = candleSeries.createPriceLine({
+          price: data.range_low, color: "#80cbc4", lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.Dotted, axisLabelVisible: true,
+          title: "前低" + rangeLabel
+        });
+        fakeoutPreviewLines.push(loKey);
+        dragLines[loKey] = { reposition: function () {}, setPrice: function () {}, destroy: function () { candleSeries.removePriceLine(loLine); } };
+
+        if (data.event && data.event !== "none") {
+          var isResistance = data.event === "fakeout_resistance";
+          var hitKey = "fakeout_hit";
+          var hitLine = candleSeries.createPriceLine({
+            price: data.level_price, color: "#ff9800", lineWidth: 3,
+            lineStyle: LightweightCharts.LineStyle.Solid, axisLabelVisible: true,
+            title: (isResistance ? "⚠ 检测到假突破" : "⚠ 检测到假跌破") + "（" + data.direction + "）" + suffix
+          });
+          fakeoutPreviewLines.push(hitKey);
+          dragLines[hitKey] = { reposition: function () {}, setPrice: function () {}, destroy: function () { candleSeries.removePriceLine(hitLine); } };
+        }
+      })
+      .catch(function () { /* 预览失败不影响建策本身，静默即可 */ });
+  }
+
+  function scheduleFakeoutPreview() {
+    if (fakeoutPreviewTimer) clearTimeout(fakeoutPreviewTimer);
+    fakeoutPreviewTimer = setTimeout(refreshFakeoutPreview, 400);
+  }
+
+  // ---------- poc：预览走真实的 Go 模块。POC 只有一个价位，画一条线即可。----------
+
+  var pocPreviewGen = 0; // 同 srPreviewGen，防止重复/重叠请求在图上留下重影线
+
+  function refreshPOCPreview() {
+    var myGen = ++pocPreviewGen;
+    var mod = state.modules.find(function (m) { return m.name === "poc"; });
+    if (!mod || !state.candles.length) {
+      pocPreviewLines.forEach(function (key) { removeDragLine(key); });
+      pocPreviewLines = [];
+      return;
+    }
+
+    var suffix = tfSuffix(mod);
+    fetch("/api/preview/poc/" + encodeURIComponent(SYMBOL) + "?" + previewQuery(mod).toString())
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (myGen !== pocPreviewGen) return; // 过期响应，丢弃
+        pocPreviewLines.forEach(function (key) { removeDragLine(key); });
+        pocPreviewLines = [];
+        if (data && data.window_start) {
+          var wsKey = "poc_window_start";
+          createTimeMarker(wsKey, mainChart, els.mainChartEl, data.window_start, "#565d6b", "分析窗口起点" + suffix);
+          pocPreviewLines.push(wsKey);
+        }
+        if (!data || !data.available) {
+          setPreviewStatus("poc", "当前参数下算不出 POC（回看窗口内价格几乎没有波动）" + suffix, "not-found");
+          return;
+        }
+        setPreviewStatus("poc", "POC ≈ " + data.price + suffix);
+        var key = "poc_preview";
+        var line = candleSeries.createPriceLine({
+          price: data.price, color: "#ab47bc", lineWidth: 2,
+          lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true,
+          title: "POC（近似）" + suffix
+        });
+        pocPreviewLines.push(key);
+        dragLines[key] = { reposition: function () {}, setPrice: function () {}, destroy: function () { candleSeries.removePriceLine(line); } };
+      })
+      .catch(function () { /* 预览失败不影响建策本身，静默即可 */ });
+  }
+
+  function schedulePOCPreview() {
+    if (pocPreviewTimer) clearTimeout(pocPreviewTimer);
+    pocPreviewTimer = setTimeout(refreshPOCPreview, 400);
+  }
+
+  // ---------- 副图（MACD/RSI、CVD）：曲线本身在浏览器里现算，仅用于显示参考——
+  // 跟平台真正的信号计算（跑策略时走 internal/modules 里的 Go 实现）完全独立，
+  // 只是给人肉眼看盘用的参考曲线，不影响任何决策逻辑。
+  // ----------
+
+  function ensureSubpane(key, title) {
+    if (subpanes[key]) return subpanes[key];
+    var wrap = document.createElement("div");
+    wrap.className = "subpane";
+    wrap.id = "subpane-" + key;
+    var label = document.createElement("div");
+    label.className = "subpane-label";
+    label.textContent = title;
+    wrap.appendChild(label);
+    els.subpanesEl.appendChild(wrap);
+
+    var chart = LightweightCharts.createChart(wrap, chartOptions(wrap));
+    var syncHandler = function (range) {
+      if (range) chart.timeScale().setVisibleLogicalRange(range);
+    };
+    mainChart.timeScale().subscribeVisibleLogicalRangeChange(syncHandler);
+    subpanes[key] = { chart: chart, wrap: wrap, syncHandler: syncHandler };
+    return subpanes[key];
+  }
+
+  function removeSubpane(key) {
+    if (!subpanes[key]) return;
+    mainChart.timeScale().unsubscribeVisibleLogicalRangeChange(subpanes[key].syncHandler);
+    subpanes[key].chart.remove();
+    subpanes[key].wrap.remove();
+    delete subpanes[key];
+  }
+
+  // syncPriceScaleWidths 让主图和所有副图的右侧价格轴宽度完全一致。
+  //
+  // 主图、副图是各自独立的 lightweight-charts 实例，右侧价格标签的宽度由每个图表
+  // 自己的数值位数决定——主图价格可能是"78,579.80"，CVD 副图的值可能是"-0.15"，
+  // 数字位数不一样、轴宽自然不一样。轴宽一旦不一致，绘图区域的左右边界就跟着错开，
+  // 主图上的竖直网格线没法对齐到下方副图——这正是真实反馈到的问题：加了 CVD 之类的
+  // 副图以后，两边看着是错位的。
+  //
+  // 取所有图表里最宽的那个轴宽，统一设成大家的 minimumWidth（v4.1 官方就是为这个
+  // 场景加的选项），绘图区域宽度锁死一致，网格线自然对得上，不需要自己算像素偏移。
+  function syncPriceScaleWidths() {
+    if (!mainChart) return;
+    var charts = [mainChart];
+    Object.keys(subpanes).forEach(function (k) { charts.push(subpanes[k].chart); });
+    var widest = 0;
+    charts.forEach(function (c) {
+      var w = c.priceScale("right").width();
+      if (w > widest) widest = w;
+    });
+    if (widest <= 0) return;
+    charts.forEach(function (c) { c.priceScale("right").applyOptions({ minimumWidth: widest }); });
+  }
+
+  function computeRSI(candles, period) {
+    var closes = candles.map(function (c) { return c.close; });
+    var out = new Array(closes.length).fill(null);
+    if (closes.length <= period) return out;
+    var gainSum = 0, lossSum = 0, i;
+    for (i = 1; i <= period; i++) {
+      var d0 = closes[i] - closes[i - 1];
+      if (d0 >= 0) gainSum += d0; else lossSum -= d0;
+    }
+    var avgGain = gainSum / period, avgLoss = lossSum / period;
+    out[period] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+    for (i = period + 1; i < closes.length; i++) {
+      var d = closes[i] - closes[i - 1];
+      var gain = d > 0 ? d : 0, loss = d < 0 ? -d : 0;
+      avgGain = (avgGain * (period - 1) + gain) / period;
+      avgLoss = (avgLoss * (period - 1) + loss) / period;
+      out[i] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+    }
+    return out;
+  }
+
+  // 示意用的主动买卖失衡代理：OKX 数据源本身不提供真实的主动买卖量拆分，
+  // 平台正式计算走的是 internal/modules/cvdorderflow 的 SyntheticFlowProvider，
+  // 这里只是给画板一个直观的参考曲线，明确标"示意"。
+  function computeImbalanceProxy(candles, window) {
+    var out = new Array(candles.length).fill(null);
+    for (var i = 0; i < candles.length; i++) {
+      var start = Math.max(0, i - window + 1);
+      var buy = 0, sell = 0;
+      for (var j = start; j <= i; j++) {
+        if (candles[j].close >= candles[j].open) buy += candles[j].volume; else sell += candles[j].volume;
+      }
+      var total = buy + sell;
+      out[i] = total > 0 ? (buy - sell) / total : 0;
+    }
+    return out;
+  }
+
+  function refreshSubpaneSeries(key) {
+    var mod = state.modules.find(function (m) { return subpaneKeyFor(m.name) === key; });
+    if (!mod) return;
+    var sp = subpanes[key];
+    if (!sp || !state.candles.length) return;
+
+    if (mod.name === "macd_rsi") {
+      var period = intParam(mod, "rsi_period", 14);
+      var rsi = computeRSI(state.candles, period);
+      if (!sp.rsiSeries) sp.rsiSeries = sp.chart.addLineSeries({ color: "#2962ff", lineWidth: 2 });
+      sp.rsiSeries.setData(state.candles.map(function (c, i) {
+        return rsi[i] === null ? null : { time: c.time, value: rsi[i] };
+      }).filter(Boolean));
+      updateThresholdLine(key, "overbought", sp, floatParam(mod, "rsi_overbought", 70), "#ef5350", "超买", function (v) {
+        setModuleParam(mod, "rsi_overbought", clamp(v, 50, 95));
+      });
+      updateThresholdLine(key, "oversold", sp, floatParam(mod, "rsi_oversold", 30), "#26a69a", "超卖", function (v) {
+        setModuleParam(mod, "rsi_oversold", clamp(v, 5, 50));
+      });
+    }
+
+    if (mod.name === "cvd_orderflow") {
+      var win = intParam(mod, "window", 50);
+      var proxy = computeImbalanceProxy(state.candles, win);
+      if (!sp.cvdSeries) sp.cvdSeries = sp.chart.addLineSeries({ color: "#9c7cf4", lineWidth: 2 });
+      sp.cvdSeries.setData(state.candles.map(function (c, i) { return { time: c.time, value: proxy[i] }; }));
+      updateThresholdLine(key, "imbalance", sp, floatParam(mod, "imbalance_threshold", 0.25), "#ef5350", "失衡阈值", function (v) {
+        setModuleParam(mod, "imbalance_threshold", clamp(v, 0.01, 1));
+      });
+      updateThresholdLine(key, "divergence", sp, -floatParam(mod, "divergence_threshold", 0.15), "#f5a623", "背离阈值(负)", function (v) {
+        setModuleParam(mod, "divergence_threshold", clamp(-v, 0.01, 1));
+      });
+    }
+    syncPriceScaleWidths();
+  }
+
+  function updateThresholdLine(subKey, name, sp, value, color, label, onChange) {
+    var key = subKey + "_" + name;
+    var series = sp.rsiSeries || sp.cvdSeries;
+    if (dragLines[key]) { dragLines[key].setPrice(value); return; }
+    createDragLine(key, sp.chart, series, sp.wrap, value, color, label, onChange);
+  }
+
+  function subpaneKeyFor(moduleName) { return "sub_" + moduleName; }
+
+  // ---------- 模块管理 ----------
+
+  function intParam(mod, name, def) {
+    var v = mod.params[name];
+    return (v === undefined || v === null || v === "") ? def : parseInt(v, 10);
+  }
+  function floatParam(mod, name, def) {
+    var v = mod.params[name];
+    return (v === undefined || v === null || v === "") ? def : parseFloat(v);
+  }
+  function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
+
+  function setModuleParam(mod, name, value) {
+    mod.params[name] = value;
+    var input = els.moduleList.querySelector('[data-module-index="' + state.modules.indexOf(mod) + '"] [data-param="' + name + '"]');
+    if (input) input.value = value;
+    if (mod.name === "support_resistance") scheduleSupportResistancePreview();
+    if (mod.name === "fakeout") scheduleFakeoutPreview();
+    if (mod.name === "poc") schedulePOCPreview();
+    if (mod.name === "macd_rsi" || mod.name === "cvd_orderflow") refreshSubpaneSeries(subpaneKeyFor(mod.name));
+  }
+
+  function defaultParams(spec) {
+    var params = {};
+    spec.params.forEach(function (p) { if (p.default !== undefined && p.default !== null) params[p.name] = p.default; });
+    return params;
+  }
+
+  function addModule(name) {
+    if (state.modules.some(function (m) { return m.name === name; })) return;
+    var spec = moduleByName[name];
+    if (!spec) return;
+    state.modules.push({ name: name, params: defaultParams(spec), weight: null, timeframe: null });
+    renderModuleList();
+    onModulesChanged();
+  }
+
+  function removeModule(index) {
+    var mod = state.modules[index];
+    if (mod.name === "macd_rsi" || mod.name === "cvd_orderflow") removeSubpane(subpaneKeyFor(mod.name));
+    ["_overbought", "_oversold", "_imbalance", "_divergence"].forEach(function (suf) {
+      removeDragLine(subpaneKeyFor(mod.name) + suf);
+    });
+    if (mod.name === "volume_breakout") removeDragLine("vb_multiplier");
+    state.modules.splice(index, 1);
+    renderModuleList();
+    onModulesChanged();
+  }
+
+  function clearAllModules() {
+    while (state.modules.length) removeModule(0);
+  }
+
+  // applyStrategyConfig 把 Agent 翻译出的配置（还没入库，只是提案）实际画到画板上：
+  // 清空当前模块、按翻译结果重建模块列表和风控字段，交给已有的渲染管线（跟手动点
+  // "添加模块"、手动拖线走的是同一套 renderModuleList/onModulesChanged/refreshRiskLines），
+  // 而不是另外发明一套"文字转图形"的展示逻辑——这样保证图上画出来的东西，
+  // 跟你真正点"确认无误，保存"时存下去的是同一份数据，不会出现两份实现互相漂移。
+  //
+  // cfg 是 wizard_confirm_fragment 里嵌的 ConfigJSON（handlers_wizard.go 里
+  // json.Marshal(*p.Config) 的结果），字段形状照抄 pkg/types.StrategyConfig 的
+  // json 标签：decimal 金额是字符串、时长是 "4h0m0s" 这样的 Go duration 字符串。
+  function applyStrategyConfig(cfg) {
+    if (!cfg) return;
+
+    els.strategyName.value = cfg.name || (SYMBOL + " 画板策略");
+    var needsTimeframeSwitch = cfg.timeframe && cfg.timeframe !== state.timeframe;
+
+    clearAllModules();
+
+    els.combineSelect.value = (cfg.combine === "WEIGHTED") ? "WEIGHTED" : "ALL";
+    els.thresholdField.style.display = els.combineSelect.value === "WEIGHTED" ? "" : "none";
+    if (cfg.threshold) els.thresholdInput.value = cfg.threshold;
+
+    (cfg.modules || []).forEach(function (m) {
+      var spec = moduleByName[m.module];
+      // 模型可能只给了它想强调的几个参数，其余留给系统默认值——用模块自己的
+      // defaultParams 打底，再拿翻译结果覆盖，画板上显示的就是"实际会生效"的完整参数，
+      // 不是一份看着不完整的半成品。
+      var params = Object.assign({}, spec ? defaultParams(spec) : {}, m.params || {});
+      state.modules.push({ name: m.module, params: params, weight: m.weight || null, timeframe: m.timeframe || null });
+    });
+
+    var risk = cfg.risk || {};
+    els.riskSizingMode.value = (risk.position_sizing_mode === "risk_pct") ? "risk_pct" : "fixed_quote";
+    els.riskAccountEquity.value = risk.account_equity_quote || 0;
+    els.riskPerTradePct.value = risk.risk_per_trade_pct ? (risk.risk_per_trade_pct * 100) : 0;
+    onRiskSizingModeChanged();
+    els.riskMaxPos.value = risk.max_position_size_quote || 0;
+    els.riskMaxDailyLoss.value = (parseFloat(risk.max_daily_loss_quote) > 0) ? risk.max_daily_loss_quote : "";
+    els.riskMaxHolding.value = (risk.max_holding_period && risk.max_holding_period !== "0s") ? risk.max_holding_period : "";
+    // stop_loss_mode/take_profit_mode 在 pct 模式下会因为 Go 的 omitempty 被整个省略掉，
+    // 空值/undefined 都要按 "pct" 处理。
+    var LEVEL_MODES = ["support_resistance", "poc"];
+    els.riskStopLossMode.value = LEVEL_MODES.indexOf(risk.stop_loss_mode) !== -1 ? risk.stop_loss_mode : "pct";
+    els.riskTakeProfitMode.value = LEVEL_MODES.indexOf(risk.take_profit_mode) !== -1 ? risk.take_profit_mode : "pct";
+    els.riskStopLoss.value = risk.stop_loss_pct ? (risk.stop_loss_pct * 100) : 0;
+    els.riskTakeProfit.value = risk.take_profit_pct ? (risk.take_profit_pct * 100) : 0;
+    els.riskStopLossField.style.display = (els.riskStopLossMode.value !== "pct") ? "none" : "";
+    els.riskTakeProfitField.style.display = (els.riskTakeProfitMode.value !== "pct") ? "none" : "";
+    els.riskLevelModeHint.style.display =
+      (els.riskStopLossMode.value !== "pct" || els.riskTakeProfitMode.value !== "pct")
+        ? "" : "none";
+
+    function finish() {
+      renderModuleList();
+      onModulesChanged();
+      refreshRiskLines();
+    }
+
+    if (needsTimeframeSwitch) {
+      state.timeframe = cfg.timeframe;
+      els.timeframeSelect.value = cfg.timeframe;
+      loadCandles().then(finish);
+    } else {
+      finish();
+    }
+  }
+
+  function onModulesChanged() {
+    refreshVolumeBreakoutLine();
+    refreshSupportResistancePreview();
+    refreshFakeoutPreview();
+    refreshPOCPreview();
+    state.modules.forEach(function (m) {
+      if (m.name === "macd_rsi") { ensureSubpane(subpaneKeyFor(m.name), "MACD/RSI 预览（浏览器现算，仅供参考）"); refreshSubpaneSeries(subpaneKeyFor(m.name)); }
+      if (m.name === "cvd_orderflow") { ensureSubpane(subpaneKeyFor(m.name), "CVD 示意（非真实主动买卖量拆分）"); refreshSubpaneSeries(subpaneKeyFor(m.name)); }
+    });
+    renderModuleSelect();
+    var hint = document.getElementById("chart-empty-hint");
+    if (hint) hint.style.display = state.modules.length ? "none" : "";
+  }
+
+  function refreshVolumeBreakoutLine() {
+    var mod = state.modules.find(function (m) { return m.name === "volume_breakout"; });
+    if (!mod || !state.candles.length) { removeDragLine("vb_multiplier"); return; }
+    var win = intParam(mod, "window", 20);
+    var mult = floatParam(mod, "multiplier", 2.0);
+    var closeSlice = state.candles.slice(-win);
+    var avgVol = closeSlice.reduce(function (s, c) { return s + c.volume; }, 0) / (closeSlice.length || 1);
+    var thresholdVol = avgVol * mult;
+
+    if (dragLines["vb_multiplier"]) { dragLines["vb_multiplier"].setPrice(thresholdVol); return; }
+    createDragLine("vb_multiplier", mainChart, volumeSeries, els.mainChartEl, thresholdVol, "#f5a623", "量能阈值", function (v) {
+      var newMult = avgVol > 0 ? v / avgVol : mult;
+      setModuleParam(mod, "multiplier", Math.max(1, Math.round(newMult * 100) / 100));
+    });
+  }
+
+  function renderModuleSelect() {
+    var used = state.modules.map(function (m) { return m.name; });
+    els.moduleSelect.innerHTML = "";
+    moduleCatalog.forEach(function (spec) {
+      if (used.indexOf(spec.name) !== -1) return;
+      var opt = document.createElement("option");
+      opt.value = spec.name;
+      opt.textContent = spec.name;
+      els.moduleSelect.appendChild(opt);
+    });
+  }
+
+  // 跟 <select id="timeframe-select"> 同一份枚举（pkg/types.SupportedTimeframes），
+  // 每张模块卡片自己的周期下拉框也用它。
+  var TIMEFRAME_OPTIONS = ["1m", "5m", "15m", "1h", "4h", "1d"];
+
+  // 有实时预览、值得在模块卡片里显示"当前算出了什么"的模块。
+  var PREVIEW_STATUS_MODULES = ["support_resistance", "fakeout", "poc"];
+
+  // setPreviewStatus 把预览算出来的结果用文字写进对应模块卡片里，kind 控制
+  // 一点点颜色区分（"not-found" 淡灰斜体、"hit" 橙色加粗、其余默认）。
+  function setPreviewStatus(modName, text, kind) {
+    var idx = state.modules.findIndex(function (m) { return m.name === modName; });
+    if (idx === -1) return;
+    var card = els.moduleList.querySelector('[data-module-index="' + idx + '"]');
+    var el = card && card.querySelector("[data-preview-status]");
+    if (!el) return;
+    el.textContent = text;
+    el.className = "preview-status" + (kind ? " " + kind : "");
+  }
+
+  var DRAGGABLE_HINT = {
+    volume_breakout: "multiplier 可在主图成交量区拖拽设置",
+    macd_rsi: "rsi_overbought / rsi_oversold 可在下方副图拖拽设置",
+    cvd_orderflow: "imbalance_threshold / divergence_threshold 可在下方副图拖拽设置",
+    support_resistance: "本模块不支持手动指定价位，下方主图上的虚线是当前参数下的实时预览",
+    fakeout: "本模块不支持手动指定价位，检测的是盘整区间高/低点'突破后又收回'这个模式；下方主图上的两条虚线是当前识别出的区间前高/前低，命中假突破时会额外画出一条醒目的橙色实线",
+    poc: "本模块不支持手动指定价位，下方主图上的紫色虚线是当前参数下的 POC 实时预览；POC 是基于 K 线的粗粒度近似，不是精确的逐笔成交量分布"
+  };
+
+  function renderModuleList() {
+    els.moduleList.innerHTML = "";
+    state.modules.forEach(function (mod, idx) {
+      var spec = moduleByName[mod.name];
+      var card = document.createElement("div");
+      card.className = "module-card";
+      card.setAttribute("data-module-index", idx);
+
+      var head = document.createElement("div");
+      head.className = "module-card-head";
+      var title = document.createElement("strong");
+      title.textContent = mod.name;
+      var removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.className = "remove-btn";
+      removeBtn.textContent = "✕";
+      removeBtn.addEventListener("click", function () { removeModule(idx); });
+      head.appendChild(title);
+      head.appendChild(removeBtn);
+      card.appendChild(head);
+
+      var desc = document.createElement("p");
+      desc.className = "desc truncate-1";
+      desc.textContent = spec ? spec.description : "";
+      desc.title = spec ? spec.description : "";
+      card.appendChild(desc);
+
+      if (DRAGGABLE_HINT[mod.name]) {
+        var hint = document.createElement("p");
+        hint.className = "draggable-hint truncate-1";
+        hint.textContent = DRAGGABLE_HINT[mod.name];
+        hint.title = DRAGGABLE_HINT[mod.name];
+        card.appendChild(hint);
+      }
+
+      if (PREVIEW_STATUS_MODULES.indexOf(mod.name) !== -1) {
+        var status = document.createElement("p");
+        status.className = "preview-status";
+        status.setAttribute("data-preview-status", "1");
+        status.textContent = "预览中…";
+        card.appendChild(status);
+      }
+
+      // 模块自己的周期：留空＝跟随策略触发周期（图表当前显示的那个）。多周期策略
+      // 靠它表达"这个模块用更慢的周期判断背景条件"，比如 1 小时判断盘整假突破、
+      // 15 分钟判断放量下跌触发——两个模块各自的周期都是各自的判断逻辑本身，不是
+      // 装饰性设置，所以不像 weight 字段那样只在 WEIGHTED 组合下才显示。
+      var tfField = document.createElement("div");
+      tfField.className = "field";
+      var tfLabel = document.createElement("label");
+      tfLabel.textContent = "周期";
+      tfLabel.title = "该模块使用的周期，留空则跟随策略触发周期";
+      var tfSelect = document.createElement("select");
+      var tfDefaultOpt = document.createElement("option");
+      tfDefaultOpt.value = "";
+      tfDefaultOpt.textContent = "跟随主周期（" + state.timeframe + "）";
+      tfSelect.appendChild(tfDefaultOpt);
+      TIMEFRAME_OPTIONS.forEach(function (tf) {
+        var opt = document.createElement("option");
+        opt.value = tf;
+        opt.textContent = tf;
+        tfSelect.appendChild(opt);
+      });
+      tfSelect.value = mod.timeframe || "";
+      tfSelect.addEventListener("change", function () {
+        mod.timeframe = tfSelect.value || null;
+        onModulesChanged();
+      });
+      tfField.appendChild(tfLabel);
+      tfField.appendChild(tfSelect);
+      card.appendChild(tfField);
+
+      (spec ? spec.params : []).forEach(function (p) {
+        card.appendChild(paramField(mod, idx, p));
+      });
+
+      if (els.combineSelect.value === "WEIGHTED") {
+        var wf = document.createElement("div");
+        wf.className = "field";
+        var wl = document.createElement("label");
+        wl.textContent = "weight（权重，(0,1]）";
+        var wi = document.createElement("input");
+        wi.type = "number"; wi.min = "0.01"; wi.max = "1"; wi.step = "0.01";
+        wi.value = mod.weight || 1;
+        wi.addEventListener("input", function () { mod.weight = parseFloat(wi.value) || null; });
+        wf.appendChild(wl); wf.appendChild(wi);
+        card.appendChild(wf);
+      }
+
+      els.moduleList.appendChild(card);
+    });
+    if (!state.modules.length) {
+      var empty = document.createElement("p");
+      empty.className = "empty-note";
+      empty.textContent = "还没有添加任何模块。";
+      els.moduleList.appendChild(empty);
+    }
+  }
+
+  function paramField(mod, idx, spec) {
+    var field = document.createElement("div");
+    field.className = "field";
+    var label = document.createElement("label");
+    label.textContent = spec.name;
+    label.title = spec.description; // 完整说明放 title，鼠标停留就能看，不常驻占地方
+    field.appendChild(label);
+
+    var value = mod.params[spec.name];
+    var input;
+    if (spec.type === "string" && spec.enum && spec.enum.length) {
+      input = document.createElement("select");
+      spec.enum.forEach(function (opt) {
+        var o = document.createElement("option");
+        o.value = opt; o.textContent = opt;
+        if (opt === value) o.selected = true;
+        input.appendChild(o);
+      });
+      input.addEventListener("change", function () { setModuleParam(mod, spec.name, input.value); });
+    } else if (spec.type === "bool") {
+      input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = !!value;
+      input.addEventListener("change", function () { setModuleParam(mod, spec.name, input.checked); });
+    } else {
+      input = document.createElement("input");
+      input.type = "number";
+      if (spec.type === "int") input.step = "1"; else input.step = "any";
+      if (spec.min !== undefined && spec.min !== null) input.min = spec.min;
+      if (spec.max !== undefined && spec.max !== null) input.max = spec.max;
+      if (value !== undefined && value !== null) input.value = value;
+      input.addEventListener("input", function () {
+        var v = spec.type === "int" ? parseInt(input.value, 10) : parseFloat(input.value);
+        if (!isNaN(v)) setModuleParam(mod, spec.name, v);
+      });
+    }
+    input.setAttribute("data-param", spec.name);
+    field.appendChild(input);
+    return field;
+  }
+
+  // ---------- 装配提交给 /builder/describe 的配置 ----------
+
+  function buildWireConfig() {
+    var modules = state.modules.map(function (m) {
+      var out = { module: m.name, params: m.params };
+      if (els.combineSelect.value === "WEIGHTED" && m.weight) out.weight = m.weight;
+      if (m.timeframe) out.timeframe = m.timeframe;
+      return out;
+    });
+    var risk = { max_position_size_quote: els.riskMaxPos.value || "0" };
+    if (els.riskSizingMode.value === "risk_pct") {
+      risk.position_sizing_mode = "risk_pct";
+      risk.account_equity_quote = els.riskAccountEquity.value || "0";
+      var rpt = parseFloat(els.riskPerTradePct.value);
+      if (rpt > 0) risk.risk_per_trade_pct = rpt / 100;
+    }
+    if (els.riskMaxDailyLoss.value) risk.max_daily_loss_quote = els.riskMaxDailyLoss.value;
+    if (els.riskMaxHolding.value.trim()) risk.max_holding_period = els.riskMaxHolding.value.trim();
+    if (els.riskStopLossMode.value !== "pct") {
+      risk.stop_loss_mode = els.riskStopLossMode.value;
+    } else {
+      var sl = parseFloat(els.riskStopLoss.value);
+      if (sl > 0) risk.stop_loss_pct = sl / 100;
+    }
+    if (els.riskTakeProfitMode.value !== "pct") {
+      risk.take_profit_mode = els.riskTakeProfitMode.value;
+    } else {
+      var tp = parseFloat(els.riskTakeProfit.value);
+      if (tp > 0) risk.take_profit_pct = tp / 100;
+    }
+
+    var cfg = {
+      name: els.strategyName.value.trim() || (SYMBOL + " 画板策略"),
+      symbol: SYMBOL,
+      timeframe: state.timeframe,
+      combine: els.combineSelect.value,
+      modules: modules,
+      risk: risk
+    };
+    if (els.combineSelect.value === "WEIGHTED") cfg.threshold = parseFloat(els.thresholdInput.value) || 0.5;
+    return cfg;
+  }
+
+  function submitDescribe() {
+    if (!state.modules.length) {
+      els.wizardStep.innerHTML = '<p class="warn">还没有添加任何模块，无法生成配置。</p>';
+      return;
+    }
+    els.describeBtn.disabled = true;
+    els.describeBtn.textContent = "生成中…";
+    fetch("/builder/describe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(buildWireConfig())
+    }).then(function (r) { return r.text(); })
+      .then(function (html) {
+        els.wizardStep.innerHTML = html;
+        if (window.htmx) window.htmx.process(els.wizardStep);
+        els.wizardStep.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      })
+      .catch(function (err) {
+        els.wizardStep.innerHTML = '<p class="warn">请求失败：' + String(err) + "</p>";
+      })
+      .finally(function () {
+        els.describeBtn.disabled = false;
+        els.describeBtn.textContent = "生成配置摘要";
+      });
+  }
+
+  // ---------- 事件绑定 + 初始化 ----------
+
+  els.timeframeSelect.addEventListener("change", function () {
+    state.timeframe = els.timeframeSelect.value;
+    loadCandles();
+    if (els.watchLayout.style.display !== "none") ensureTVWidget();
+  });
+  els.combineSelect.addEventListener("change", function () {
+    els.thresholdField.style.display = els.combineSelect.value === "WEIGHTED" ? "" : "none";
+    renderModuleList();
+  });
+  els.addModuleBtn.addEventListener("click", function () {
+    if (els.moduleSelect.value) addModule(els.moduleSelect.value);
+  });
+  els.describeBtn.addEventListener("click", submitDescribe);
+
+  // "用自己的话描述交易计划"走的是真正的 htmx hx-post 表单（跟文字向导同款），
+  // 不是像 submitDescribe 那样手动 fetch + 塞 innerHTML，所以能借 htmx 自己的
+  // htmx:afterSwap 事件知道"这次换进 #wizard-step 的内容里有没有配置可以画到图上"——
+  // 澄清追问、取消、保存成功/失败这些结果都不带 #wizard-proposal-config，
+  // 这里直接跳过，不需要按 outcome 分别处理。
+  //
+  // 每次换进 #wizard-step 的内容都顺手滚动过去、并把提交按钮恢复成可点——这两步
+  // 之前漏了：输入框在侧栏最上面，#wizard-step 在最下面，中间隔着"组合方式""模块"
+  // "风控"好几块，按钮点完也没有任何"处理中"的视觉反馈；真实用过一次才发现，
+  // 哪怕模型几秒内就回复了，用户也完全看不出发生了什么，跟没反应一模一样。
+  els.wizardStep.addEventListener("htmx:afterSwap", function () {
+    var el = document.getElementById("wizard-proposal-config");
+    if (el) {
+      try {
+        applyStrategyConfig(JSON.parse(el.getAttribute("data-config")));
+      } catch (e) {
+        console.error("解析 Agent 翻译结果失败", e);
+      }
+    }
+    els.wizardStep.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  });
+
+  // "已取消"/"翻译失败"/"已保存"这些结果片段（wizard_result.html、wizard_error_fragment）
+  // 是文字向导和可视化建策共用的模板，里面"重新开始"/"再建一个"链接写死指向 /wizard——
+  // 在画板页里点它是一次整页跳转，会离开图表、只剩下 /wizard 那个没有图的纯对话页。
+  // 在这里拦掉这一个特定链接（只认精确的 "/wizard"，"/strategies/…" 这类真正需要跳转
+  // 的链接不受影响），改成清空 #wizard-step、清空并聚焦回顶部的自然语言输入框——
+  // 用户留在同一张图上，图上已经画出来的东西（模块、参考线）也都还在，可以直接重试。
+  els.wizardStep.addEventListener("click", function (e) {
+    var a = e.target.closest('a[href="/wizard"]');
+    if (!a) return;
+    e.preventDefault();
+    els.wizardStep.innerHTML = "";
+    if (els.nlPlanInput) {
+      els.nlPlanInput.value = "";
+      els.nlPlanInput.focus();
+    }
+  });
+
+  // "重新开始"：保证下一次"生成到图上"是完全独立的一轮——不是说之前不独立（每次提交
+  // 顶部这个表单本来就不会带上任何更早的对话历史，server 端 handleBuilderTranslate
+  // 传的是 nil），而是"你的回答"追问框会不断把已经说过的话往同一轮对话历史里叠加，
+  // 用户中途改主意（比如从1小时改成4小时）又是在追问框里改的话，历史里会同时留着
+  // 两种矛盾的说法，Agent 分不清该信哪个，会不停反问。真正解决它不需要新的后端
+  // 机制——清空 #wizard-step（把追问框连带它攒的历史一起扔掉）、清空输入框，
+  // 用户重新完整地说一遍规则，天然就是全新一轮，没有任何历史包袱。
+  if (els.nlPlanResetBtn) {
+    els.nlPlanResetBtn.addEventListener("click", function () {
+      els.wizardStep.innerHTML = "";
+      els.nlPlanInput.value = "";
+      els.nlPlanInput.focus();
+    });
+  }
+
+  if (els.nlPlanForm) {
+    els.nlPlanForm.addEventListener("htmx:beforeRequest", function () {
+      els.nlPlanBtn.disabled = true;
+      els.nlPlanBtn.textContent = "生成中…";
+    });
+    els.nlPlanForm.addEventListener("htmx:afterRequest", function () {
+      els.nlPlanBtn.disabled = false;
+      els.nlPlanBtn.textContent = "生成到图上";
+    });
+    // htmx 默认只处理网络层失败时的事件（服务端从不返回非 2xx，见 renderFragment），
+    // 这里兜个底：真的连不上（比如页面已经不在这个域名下、离线）也给个看得见的提示，
+    // 而不是按钮一直卡在"生成中…"。
+    els.nlPlanForm.addEventListener("htmx:sendError", function () {
+      els.wizardStep.innerHTML = '<p class="warn">请求发送失败，请检查网络后重试。</p>';
+      els.wizardStep.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+  }
+
+  // applyInitialStrategyConfig 是页面刚打开时那一次性的"回放"：如果是从策略详情页
+  // 带着 ?strategy=<id> 跳过来的，#builder-initial-config 里就有那条策略当前配置的
+  // JSON，交给 applyStrategyConfig 走跟手动拖拽、跟自然语言翻译完全相同的渲染管线。
+  // 必须等 moduleCatalog（模块默认参数）和 state.candles（画阈值线要用到最近K线）
+  // 都已经加载完再调，所以挂在 init() 的 loadCandles 之后，不是页面一开场就调。
+  function applyInitialStrategyConfig() {
+    var el = document.getElementById("builder-initial-config");
+    if (!el) return;
+    var raw = el.getAttribute("data-config");
+    if (!raw) return;
+    try {
+      applyStrategyConfig(JSON.parse(raw));
+    } catch (e) {
+      console.error("加载策略初始配置失败", e);
+    }
+  }
+
+  function init() {
+    initMainChart();
+    initChartResizeHandle();
+    initViewModeToggle();
+    fetch("/api/modules").then(function (r) { return r.json(); }).then(function (data) {
+      moduleCatalog = data || [];
+      moduleCatalog.forEach(function (m) { moduleByName[m.name] = m; });
+      renderModuleSelect();
+    }).then(loadCandles).then(applyInitialStrategyConfig);
+  }
+  init();
+})();
+</script>
+</body>
+</html>
+{{end}}
