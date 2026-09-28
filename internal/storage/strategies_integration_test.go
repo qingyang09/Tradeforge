@@ -1,6 +1,6 @@
 //go:build integration
 
-// 需要 docker-compose 起的 Postgres 才能运行：
+// Requires a Postgres started via docker-compose to run:
 //
 //	docker compose up -d
 //	go test -tags=integration ./internal/storage/... -run Strategy -v
@@ -17,12 +17,14 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// TestGetStrategyReadsCreatedUpdatedFromColumnsNotConfigBlob 是真实复现过的 bug 的
-// 回归测试：SaveStrategy 传进来的 cfg.CreatedAt/UpdatedAt 是调用方随手带的一份
-// 快照（很多调用路径根本没填，是 Go 零值），但 created_at/updated_at 这两列由
-// 数据库自己用 now() 维护，是可信的。GetStrategy/ListStrategies 之前只把 State
-// 从独立列覆盖回 config，漏了这两个时间字段，导致界面上真实出现过
-// "0001-01-01 00:00" 这种从未被写过的零值时间。
+// TestGetStrategyReadsCreatedUpdatedFromColumnsNotConfigBlob is a regression test for a
+// bug that actually reproduced in practice: the cfg.CreatedAt/UpdatedAt passed into
+// SaveStrategy is just whatever snapshot the caller happens to carry (many call paths
+// don't set it at all, leaving it as the Go zero value), but the created_at/updated_at
+// columns are maintained by the database itself via now() and are trustworthy.
+// GetStrategy/ListStrategies used to only overlay State from its dedicated column back
+// onto config and missed these two time fields, which really did cause the UI to show a
+// zero value time like "0001-01-01 00:00" that was never actually written.
 func TestGetStrategyReadsCreatedUpdatedFromColumnsNotConfigBlob(t *testing.T) {
 	cfg := config.Load()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -30,52 +32,53 @@ func TestGetStrategyReadsCreatedUpdatedFromColumnsNotConfigBlob(t *testing.T) {
 
 	store, err := Open(ctx, cfg.Postgres)
 	if err != nil {
-		t.Fatalf("连接 Postgres 失败：%v", err)
+		t.Fatalf("connecting to Postgres: %v", err)
 	}
 	defer store.Close()
 
 	u := createTestUserForStorage(ctx, t, store, "strategies-created-updated")
 	defer func() {
 		if _, err := store.pool.Exec(context.Background(), `DELETE FROM users WHERE id = $1`, u.ID); err != nil {
-			t.Errorf("清理测试数据失败：%v", err)
+			t.Errorf("cleaning up test data: %v", err)
 		}
 	}()
 
 	sc := newTestStrategy(t, u.ID)
-	// 故意不填 CreatedAt/UpdatedAt，模拟"调用方没带这两个字段"的真实场景
-	// （sc.CreatedAt/UpdatedAt 此时是 Go 零值 time.Time{}）。
+	// Deliberately leave CreatedAt/UpdatedAt unset, simulating the real-world scenario
+	// where "the caller didn't provide these two fields" (sc.CreatedAt/UpdatedAt is the
+	// Go zero value time.Time{} at this point).
 	before := time.Now().Add(-time.Second)
 	if err := store.SaveStrategy(ctx, sc); err != nil {
-		t.Fatalf("保存策略失败：%v", err)
+		t.Fatalf("saving strategy: %v", err)
 	}
 
 	got, err := store.GetStrategy(ctx, u.ID, sc.ID)
 	if err != nil {
-		t.Fatalf("读取策略失败：%v", err)
+		t.Fatalf("reading strategy: %v", err)
 	}
 	if got.CreatedAt.IsZero() || got.UpdatedAt.IsZero() {
-		t.Fatalf("CreatedAt/UpdatedAt 不应为零值：%+v", got)
+		t.Fatalf("CreatedAt/UpdatedAt should not be zero: %+v", got)
 	}
 	if got.CreatedAt.Before(before) {
-		t.Errorf("CreatedAt = %s，应该晚于测试开始时间 %s（说明用的是数据库的 now()，不是零值）",
+		t.Errorf("CreatedAt = %s, should be after the test start time %s (meaning it came from the database's now(), not a zero value)",
 			got.CreatedAt, before)
 	}
 
 	list, err := store.ListStrategies(ctx, u.ID)
 	if err != nil {
-		t.Fatalf("列出策略失败：%v", err)
+		t.Fatalf("listing strategies: %v", err)
 	}
 	found := false
 	for _, s := range list {
 		if s.ID == sc.ID {
 			found = true
 			if s.CreatedAt.IsZero() {
-				t.Errorf("ListStrategies 里这条策略的 CreatedAt 也不应为零值")
+				t.Errorf("this strategy's CreatedAt in ListStrategies should also not be zero")
 			}
 		}
 	}
 	if !found {
-		t.Fatal("ListStrategies 没有返回刚保存的策略")
+		t.Fatal("ListStrategies did not return the strategy just saved")
 	}
 }
 
@@ -86,20 +89,20 @@ func TestDeleteStrategyCascadesToBacktestResults(t *testing.T) {
 
 	store, err := Open(ctx, cfg.Postgres)
 	if err != nil {
-		t.Fatalf("连接 Postgres 失败：%v", err)
+		t.Fatalf("connecting to Postgres: %v", err)
 	}
 	defer store.Close()
 
 	u := createTestUserForStorage(ctx, t, store, "strategies-delete-cascade")
 	defer func() {
 		if _, err := store.pool.Exec(context.Background(), `DELETE FROM users WHERE id = $1`, u.ID); err != nil {
-			t.Errorf("清理测试数据失败：%v", err)
+			t.Errorf("cleaning up test data: %v", err)
 		}
 	}()
 
 	sc := newTestStrategy(t, u.ID)
 	if err := store.SaveStrategy(ctx, sc); err != nil {
-		t.Fatalf("保存策略失败：%v", err)
+		t.Fatalf("saving strategy: %v", err)
 	}
 
 	btID := idgen.NewUUID()
@@ -110,18 +113,18 @@ func TestDeleteStrategyCascadesToBacktestResults(t *testing.T) {
 		) VALUES ($1, $2, $3, '{}', '{}', '{}', '[]', '{}', '1000', now(), now(), 'test')`,
 		btID, sc.ID, sc.Symbol)
 	if err != nil {
-		t.Fatalf("写入测试回测结果失败：%v", err)
+		t.Fatalf("writing test backtest result: %v", err)
 	}
 
 	if err := store.DeleteStrategy(ctx, u.ID, sc.ID); err != nil {
-		t.Fatalf("删除策略失败：%v", err)
+		t.Fatalf("deleting strategy: %v", err)
 	}
 
 	if _, err := store.GetStrategy(ctx, u.ID, sc.ID); !errors.Is(err, ErrNotFound) {
-		t.Errorf("删除后再读取应该返回 ErrNotFound，实际：%v", err)
+		t.Errorf("reading after deletion should return ErrNotFound, got: %v", err)
 	}
 	if _, err := store.LatestBacktestResult(ctx, u.ID, sc.ID); !errors.Is(err, ErrNotFound) {
-		t.Errorf("删除策略应该级联删掉关联的回测结果，实际读到：%v", err)
+		t.Errorf("deleting a strategy should cascade-delete its associated backtest results, got: %v", err)
 	}
 }
 
@@ -132,25 +135,26 @@ func TestDeleteStrategyErrorsWhenNotFound(t *testing.T) {
 
 	store, err := Open(ctx, cfg.Postgres)
 	if err != nil {
-		t.Fatalf("连接 Postgres 失败：%v", err)
+		t.Fatalf("connecting to Postgres: %v", err)
 	}
 	defer store.Close()
 
 	u := createTestUserForStorage(ctx, t, store, "strategies-delete-not-found")
 	defer func() {
 		if _, err := store.pool.Exec(context.Background(), `DELETE FROM users WHERE id = $1`, u.ID); err != nil {
-			t.Errorf("清理测试数据失败：%v", err)
+			t.Errorf("cleaning up test data: %v", err)
 		}
 	}()
 
 	if err := store.DeleteStrategy(ctx, u.ID, idgen.NewUUID()); !errors.Is(err, ErrNotFound) {
-		t.Errorf("删除不存在的策略应该返回 ErrNotFound，实际：%v", err)
+		t.Errorf("deleting a nonexistent strategy should return ErrNotFound, got: %v", err)
 	}
 }
 
-// TestSaveStrategyRejectsCrossUserOverwrite 是设计阶段发现的真实漏洞的回归测试：
-// SaveStrategy 用 id 做 upsert，如果不校验所有权，B 用户拿着 A 用户已存在的策略 id
-// 调用 SaveStrategy 就能悄悄覆盖 A 的策略内容。
+// TestSaveStrategyRejectsCrossUserOverwrite is a regression test for a real
+// vulnerability found during design: SaveStrategy upserts by id, and without an
+// ownership check, user B could quietly overwrite user A's strategy content by calling
+// SaveStrategy with A's existing strategy id.
 func TestSaveStrategyRejectsCrossUserOverwrite(t *testing.T) {
 	cfg := config.Load()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -158,7 +162,7 @@ func TestSaveStrategyRejectsCrossUserOverwrite(t *testing.T) {
 
 	store, err := Open(ctx, cfg.Postgres)
 	if err != nil {
-		t.Fatalf("连接 Postgres 失败：%v", err)
+		t.Fatalf("connecting to Postgres: %v", err)
 	}
 	defer store.Close()
 
@@ -167,35 +171,36 @@ func TestSaveStrategyRejectsCrossUserOverwrite(t *testing.T) {
 	defer func() {
 		if _, err := store.pool.Exec(context.Background(),
 			`DELETE FROM users WHERE id = ANY($1)`, []string{userA.ID, userB.ID}); err != nil {
-			t.Errorf("清理测试数据失败：%v", err)
+			t.Errorf("cleaning up test data: %v", err)
 		}
 	}()
 
 	scA := newTestStrategy(t, userA.ID)
 	if err := store.SaveStrategy(ctx, scA); err != nil {
-		t.Fatalf("A 保存策略失败：%v", err)
+		t.Fatalf("A saving strategy: %v", err)
 	}
 
-	// B 伪造一份携带 A 的策略 id 的配置，尝试用自己的身份覆盖。
+	// B forges a config carrying A's strategy id and tries to overwrite it under B's own identity.
 	forged := newTestStrategy(t, userB.ID)
 	forged.ID = scA.ID
-	forged.Name = "被 B 篡改的名字"
+	forged.Name = "name tampered with by B"
 	if err := store.SaveStrategy(ctx, forged); !errors.Is(err, ErrNotFound) {
-		t.Errorf("B 用自己的 UserID 覆盖 A 的策略 id 应该返回 ErrNotFound，实际：%v", err)
+		t.Errorf("B overwriting A's strategy id with B's own UserID should return ErrNotFound, got: %v", err)
 	}
 
-	// A 的策略必须原封不动。
+	// A's strategy must be untouched.
 	got, err := store.GetStrategy(ctx, userA.ID, scA.ID)
 	if err != nil {
-		t.Fatalf("读取 A 的策略失败：%v", err)
+		t.Fatalf("reading A's strategy: %v", err)
 	}
 	if got.Name != scA.Name {
-		t.Errorf("A 的策略名字应保持不变，实际变成了 %q", got.Name)
+		t.Errorf("A's strategy name should remain unchanged, got %q", got.Name)
 	}
 }
 
-// TestStrategyGetDeleteRejectOtherUsersRow 是多用户隔离的核心属性：B 用户 Get/Delete
-// A 用户的策略，得到的错误必须跟"这条策略根本不存在"完全一样。
+// TestStrategyGetDeleteRejectOtherUsersRow covers the core property of multi-user
+// isolation: when user B Get/Deletes user A's strategy, the error must be identical to
+// the strategy simply not existing.
 func TestStrategyGetDeleteRejectOtherUsersRow(t *testing.T) {
 	cfg := config.Load()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -203,7 +208,7 @@ func TestStrategyGetDeleteRejectOtherUsersRow(t *testing.T) {
 
 	store, err := Open(ctx, cfg.Postgres)
 	if err != nil {
-		t.Fatalf("连接 Postgres 失败：%v", err)
+		t.Fatalf("connecting to Postgres: %v", err)
 	}
 	defer store.Close()
 
@@ -212,32 +217,35 @@ func TestStrategyGetDeleteRejectOtherUsersRow(t *testing.T) {
 	defer func() {
 		if _, err := store.pool.Exec(context.Background(),
 			`DELETE FROM users WHERE id = ANY($1)`, []string{userA.ID, userB.ID}); err != nil {
-			t.Errorf("清理测试数据失败：%v", err)
+			t.Errorf("cleaning up test data: %v", err)
 		}
 	}()
 
 	sc := newTestStrategy(t, userA.ID)
 	if err := store.SaveStrategy(ctx, sc); err != nil {
-		t.Fatalf("保存策略失败：%v", err)
+		t.Fatalf("saving strategy: %v", err)
 	}
 
 	if _, err := store.GetStrategy(ctx, userB.ID, sc.ID); !errors.Is(err, ErrNotFound) {
-		t.Errorf("B 读取 A 的策略应该跟读一个不存在的 ID 一样返回 ErrNotFound，实际：%v", err)
+		t.Errorf("B reading A's strategy should return ErrNotFound just like reading a nonexistent ID, got: %v", err)
 	}
 	if err := store.DeleteStrategy(ctx, userB.ID, sc.ID); !errors.Is(err, ErrNotFound) {
-		t.Errorf("B 删除 A 的策略应该返回 ErrNotFound，实际：%v", err)
+		t.Errorf("B deleting A's strategy should return ErrNotFound, got: %v", err)
 	}
 
 	if _, err := store.GetStrategy(ctx, userA.ID, sc.ID); err != nil {
-		t.Errorf("A 的策略应该完好无损，实际读取失败：%v", err)
+		t.Errorf("A's strategy should remain intact, but reading it failed: %v", err)
 	}
 }
 
-// TestListStrategiesByStateAllUsersSpansMultipleUsers 验证多用户并发执行改造新增的
-// 跨用户查询方法：两个真实用户各自存一条目标状态的策略 + 一条别的状态的诱饵策略，
-// 断言跨用户方法能同时返回两个用户的目标状态策略，且状态过滤仍然生效（不会把诱饵
-// 策略也带出来）——这是证明 cmd/executor/cmd/signal-engine 的多用户模式能真的看到
-// "这个状态下所有用户的策略"的直接证据，不只是"参数传过去了"。
+// TestListStrategiesByStateAllUsersSpansMultipleUsers verifies the cross-user query
+// method added for the multi-user concurrent execution rework: two real users each save
+// a strategy in the target state plus a decoy strategy in a different state, and we
+// assert the cross-user method returns both users' target-state strategies at once while
+// the state filter still holds (the decoy strategies are not pulled in too) — this is
+// direct proof that cmd/executor/cmd/signal-engine's multi-user mode can actually see
+// "every user's strategies in this state," not just that the parameter was passed
+// through.
 func TestListStrategiesByStateAllUsersSpansMultipleUsers(t *testing.T) {
 	cfg := config.Load()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -245,7 +253,7 @@ func TestListStrategiesByStateAllUsersSpansMultipleUsers(t *testing.T) {
 
 	store, err := Open(ctx, cfg.Postgres)
 	if err != nil {
-		t.Fatalf("连接 Postgres 失败：%v", err)
+		t.Fatalf("connecting to Postgres: %v", err)
 	}
 	defer store.Close()
 
@@ -254,32 +262,32 @@ func TestListStrategiesByStateAllUsersSpansMultipleUsers(t *testing.T) {
 	defer func() {
 		if _, err := store.pool.Exec(context.Background(),
 			`DELETE FROM users WHERE id = ANY($1)`, []string{userA.ID, userB.ID}); err != nil {
-			t.Errorf("清理测试数据失败：%v", err)
+			t.Errorf("cleaning up test data: %v", err)
 		}
 	}()
 
 	scA := newTestStrategy(t, userA.ID)
 	scA.State = types.StatePaperTrading
 	if err := store.SaveStrategy(ctx, scA); err != nil {
-		t.Fatalf("A 保存策略失败：%v", err)
+		t.Fatalf("A saving strategy: %v", err)
 	}
 
 	scB := newTestStrategy(t, userB.ID)
 	scB.State = types.StatePaperTrading
 	if err := store.SaveStrategy(ctx, scB); err != nil {
-		t.Fatalf("B 保存策略失败：%v", err)
+		t.Fatalf("B saving strategy: %v", err)
 	}
 
-	// 诱饵：A 的另一条策略，状态不是 PAPER_TRADING——不该出现在结果里。
+	// Decoy: another strategy of A's, not in PAPER_TRADING state — should not appear in the results.
 	decoy := newTestStrategy(t, userA.ID)
 	decoy.State = types.StateDraft
 	if err := store.SaveStrategy(ctx, decoy); err != nil {
-		t.Fatalf("保存诱饵策略失败：%v", err)
+		t.Fatalf("saving decoy strategy: %v", err)
 	}
 
 	got, err := store.ListStrategiesByStateAllUsers(ctx, types.StatePaperTrading)
 	if err != nil {
-		t.Fatalf("跨用户查询失败：%v", err)
+		t.Fatalf("cross-user query: %v", err)
 	}
 
 	gotIDs := make(map[string]string, len(got)) // id -> user_id
@@ -287,19 +295,21 @@ func TestListStrategiesByStateAllUsersSpansMultipleUsers(t *testing.T) {
 		gotIDs[s.ID] = s.UserID
 	}
 	if gotIDs[scA.ID] != userA.ID {
-		t.Errorf("应该包含 A 的策略且 UserID 正确，实际：%+v", gotIDs)
+		t.Errorf("should include A's strategy with the correct UserID, got: %+v", gotIDs)
 	}
 	if gotIDs[scB.ID] != userB.ID {
-		t.Errorf("应该包含 B 的策略且 UserID 正确，实际：%+v", gotIDs)
+		t.Errorf("should include B's strategy with the correct UserID, got: %+v", gotIDs)
 	}
 	if _, ok := gotIDs[decoy.ID]; ok {
-		t.Errorf("状态过滤应该排除掉诱饵策略，实际结果里出现了：%+v", gotIDs)
+		t.Errorf("state filtering should exclude the decoy strategy, but it showed up in the results: %+v", gotIDs)
 	}
 }
 
-// TestGetStrategyAllUsersIgnoresOwnership 是这个文件里唯一一条"应该不做用户过滤"
-// 的测试，跟其它所有测试的方向相反——GetStrategyAllUsers 专供 cmd/notifier 使用，
-// 用来把 Kafka 决策里的 StrategyID 反查回归属用户，必须能读到任意用户的策略。
+// TestGetStrategyAllUsersIgnoresOwnership is the one test in this file that "should not
+// filter by user," the opposite direction from every other test here —
+// GetStrategyAllUsers exists specifically for cmd/notifier, to look up the owning user
+// from a StrategyID found in a Kafka decision, and must be able to read any user's
+// strategy.
 func TestGetStrategyAllUsersIgnoresOwnership(t *testing.T) {
 	cfg := config.Load()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -307,7 +317,7 @@ func TestGetStrategyAllUsersIgnoresOwnership(t *testing.T) {
 
 	store, err := Open(ctx, cfg.Postgres)
 	if err != nil {
-		t.Fatalf("连接 Postgres 失败：%v", err)
+		t.Fatalf("connecting to Postgres: %v", err)
 	}
 	defer store.Close()
 
@@ -316,29 +326,29 @@ func TestGetStrategyAllUsersIgnoresOwnership(t *testing.T) {
 	defer func() {
 		if _, err := store.pool.Exec(context.Background(),
 			`DELETE FROM users WHERE id = ANY($1)`, []string{userA.ID, userB.ID}); err != nil {
-			t.Errorf("清理测试数据失败：%v", err)
+			t.Errorf("cleaning up test data: %v", err)
 		}
 	}()
 
 	scA := newTestStrategy(t, userA.ID)
 	scB := newTestStrategy(t, userB.ID)
 	if err := store.SaveStrategy(ctx, scA); err != nil {
-		t.Fatalf("保存 A 的策略失败：%v", err)
+		t.Fatalf("saving A's strategy: %v", err)
 	}
 	if err := store.SaveStrategy(ctx, scB); err != nil {
-		t.Fatalf("保存 B 的策略失败：%v", err)
+		t.Fatalf("saving B's strategy: %v", err)
 	}
 
 	gotA, err := store.GetStrategyAllUsers(ctx, scA.ID)
 	if err != nil || gotA.UserID != userA.ID {
-		t.Errorf("应该能不带用户身份读到 A 的策略，实际：%+v err=%v", gotA, err)
+		t.Errorf("should be able to read A's strategy without user identity, got: %+v err=%v", gotA, err)
 	}
 	gotB, err := store.GetStrategyAllUsers(ctx, scB.ID)
 	if err != nil || gotB.UserID != userB.ID {
-		t.Errorf("应该能不带用户身份读到 B 的策略，实际：%+v err=%v", gotB, err)
+		t.Errorf("should be able to read B's strategy without user identity, got: %+v err=%v", gotB, err)
 	}
 
 	if _, err := store.GetStrategyAllUsers(ctx, idgen.NewUUID()); !errors.Is(err, ErrNotFound) {
-		t.Errorf("不存在的策略应该返回 ErrNotFound，实际：%v", err)
+		t.Errorf("a nonexistent strategy should return ErrNotFound, got: %v", err)
 	}
 }

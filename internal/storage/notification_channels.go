@@ -9,15 +9,19 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// NotificationChannel 是一条保存下来的提醒渠道配置。EncryptedConfig/KeySalt/
-// KeyNonce 是加密后的密文（见 internal/secretcrypto），这一层只负责存取字节，不关心
-// 加密算法、也不关心 EncryptedConfig 里打包的是几个字段——那是调用方
-// （webui 包 / cmd/notifier）的责任。UserID 是这条渠道的归属用户。
+// NotificationChannel is a saved notification channel configuration. EncryptedConfig/
+// KeySalt/KeyNonce are the encrypted ciphertext (see internal/secretcrypto) — this layer
+// only stores and retrieves the bytes; it doesn't care about the encryption algorithm,
+// nor how many fields are packed into EncryptedConfig — that's the caller's
+// responsibility (the webui package / cmd/notifier). UserID is the owning user of this
+// channel.
 //
-// 跟 BrokerProfile 的关键差异：BrokerProfile 同一个 broker 最多一行 is_active
-// （一次只能用一份凭据打给同一家交易所）；NotificationChannel 没有这种互斥性——
-// 同一个 kind 可以有任意多行同时 is_enabled=true（比如两个 webhook、多台设备各自的
-// web push 订阅），语义上更接近"订阅列表"而不是"当前生效的一份配置"。
+// Key difference from BrokerProfile: BrokerProfile allows at most one is_active row per
+// broker (only one set of credentials can be used against a given exchange at a time);
+// NotificationChannel has no such exclusivity — the same kind can have any number of rows
+// with is_enabled=true simultaneously (e.g. two webhooks, or separate web push
+// subscriptions per device), which is semantically closer to a "subscription list" than
+// "the one currently active configuration."
 type NotificationChannel struct {
 	ID              string
 	UserID          string
@@ -32,10 +36,13 @@ type NotificationChannel struct {
 	UpdatedAt       time.Time
 }
 
-// SaveNotificationChannel 插入一条新的提醒渠道配置（不支持更新已有配置的
-// EncryptedConfig——改配置约定为"删掉重加"，避免部分字段更新时不小心让密文和
-// 盐/nonce 不再匹配，跟 SaveBrokerProfile 是同一个理由）。新插入的渠道默认
-// is_enabled=true（保存即启用，用户如果想先保留后启用可以保存后立刻停用）。
+// SaveNotificationChannel inserts a new notification channel configuration (updating an
+// existing configuration's EncryptedConfig is not supported — the convention for
+// changing config is "delete and re-add," to avoid a partial field update accidentally
+// leaving the ciphertext and salt/nonce out of sync; same rationale as
+// SaveBrokerProfile). A newly inserted channel defaults to is_enabled=true (saving means
+// enabling; if a user wants to keep it disabled at first, they can save it and then
+// immediately disable it).
 func (s *Store) SaveNotificationChannel(ctx context.Context, c NotificationChannel) error {
 	const q = `
 		INSERT INTO notification_channels
@@ -44,21 +51,22 @@ func (s *Store) SaveNotificationChannel(ctx context.Context, c NotificationChann
 	if _, err := s.pool.Exec(ctx, q,
 		c.ID, c.UserID, c.Kind, c.Label, c.KeyHint, c.EncryptedConfig, c.KeySalt, c.KeyNonce, c.IsEnabled,
 	); err != nil {
-		return fmt.Errorf("保存提醒渠道失败：%w", err)
+		return fmt.Errorf("saving notification channel: %w", err)
 	}
 	return nil
 }
 
-// ListNotificationChannels 列出该用户全部已保存的提醒渠道（含已停用的），按创建
-// 时间正序，供设置页面展示、以及 cmd/notifier 查询该用户当前配置了哪些渠道
-// （调用方自己按 IsEnabled 过滤要不要真的发送）。
+// ListNotificationChannels lists all of a user's saved notification channels (including
+// disabled ones), ordered by creation time ascending, for display on the settings page
+// and for cmd/notifier to look up which channels a user currently has configured (the
+// caller filters on IsEnabled itself to decide whether to actually send).
 func (s *Store) ListNotificationChannels(ctx context.Context, userID string) ([]NotificationChannel, error) {
 	const q = `
 		SELECT id, user_id, kind, label, key_hint, encrypted_config, key_salt, key_nonce, is_enabled, created_at, updated_at
 		FROM notification_channels WHERE user_id = $1 ORDER BY created_at`
 	rows, err := s.pool.Query(ctx, q, userID)
 	if err != nil {
-		return nil, fmt.Errorf("查询提醒渠道失败：%w", err)
+		return nil, fmt.Errorf("querying notification channels: %w", err)
 	}
 	defer rows.Close()
 
@@ -74,8 +82,9 @@ func (s *Store) ListNotificationChannels(ctx context.Context, userID string) ([]
 	return out, rows.Err()
 }
 
-// GetNotificationChannel 按 ID 读取一条配置。userID 不匹配（渠道存在但不是当前
-// 用户的）跟渠道根本不存在一样返回 ErrNotFound。
+// GetNotificationChannel reads one configuration by ID. A userID mismatch (channel
+// exists but belongs to a different user) returns ErrNotFound, same as the channel not
+// existing at all.
 func (s *Store) GetNotificationChannel(ctx context.Context, userID, id string) (NotificationChannel, error) {
 	const q = `
 		SELECT id, user_id, kind, label, key_hint, encrypted_config, key_salt, key_nonce, is_enabled, created_at, updated_at
@@ -84,41 +93,43 @@ func (s *Store) GetNotificationChannel(ctx context.Context, userID, id string) (
 	err := s.pool.QueryRow(ctx, q, id, userID).Scan(&c.ID, &c.UserID, &c.Kind, &c.Label, &c.KeyHint,
 		&c.EncryptedConfig, &c.KeySalt, &c.KeyNonce, &c.IsEnabled, &c.CreatedAt, &c.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return NotificationChannel{}, fmt.Errorf("提醒渠道 %s：%w", id, ErrNotFound)
+		return NotificationChannel{}, fmt.Errorf("notification channel %s: %w", id, ErrNotFound)
 	}
 	if err != nil {
-		return NotificationChannel{}, fmt.Errorf("读取提醒渠道 %s 失败：%w", id, err)
+		return NotificationChannel{}, fmt.Errorf("reading notification channel %s: %w", id, err)
 	}
 	return c, nil
 }
 
-// SetNotificationChannelEnabled 切换一条渠道的启停状态。
+// SetNotificationChannelEnabled toggles a channel's enabled/disabled state.
 //
-// 跟 BrokerProfile 家族的方法刻意不同：BrokerProfile 完全没有更新路径（只有
-// 删掉重加），这里专门开了这一个更新方法——因为切换 is_enabled 完全不碰
-// EncryptedConfig/KeySalt/KeyNonce，不存在"部分字段更新导致密文和盐/nonce 不再
-// 匹配"的风险，那正是 BrokerProfile 拒绝提供更新路径的唯一理由，这里不适用。
+// Deliberately different from the BrokerProfile family of methods: BrokerProfile has no
+// update path at all (only delete-and-re-add); here we specifically add this one update
+// method — because toggling is_enabled never touches EncryptedConfig/KeySalt/KeyNonce,
+// so there's no risk of "a partial field update leaves ciphertext and salt/nonce out of
+// sync," which is the exact reason BrokerProfile refuses to offer an update path. That
+// reason doesn't apply here.
 func (s *Store) SetNotificationChannelEnabled(ctx context.Context, userID, id string, enabled bool) error {
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE notification_channels SET is_enabled = $1, updated_at = now() WHERE id = $2 AND user_id = $3`,
 		enabled, id, userID)
 	if err != nil {
-		return fmt.Errorf("切换提醒渠道状态失败：%w", err)
+		return fmt.Errorf("toggling notification channel state: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("提醒渠道 %s：%w", id, ErrNotFound)
+		return fmt.Errorf("notification channel %s: %w", id, ErrNotFound)
 	}
 	return nil
 }
 
-// DeleteNotificationChannel 删除一条保存的渠道配置。
+// DeleteNotificationChannel deletes a saved channel configuration.
 func (s *Store) DeleteNotificationChannel(ctx context.Context, userID, id string) error {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM notification_channels WHERE id = $1 AND user_id = $2`, id, userID)
 	if err != nil {
-		return fmt.Errorf("删除提醒渠道失败：%w", err)
+		return fmt.Errorf("deleting notification channel: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("提醒渠道 %s：%w", id, ErrNotFound)
+		return fmt.Errorf("notification channel %s: %w", id, ErrNotFound)
 	}
 	return nil
 }

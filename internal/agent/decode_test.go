@@ -24,18 +24,18 @@ func TestDecodeStrategyConfigJSONParsesDecimalSafeAmounts(t *testing.T) {
 
 	cfg, err := DecodeStrategyConfigJSON([]byte(blob))
 	if err != nil {
-		t.Fatalf("DecodeStrategyConfigJSON() 失败：%v", err)
+		t.Fatalf("DecodeStrategyConfigJSON() failed: %v", err)
 	}
 	if cfg.Symbol != "BTCUSDT" {
-		t.Errorf("Symbol 应被规范化为大写，实际 %q", cfg.Symbol)
+		t.Errorf("Symbol should be normalized to uppercase, got %q", cfg.Symbol)
 	}
 	want := decimal.RequireFromString("1000.123456789012345678")
 	if !cfg.Risk.MaxPositionSizeQuote.Equal(want) {
-		t.Errorf("MaxPositionSizeQuote = %s，期望 %s（不能经过 float64 丢精度）",
+		t.Errorf("MaxPositionSizeQuote = %s, want %s (must not lose precision through float64)",
 			cfg.Risk.MaxPositionSizeQuote, want)
 	}
 	if len(cfg.Modules) != 1 || cfg.Modules[0].Module != "volume_breakout" {
-		t.Fatalf("模块 = %+v", cfg.Modules)
+		t.Fatalf("Modules = %+v", cfg.Modules)
 	}
 }
 
@@ -55,25 +55,25 @@ func TestDecodeStrategyConfigJSONParsesSupportResistanceRiskModes(t *testing.T) 
 
 	cfg, err := DecodeStrategyConfigJSON([]byte(blob))
 	if err != nil {
-		t.Fatalf("DecodeStrategyConfigJSON() 失败：%v", err)
+		t.Fatalf("DecodeStrategyConfigJSON() failed: %v", err)
 	}
 	if cfg.Risk.StopLossMode != types.RiskLevelModeSupportResistance {
-		t.Errorf("StopLossMode = %q，期望 support_resistance", cfg.Risk.StopLossMode)
+		t.Errorf("StopLossMode = %q, want support_resistance", cfg.Risk.StopLossMode)
 	}
 	if cfg.Risk.TakeProfitMode != types.RiskLevelModeSupportResistance {
-		t.Errorf("TakeProfitMode = %q，期望 support_resistance", cfg.Risk.TakeProfitMode)
+		t.Errorf("TakeProfitMode = %q, want support_resistance", cfg.Risk.TakeProfitMode)
 	}
 }
 
 func TestDecodeStrategyConfigJSONRejectsUnknownFields(t *testing.T) {
 	blob := `{"name":"x","symbol":"BTCUSDT","timeframe":"1h","combine":"ALL","modules":[],"risk":{},"bogus_field":1}`
 	if _, err := DecodeStrategyConfigJSON([]byte(blob)); err == nil {
-		t.Fatal("未知字段应被拒绝，不能静默忽略")
+		t.Fatal("unknown fields should be rejected, not silently ignored")
 	}
 }
 
 func TestDecodeStrategyConfigJSONRejectsMalformedJSON(t *testing.T) {
 	if _, err := DecodeStrategyConfigJSON([]byte("不是 JSON")); err == nil {
-		t.Fatal("非法 JSON 应被拒绝")
+		t.Fatal("malformed JSON should be rejected")
 	}
 }

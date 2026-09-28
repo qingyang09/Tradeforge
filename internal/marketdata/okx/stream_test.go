@@ -13,23 +13,25 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// fakeOKXWSServer 起一个本地假 WebSocket 服务器，模仿 OKX candle 频道的真实行为：
-// 收到订阅请求后回一条确认，然后按 rows 顺序推送 K 线数据。这是真的走一遍
-// accept/read/write 的网络路径，不是把 Subscribe 函数整个替换掉。
+// fakeOKXWSServer spins up a local fake WebSocket server that mimics real OKX
+// candle-channel behavior: it acks the subscription request and then pushes
+// candle rows in order. This genuinely exercises the accept/read/write
+// network path rather than stubbing out the Subscribe function entirely.
 func fakeOKXWSServer(t *testing.T, rows [][]string) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 		if err != nil {
-			t.Errorf("accept 失败：%v", err)
+			t.Errorf("accept failed: %v", err)
 			return
 		}
 		defer conn.Close(websocket.StatusNormalClosure, "")
 		ctx := r.Context()
 
-		// 先读掉客户端的订阅请求，回一条跟真实 OKX 一致的确认消息。
-		// 真实 OKX 的确认消息里 arg 是单个 object（{"channel":...,"instId":...}），
-		// 不是客户端发的 args 数组本身——这是照真实抓包结果对齐的。
+		// First drain the client's subscription request, then reply with an
+		// ack matching real OKX. In the real OKX ack, arg is a single object
+		// ({"channel":...,"instId":...}), not the client's args array itself
+		// — this matches a real packet capture.
 		var sub struct {
 			Args []map[string]string `json:"args"`
 		}
@@ -58,7 +60,8 @@ func fakeOKXWSServer(t *testing.T, rows [][]string) *httptest.Server {
 				return
 			}
 		}
-		// 推完就等上下文结束，让客户端有机会把已经发出的消息读完。
+		// After pushing everything, wait for the context to end so the
+		// client has a chance to finish reading what's already been sent.
 		<-ctx.Done()
 	}))
 	t.Cleanup(srv.Close)
@@ -67,9 +70,9 @@ func fakeOKXWSServer(t *testing.T, rows [][]string) *httptest.Server {
 
 func TestSubscribeOnlyEmitsConfirmedCandles(t *testing.T) {
 	srv := fakeOKXWSServer(t, [][]string{
-		realUnconfirmedRow, // confirm=0，不该出现在 channel 里
-		realUnconfirmedRow, // 同一根的又一次中途更新
-		realConfirmedRow,   // confirm=1，应该出现
+		realUnconfirmedRow, // confirm=0, shouldn't show up on the channel
+		realUnconfirmedRow, // another mid-candle update for the same candle
+		realConfirmedRow,   // confirm=1, should show up
 	})
 	c := NewClient(WithWSURL(srv.URL))
 
@@ -78,26 +81,26 @@ func TestSubscribeOnlyEmitsConfirmedCandles(t *testing.T) {
 
 	ch, err := c.Subscribe(ctx, "BTCUSDT", types.TF1h)
 	if err != nil {
-		t.Fatalf("Subscribe 失败：%v", err)
+		t.Fatalf("Subscribe failed: %v", err)
 	}
 
 	select {
 	case candle, ok := <-ch:
 		if !ok {
-			t.Fatal("channel 提前关闭，没收到任何已收盘的 K 线")
+			t.Fatal("channel closed early, no closed candle received")
 		}
 		if !candle.Close.Equal(dec("69337.1")) {
-			t.Errorf("收到的 K 线收盘价 = %s，期望 69337.1（confirm=1 的那一根）", candle.Close)
+			t.Errorf("received candle close = %s, want 69337.1 (the confirm=1 one)", candle.Close)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("超时没有收到任何 K 线")
+		t.Fatal("timed out without receiving any candle")
 	}
 }
 
 func TestSubscribeRejectsUnknownSymbolBeforeDialing(t *testing.T) {
 	c := NewClient()
 	if _, err := c.Subscribe(context.Background(), "NOTASYMBOL", types.TF1h); err == nil {
-		t.Fatal("无法识别计价货币的标的应在建立连接前就被拒绝")
+		t.Fatal("a symbol with an unrecognized quote currency should be rejected before connecting")
 	}
 }
 
@@ -109,16 +112,16 @@ func TestSubscribeClosesChannelWhenContextCanceled(t *testing.T) {
 	defer cancel()
 	ch, err := c.Subscribe(ctx, "BTCUSDT", types.TF1h)
 	if err != nil {
-		t.Fatalf("Subscribe 失败：%v", err)
+		t.Fatalf("Subscribe failed: %v", err)
 	}
 
 	cancel()
 	select {
 	case _, ok := <-ch:
 		if ok {
-			t.Fatal("ctx 取消后不该再收到任何数据")
+			t.Fatal("should not receive any data after ctx is canceled")
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("ctx 取消后 channel 应该被关闭，但超时未关闭")
+		t.Fatal("channel should close after ctx is canceled, but timed out waiting")
 	}
 }

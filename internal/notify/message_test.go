@@ -10,17 +10,23 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// TestBuildMessageNeverUsesRecommendationWording 是一条 grep 式的机械检查——把
-// claude.md"绝不生成建议买什么"这条合规红线，从纯人工审查变成会挂红的检查，跟
-// internal/webui/security_guard_test.go"策略→机械检查"是同一个思路。矩阵覆盖
-// 方向×原因×模式，任何一种组合的 Title/Body 都不能出现"建议"/"推荐"。
+// TestBuildMessageNeverUsesRecommendationWording is a grep-style mechanical
+// check — it turns the claude.md compliance boundary "never generate
+// wording that recommends what to buy" from a purely manual review into a
+// check that fails the build red, the same idea as
+// internal/webui/security_guard_test.go's "policy -> mechanical check".
+// The matrix covers direction x reason x mode; no combination's Title/Body
+// may contain "建议"/"推荐" ("recommend"/"suggest").
 func TestBuildMessageNeverUsesRecommendationWording(t *testing.T) {
 	forbidden := []string{"建议", "推荐"}
 
-	// 这里的 Reason 都是事实性描述（跟引擎实际产出的 Reason 文案风格一致，见
-	// internal/modules 各模块的 Reason 措辞）——这条测试验证的是 BuildMessage 自己
-	// 生成的固定文案骨架不额外引入"建议"/"推荐"，不是验证"引擎产出的 Reason 本身
-	// 合规"（那是 internal/agent 系统提示词那条红线已经在管的事，见 claude.md）。
+	// The Reasons here are all factual descriptions (matching the style of
+	// Reason copy the engine actually produces, see the Reason wording in
+	// each internal/modules module) — this test verifies that BuildMessage's
+	// own fixed copy skeleton doesn't additionally introduce "建议"/"推荐",
+	// not that "the Reason the engine produces is itself compliant" (that's
+	// already handled by the boundary in internal/agent's system prompt, see
+	// claude.md).
 	directions := []types.Direction{types.DirectionLong, types.DirectionShort, types.DirectionNeutral}
 	reasons := []string{"支撑位放量突破", "成交量为近期均量的 3 倍", "CVD 失衡达到阈值"}
 	modes := []Mode{ModePreview, ModeLive}
@@ -38,21 +44,22 @@ func TestBuildMessageNeverUsesRecommendationWording(t *testing.T) {
 						Timestamp: time.Now(),
 					}
 					msg := BuildMessage(sc, d, mode)
-					// complianceDisclaimer 本身必然包含"建议"二字（"不构成投资建议"这个
-					// 否定短语的一部分，是唯一允许出现该词的地方）——检查前先把它去掉，
-					// 只检查 Body 里这句固定声明之外的部分。
+					// complianceDisclaimer itself necessarily contains the word "建议"
+					// (part of the negated phrase "不构成投资建议", and the one place
+					// that word is allowed to appear) — strip it out before checking,
+					// and only check the part of Body outside this fixed disclaimer.
 					bodyWithoutDisclaimer := strings.Replace(msg.Body, complianceDisclaimer, "", 1)
 					for _, bad := range forbidden {
 						if strings.Contains(msg.Title, bad) {
-							t.Errorf("Title 不应包含 %q，实际：%q（dir=%s mode=%s）", bad, msg.Title, dir, mode)
+							t.Errorf("Title should not contain %q, got: %q (dir=%s mode=%s)", bad, msg.Title, dir, mode)
 						}
 						if strings.Contains(bodyWithoutDisclaimer, bad) {
-							t.Errorf("Body（合规声明之外的部分）不应包含 %q，实际：%q（dir=%s mode=%s）",
+							t.Errorf("Body (outside the compliance disclaimer) should not contain %q, got: %q (dir=%s mode=%s)",
 								bad, bodyWithoutDisclaimer, dir, mode)
 						}
 					}
 					if !strings.Contains(msg.Body, complianceDisclaimer) {
-						t.Errorf("Body 应该包含固定的合规声明，实际：%q", msg.Body)
+						t.Errorf("Body should contain the fixed compliance disclaimer, got: %q", msg.Body)
 					}
 				}
 			}
@@ -69,15 +76,15 @@ func TestBuildMessageLabelsModeCorrectly(t *testing.T) {
 
 	preview := BuildMessage(sc, d, ModePreview)
 	if !strings.Contains(preview.Title, "模拟盘预览") {
-		t.Errorf("PAPER_TRADING 模式的 Title 应该标注「模拟盘预览」，实际：%q", preview.Title)
+		t.Errorf("PAPER_TRADING mode's Title should be labeled 「模拟盘预览」, got: %q", preview.Title)
 	}
 
 	live := BuildMessage(sc, d, ModeLive)
 	if !strings.Contains(live.Title, "实盘") {
-		t.Errorf("LIVE 模式的 Title 应该标注「实盘」，实际：%q", live.Title)
+		t.Errorf("LIVE mode's Title should be labeled 「实盘」, got: %q", live.Title)
 	}
 	if strings.Contains(live.Title, "模拟盘预览") {
-		t.Errorf("LIVE 模式的 Title 不应该出现「模拟盘预览」，实际：%q", live.Title)
+		t.Errorf("LIVE mode's Title should not contain 「模拟盘预览」, got: %q", live.Title)
 	}
 }
 
@@ -92,12 +99,12 @@ func TestToWebhookPayloadCarriesDecisionFields(t *testing.T) {
 	payload := msg.ToWebhookPayload(d, ModeLive)
 
 	if payload.StrategyID != "s1" || payload.Symbol != "BTCUSDT" || payload.Direction != "SHORT" {
-		t.Errorf("载荷字段不符：%+v", payload)
+		t.Errorf("payload fields mismatch: %+v", payload)
 	}
 	if payload.Mode != ModeLive {
-		t.Errorf("Mode = %q，期望 %q", payload.Mode, ModeLive)
+		t.Errorf("Mode = %q, want %q", payload.Mode, ModeLive)
 	}
 	if !payload.Timestamp.Equal(now) {
-		t.Errorf("Timestamp = %v，期望 %v", payload.Timestamp, now)
+		t.Errorf("Timestamp = %v, want %v", payload.Timestamp, now)
 	}
 }

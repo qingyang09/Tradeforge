@@ -27,27 +27,29 @@ func TestProviderValid(t *testing.T) {
 	}
 	for _, tc := range cases {
 		if got := tc.p.Valid(); got != tc.want {
-			t.Errorf("Provider(%q).Valid() = %v，期望 %v", tc.p, got, tc.want)
+			t.Errorf("Provider(%q).Valid() = %v, want %v", tc.p, got, tc.want)
 		}
 	}
 }
 
-// 每个登记过的供应商都必须有展示名和默认模型（ProviderCustom 没有默认模型是例外，
-// 它要求调用方显式指定），否则界面上会出现一个选不出默认值的选项。
+// Every registered provider must have a display name and a default model
+// (ProviderCustom has no default model as the one exception, since it
+// requires the caller to specify one explicitly) — otherwise the UI would
+// show an option with no default value to select.
 func TestEveryProviderHasLabelAndDefaultModelExceptCustom(t *testing.T) {
 	for _, p := range Providers {
 		t.Run(string(p), func(t *testing.T) {
 			if p.Label() == "" || p.Label() == string(p) {
-				t.Errorf("Provider(%q) 缺少展示名", p)
+				t.Errorf("Provider(%q) missing display name", p)
 			}
 			if p == ProviderCustom {
 				if p.DefaultModel() != "" {
-					t.Errorf("ProviderCustom 不该有默认模型，实际 %q", p.DefaultModel())
+					t.Errorf("ProviderCustom should have no default model, got %q", p.DefaultModel())
 				}
 				return
 			}
 			if p.DefaultModel() == "" {
-				t.Errorf("Provider(%q) 缺少默认模型", p)
+				t.Errorf("Provider(%q) missing default model", p)
 			}
 		})
 	}
@@ -57,7 +59,7 @@ func TestNewLLMRejectsEmptyAPIKey(t *testing.T) {
 	for _, p := range Providers {
 		t.Run(string(p), func(t *testing.T) {
 			if _, err := NewLLM(p, "", "", "", config.AgentConfig{}); !errors.Is(err, ErrNoAPIKey) {
-				t.Errorf("空 key 应返回 ErrNoAPIKey，得到 %v", err)
+				t.Errorf("empty key should return ErrNoAPIKey, got %v", err)
 			}
 		})
 	}
@@ -65,20 +67,21 @@ func TestNewLLMRejectsEmptyAPIKey(t *testing.T) {
 
 func TestNewLLMRejectsUnknownProvider(t *testing.T) {
 	if _, err := NewLLM(Provider("llama"), "key", "", "", config.AgentConfig{}); err == nil {
-		t.Fatal("未知供应商应被拒绝")
+		t.Fatal("unknown provider should be rejected")
 	}
 }
 
 func TestNewLLMDispatchesToCorrectProvider(t *testing.T) {
 	anthropicLLM, err := NewLLM(ProviderAnthropic, "sk-ant-test", "", "", config.AgentConfig{})
 	if err != nil {
-		t.Fatalf("构造 Anthropic LLM 失败：%v", err)
+		t.Fatalf("failed to construct Anthropic LLM: %v", err)
 	}
 	if _, ok := anthropicLLM.(*AnthropicLLM); !ok {
-		t.Errorf("ProviderAnthropic 应产出 *AnthropicLLM，实际 %T", anthropicLLM)
+		t.Errorf("ProviderAnthropic should produce *AnthropicLLM, got %T", anthropicLLM)
 	}
 
-	// 其余全部登记过的供应商都应该走 OpenAI 兼容层，产出同一个 *OpenAILLM 类型。
+	// Every other registered provider should go through the OpenAI-compatible
+	// layer and produce the same *OpenAILLM type.
 	for _, p := range Providers {
 		if p == ProviderAnthropic {
 			continue
@@ -90,10 +93,10 @@ func TestNewLLMDispatchesToCorrectProvider(t *testing.T) {
 			}
 			llm, err := NewLLM(p, "test-key", model, baseURL, config.AgentConfig{})
 			if err != nil {
-				t.Fatalf("构造失败：%v", err)
+				t.Fatalf("construction failed: %v", err)
 			}
 			if _, ok := llm.(*OpenAILLM); !ok {
-				t.Errorf("应产出 *OpenAILLM，实际 %T", llm)
+				t.Errorf("should produce *OpenAILLM, got %T", llm)
 			}
 		})
 	}
@@ -102,7 +105,7 @@ func TestNewLLMDispatchesToCorrectProvider(t *testing.T) {
 func TestNewLLMUsesProviderDefaultModelWhenUnspecified(t *testing.T) {
 	for _, p := range Providers {
 		if p == ProviderCustom {
-			continue // 自定义没有默认模型，必须显式指定，另外单独测
+			continue // custom has no default model, must be specified explicitly; tested separately
 		}
 		t.Run(string(p), func(t *testing.T) {
 			llm, err := NewLLM(p, "test-key", "", "", config.AgentConfig{})
@@ -117,7 +120,7 @@ func TestNewLLMUsesProviderDefaultModelWhenUnspecified(t *testing.T) {
 				gotModel = v.model
 			}
 			if gotModel != p.DefaultModel() {
-				t.Errorf("model = %q，期望默认值 %q", gotModel, p.DefaultModel())
+				t.Errorf("model = %q, want default %q", gotModel, p.DefaultModel())
 			}
 		})
 	}
@@ -130,13 +133,15 @@ func TestNewLLMHonorsExplicitModel(t *testing.T) {
 	}
 	o := llm.(*OpenAILLM)
 	if o.model != "gpt-4o-mini" {
-		t.Errorf("model = %q，期望 gpt-4o-mini", o.model)
+		t.Errorf("model = %q, want gpt-4o-mini", o.model)
 	}
 }
 
-// Provider 之间不能串味：给 OpenAI 传一个 Anthropic 的 BaseURL 不该被沿用——
-// 这个字段的复用场景是"设置页面切换供应商时复用同一份 config.AgentConfig"，
-// 如果不清空，切到 OpenAI 时请求会打到 Anthropic 的地址上。
+// Providers must not bleed into each other: passing an Anthropic BaseURL to
+// OpenAI must not be carried over — this field gets reused in the scenario
+// where "the settings page reuses the same config.AgentConfig when switching
+// providers", and if it isn't cleared, switching to OpenAI would send
+// requests to Anthropic's address.
 func TestNewLLMDoesNotLeakAnthropicBaseURLIntoOpenAI(t *testing.T) {
 	llm, err := NewLLM(ProviderOpenAI, "sk-test", "", "", config.AgentConfig{BaseURL: "https://api.anthropic.com"})
 	if err != nil {
@@ -144,31 +149,32 @@ func TestNewLLMDoesNotLeakAnthropicBaseURLIntoOpenAI(t *testing.T) {
 	}
 	o := llm.(*OpenAILLM)
 	if o.baseURL != DefaultOpenAIBaseURL {
-		t.Errorf("baseURL = %q，期望回落到 OpenAI 默认地址 %q，而不是沿用 Anthropic 的", o.baseURL, DefaultOpenAIBaseURL)
+		t.Errorf("baseURL = %q, want fallback to OpenAI default %q, not carried over from Anthropic", o.baseURL, DefaultOpenAIBaseURL)
 	}
 }
 
 func TestNewLLMCustomProviderRequiresBaseURLAndModel(t *testing.T) {
 	if _, err := NewLLM(ProviderCustom, "key", "some-model", "", config.AgentConfig{}); err == nil {
-		t.Error("自定义供应商缺 API 地址应报错")
+		t.Error("custom provider missing API address should error")
 	}
 	if _, err := NewLLM(ProviderCustom, "key", "", "https://gateway.example.com/v1", config.AgentConfig{}); err == nil {
-		t.Error("自定义供应商缺模型名应报错")
+		t.Error("custom provider missing model name should error")
 	}
 	llm, err := NewLLM(ProviderCustom, "key", "some-model", "https://gateway.example.com/v1", config.AgentConfig{})
 	if err != nil {
-		t.Fatalf("参数齐全时不该报错：%v", err)
+		t.Fatalf("should not error when all params are given: %v", err)
 	}
 	o := llm.(*OpenAILLM)
 	if o.baseURL != "https://gateway.example.com/v1" {
-		t.Errorf("baseURL = %q，期望使用用户填写的地址", o.baseURL)
+		t.Errorf("baseURL = %q, want the user-supplied address", o.baseURL)
 	}
 	if o.model != "some-model" {
-		t.Errorf("model = %q，期望使用用户填写的模型", o.model)
+		t.Errorf("model = %q, want the user-supplied model", o.model)
 	}
 }
 
-// 自定义供应商即便传了 baseURL，其它预置供应商也不该被它污染。
+// Even when the custom provider is given a baseURL, other preset providers
+// must not be contaminated by it.
 func TestNewLLMCustomBaseURLDoesNotLeakToKnownProviders(t *testing.T) {
 	llm, err := NewLLM(ProviderDeepSeek, "key", "", "https://should-be-ignored.example.com", config.AgentConfig{})
 	if err != nil {
@@ -176,7 +182,7 @@ func TestNewLLMCustomBaseURLDoesNotLeakToKnownProviders(t *testing.T) {
 	}
 	o := llm.(*OpenAILLM)
 	if o.baseURL != providerSpecs[ProviderDeepSeek].baseURL {
-		t.Errorf("baseURL = %q，期望 DeepSeek 自己登记的地址 %q，不该被传入的 baseURL 参数覆盖",
+		t.Errorf("baseURL = %q, want DeepSeek's own registered address %q, should not be overridden by the passed-in baseURL",
 			o.baseURL, providerSpecs[ProviderDeepSeek].baseURL)
 	}
 }

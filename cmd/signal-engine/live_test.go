@@ -31,15 +31,16 @@ func testStrategy(id, symbol string, tf types.Timeframe) types.StrategyConfig {
 	return types.StrategyConfig{ID: id, Symbol: symbol, Timeframe: tf}
 }
 
-// multiTFStrategy 构造一个触发周期是 tf、但有一个模块用更慢的 ctxTF 的策略，
-// 用来测试 runLive/runSymbolFeed 的多周期分发逻辑。
+// multiTFStrategy builds a strategy whose trigger timeframe is tf but with
+// one module using a slower ctxTF, for testing runLive/runSymbolFeed's
+// multi-timeframe dispatch logic.
 func multiTFStrategy(id, symbol string, tf, ctxTF types.Timeframe) types.StrategyConfig {
 	cfg := testStrategy(id, symbol, tf)
 	cfg.Modules = []types.ModuleConfig{{Module: "ctx", Timeframe: ctxTF}}
 	return cfg
 }
 
-// ---- 假数据源/处理器 ----
+// ---- fake data sources/processor ----
 
 type fakeHistSource struct {
 	mu      sync.Mutex
@@ -75,8 +76,9 @@ func (f *fakeHistSource) callCount(k feedKey) int {
 	return n
 }
 
-// fakeLiveSource 按 feedKey 维护一个 channel 队列：每次 Subscribe 发一个新的，
-// 让测试能模拟"断线后重新订阅拿到一条新连接"这个场景。
+// fakeLiveSource maintains a channel queue per feedKey: each Subscribe call
+// hands out the next one, letting tests simulate "reconnecting after a
+// disconnect gets a new connection".
 type fakeLiveSource struct {
 	mu             sync.Mutex
 	subscribeCalls map[feedKey]int
@@ -123,7 +125,8 @@ func (f *fakeLiveSource) callCount(k feedKey) int {
 	return f.subscribeCalls[k]
 }
 
-// fakeProcessor 记录每次 Process 调用收到的 feeds，用于断言窗口内容。
+// fakeProcessor records the feeds received on each Process call, for
+// asserting window contents.
 type fakeProcessor struct {
 	mu    sync.Mutex
 	calls []map[types.Timeframe]types.MarketData
@@ -148,7 +151,8 @@ func (f *fakeProcessor) snapshot() []map[types.Timeframe]types.MarketData {
 	return out
 }
 
-// waitFor 轮询 cond 直到为真或超时，测试里用来等异步副作用出现，避免固定 sleep。
+// waitFor polls cond until it's true or the timeout expires; used in tests
+// to wait for an async side effect instead of a fixed sleep.
 func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -158,10 +162,10 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatal("等待条件超时")
+	t.Fatal("timed out waiting for condition")
 }
 
-// ---- 测试 ----
+// ---- tests ----
 
 func TestRunSymbolFeedBackfillsThenProcessesLiveCandles(t *testing.T) {
 	k := feedKey{"BTCUSDT", types.TF1h}
@@ -172,7 +176,7 @@ func TestRunSymbolFeedBackfillsThenProcessesLiveCandles(t *testing.T) {
 	ch := make(chan types.Candle, 1)
 	live.enqueue(k, ch)
 	ch <- testCandle(102)
-	close(ch) // 关闭模拟"这一段推送结束"，range 循环才会退出去走重连分支
+	close(ch) // closing simulates "this batch of pushes ended", so the range loop exits into the reconnect branch
 
 	proc := &fakeProcessor{}
 	strategies := []types.StrategyConfig{testStrategy("s1", "BTCUSDT", types.TF1h)}
@@ -190,14 +194,14 @@ func TestRunSymbolFeedBackfillsThenProcessesLiveCandles(t *testing.T) {
 
 	calls := proc.snapshot()
 	if len(calls) == 0 {
-		t.Fatal("应至少调用一次 Process")
+		t.Fatal("expected at least one Process call")
 	}
 	last := calls[len(calls)-1][types.TF1h]
 	if len(last.Candles) != 3 {
-		t.Fatalf("最后一次调用的窗口应有 3 根 K 线（2 根回填 + 1 根实时），实际 %d 根", len(last.Candles))
+		t.Fatalf("last call's window should have 3 candles (2 backfilled + 1 live), got %d", len(last.Candles))
 	}
 	if !last.Candles[2].Close.Equal(decimal.NewFromFloat(102)) {
-		t.Errorf("最新一根收盘价 = %s，期望 102", last.Candles[2].Close)
+		t.Errorf("latest close = %s, want 102", last.Candles[2].Close)
 	}
 }
 
@@ -218,7 +222,7 @@ func TestRunSymbolFeedTrimsWindow(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		// window=2：3 根回填 + 1 根实时 = 4 根，应该被裁到最后 2 根。
+		// window=2: 3 backfilled + 1 live = 4 candles, should be trimmed to the last 2.
 		runSymbolFeed(ctx, proc, newCandleCache(), strategies, hist, live, "BTCUSDT", types.TF1h, 300, 2, quietLogger())
 		close(done)
 	}()
@@ -229,10 +233,10 @@ func TestRunSymbolFeedTrimsWindow(t *testing.T) {
 
 	last := proc.snapshot()[len(proc.snapshot())-1][types.TF1h]
 	if len(last.Candles) != 2 {
-		t.Fatalf("窗口应被裁剪到 2 根，实际 %d 根", len(last.Candles))
+		t.Fatalf("window should be trimmed to 2 candles, got %d", len(last.Candles))
 	}
 	if !last.Candles[1].Close.Equal(decimal.NewFromFloat(4)) {
-		t.Errorf("裁剪后最新一根收盘价 = %s，期望 4", last.Candles[1].Close)
+		t.Errorf("latest close after trimming = %s, want 4", last.Candles[1].Close)
 	}
 }
 
@@ -252,10 +256,10 @@ func TestRunSymbolFeedReturnsWhenBackfillFails(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("回填失败时 runSymbolFeed 应该直接返回，而不是挂住")
+		t.Fatal("runSymbolFeed should return immediately on backfill failure instead of hanging")
 	}
 	if live.callCount(k) != 0 {
-		t.Error("回填失败不该再去订阅实时行情")
+		t.Error("a backfill failure should not go on to subscribe to live market data")
 	}
 }
 
@@ -266,7 +270,7 @@ func TestRunSymbolFeedReconnectsAfterChannelCloses(t *testing.T) {
 	live := newFakeLiveSource()
 	first := make(chan types.Candle, 1)
 	first <- testCandle(1)
-	close(first) // 模拟第一次订阅收到一根后就断线
+	close(first) // simulates the first subscription disconnecting right after one candle
 	live.enqueue(k, first)
 
 	second := make(chan types.Candle, 1)
@@ -277,7 +281,7 @@ func TestRunSymbolFeedReconnectsAfterChannelCloses(t *testing.T) {
 	proc := &fakeProcessor{}
 	strategies := []types.StrategyConfig{testStrategy("s1", "BTCUSDT", types.TF1h)}
 
-	// 把重连退避临时调短，测试不必真的等 3 秒。
+	// Temporarily shorten the reconnect backoff so the test doesn't actually wait 3 seconds.
 	origDelay := reconnectDelay
 	reconnectDelay = 10 * time.Millisecond
 	defer func() { reconnectDelay = origDelay }()
@@ -295,7 +299,7 @@ func TestRunSymbolFeedReconnectsAfterChannelCloses(t *testing.T) {
 	<-done
 
 	if live.callCount(k) < 2 {
-		t.Fatalf("断线后应该重新订阅，Subscribe 调用次数 = %d，期望至少 2", live.callCount(k))
+		t.Fatalf("should resubscribe after a disconnect, Subscribe call count = %d, want at least 2", live.callCount(k))
 	}
 }
 
@@ -331,7 +335,7 @@ func TestRunLiveIsolatesPerSymbolFailures(t *testing.T) {
 	<-done
 
 	if len(proc.snapshot()) == 0 {
-		t.Fatal("好的那路行情不该被坏的那路拖累")
+		t.Fatal("the good feed should not be held back by the bad one")
 	}
 }
 
@@ -347,7 +351,7 @@ func TestRunLiveGroupsStrategiesBySymbolAndTimeframe(t *testing.T) {
 	live.enqueue(k, ch)
 
 	proc := &fakeProcessor{}
-	// 两个策略共用同一个 (symbol, timeframe)：只该回填/订阅一次。
+	// Two strategies share the same (symbol, timeframe): should only be backfilled/subscribed once.
 	strategies := []types.StrategyConfig{
 		testStrategy("s1", "BTCUSDT", types.TF1h),
 		testStrategy("s2", "BTCUSDT", types.TF1h),
@@ -365,13 +369,15 @@ func TestRunLiveGroupsStrategiesBySymbolAndTimeframe(t *testing.T) {
 	<-done
 
 	if hist.callCount(k) != 1 {
-		t.Errorf("FetchCandles 调用次数 = %d，期望 1（同一路行情只回填一次）", hist.callCount(k))
+		t.Errorf("FetchCandles call count = %d, want 1 (one feed backfilled only once)", hist.callCount(k))
 	}
 }
 
-// strategyRecordingProcessor 跟 fakeProcessor 一样记录每次调用的 feeds，但额外记录
-// 是哪个策略触发的——TestRunLiveSharesFeedAcrossDifferentUsersSameSymbolTimeframe 需要
-// 证明"两个不同用户的策略都各自被评估了"，不只是"Process 被调用了 N 次"。
+// strategyRecordingProcessor records the feeds from each call just like
+// fakeProcessor, but additionally records which strategy triggered it —
+// TestRunLiveSharesFeedAcrossDifferentUsersSameSymbolTimeframe needs to prove
+// "both different users' strategies were each evaluated", not just "Process
+// was called N times".
 type strategyRecordingProcessor struct {
 	mu          sync.Mutex
 	strategyIDs []string
@@ -392,13 +398,18 @@ func (p *strategyRecordingProcessor) snapshot() []string {
 	return out
 }
 
-// TestRunLiveSharesFeedAcrossDifferentUsersSameSymbolTimeframe 是多用户并发执行改造
-// 的直接证据：两个不同用户在同一个 (symbol, timeframe) 上各自都有策略时，runLive 应该
-// 只回填/订阅一次（省掉重复拉行情的成本，这是合并成一个进程服务多用户的核心收益），
-// 且两个用户的策略在同一次新 K 线到来时都各自被评估——不是"参数传过去了"，是两条
-// 真实归属不同用户的策略都真的拿到了决策计算。live.go 本身按设计不需要为这条测试
-// 新增任何代码（feedKey 从来就没有用户维度），这条测试就是用来证明这件事、并在未来
-// 有人不小心往 feedKey 里引入用户维度时能立刻挂红。
+// TestRunLiveSharesFeedAcrossDifferentUsersSameSymbolTimeframe is direct
+// evidence for the multi-tenant concurrent execution rework: when two
+// different users each have a strategy on the same (symbol, timeframe),
+// runLive should backfill/subscribe only once (avoiding duplicate market
+// data fetches, which is the core benefit of merging into one process
+// serving multiple users), and both users' strategies should be evaluated
+// when the same new candle arrives — not just "the parameter was passed
+// through", but that two strategies genuinely belonging to different users
+// both actually got a decision computed. live.go itself needs no new code
+// for this by design (feedKey never had a user dimension), so this test
+// exists to prove that fact and to fail loudly if someone later
+// accidentally introduces a user dimension into feedKey.
 func TestRunLiveSharesFeedAcrossDifferentUsersSameSymbolTimeframe(t *testing.T) {
 	k := feedKey{"BTCUSDT", types.TF1h}
 	hist := newFakeHistSource()
@@ -427,10 +438,10 @@ func TestRunLiveSharesFeedAcrossDifferentUsersSameSymbolTimeframe(t *testing.T) 
 	<-done
 
 	if hist.callCount(k) != 1 {
-		t.Errorf("FetchCandles 调用次数 = %d，期望 1（两个用户共用同一路行情，只回填一次）", hist.callCount(k))
+		t.Errorf("FetchCandles call count = %d, want 1 (two users share the same feed, backfilled once)", hist.callCount(k))
 	}
 	if live.callCount(k) != 1 {
-		t.Errorf("Subscribe 调用次数 = %d，期望 1（两个用户共用同一路订阅）", live.callCount(k))
+		t.Errorf("Subscribe call count = %d, want 1 (two users share the same subscription)", live.callCount(k))
 	}
 
 	got := proc.snapshot()
@@ -444,19 +455,24 @@ func TestRunLiveSharesFeedAcrossDifferentUsersSameSymbolTimeframe(t *testing.T) 
 		}
 	}
 	if !sawA {
-		t.Error("用户 A 的策略应该被评估到，但没有")
+		t.Error("user A's strategy should have been evaluated, but wasn't")
 	}
 	if !sawB {
-		t.Error("用户 B 的策略应该被评估到，但没有")
+		t.Error("user B's strategy should have been evaluated, but wasn't")
 	}
 }
 
-// TestRunLiveRescanStartsSubscriptionForNewlyAppearedFeedKey 验证周期性重新扫描能给
-// 全新出现的 (symbol, timeframe) 组合起一路新订阅，不需要重启进程——这是多用户共享
-// 一个进程后"新用户配置生效不用打断其它人"这条设计目标在 signal-engine 侧的落地。
-// 第一次 reload 只返回 ETHUSDT 的策略，第二次（模拟一次重新扫描发现了新用户/新策略）
-// 才带上 BTCUSDT，断言 BTCUSDT 那路行情是在重新扫描后才被回填/订阅的，而不是一开始
-// 就有（证明确实是"重新扫描"生效了，不是凑巧一开始就传全了）。
+// TestRunLiveRescanStartsSubscriptionForNewlyAppearedFeedKey verifies that
+// the periodic rescan opens a new subscription for a newly-appeared
+// (symbol, timeframe) combination without a process restart — this is the
+// signal-engine-side implementation of the design goal that, after sharing
+// one process across multiple users, "a new user's config taking effect
+// shouldn't interrupt anyone else". The first reload returns only the
+// ETHUSDT strategy; the second (simulating a rescan that discovers a
+// new user/strategy) adds BTCUSDT. The test asserts the BTCUSDT feed is
+// only backfilled/subscribed after the rescan, not from the start (proving
+// it's really the rescan taking effect, not a coincidence of everything
+// being passed in upfront).
 func TestRunLiveRescanStartsSubscriptionForNewlyAppearedFeedKey(t *testing.T) {
 	ethKey := feedKey{"ETHUSDT", types.TF1h}
 	btcKey := feedKey{"BTCUSDT", types.TF1h}
@@ -482,8 +498,9 @@ func TestRunLiveRescanStartsSubscriptionForNewlyAppearedFeedKey(t *testing.T) {
 	reload := func(context.Context) ([]types.StrategyConfig, error) {
 		n := atomic.AddInt32(&reloadCalls, 1)
 		if n == 1 {
-			// 重新扫描循环启动时会立刻打一次 tick——用这一次返回旧列表，模拟
-			// "还没发现新策略"的状态；真正的新策略在下一次 tick 才出现。
+			// The rescan loop fires a tick immediately on startup — this
+			// call returns the old list, simulating "no new strategy found
+			// yet"; the real new strategy only appears on the next tick.
 			return []types.StrategyConfig{ethStrategy}, nil
 		}
 		return []types.StrategyConfig{ethStrategy, btcStrategy}, nil
@@ -499,13 +516,13 @@ func TestRunLiveRescanStartsSubscriptionForNewlyAppearedFeedKey(t *testing.T) {
 		close(done)
 	}()
 
-	// 一开始只该看到 ETH 那路行情，BTC 还不该被碰。
+	// Initially only the ETH feed should be touched; BTC should not be touched yet.
 	waitFor(t, 2*time.Second, func() bool { return hist.callCount(ethKey) >= 1 })
 	if hist.callCount(btcKey) != 0 {
-		t.Errorf("重新扫描发现新策略之前，BTC 那路行情不该被回填，实际调用了 %d 次", hist.callCount(btcKey))
+		t.Errorf("BTC feed should not be backfilled before the rescan discovers the new strategy, but was called %d times", hist.callCount(btcKey))
 	}
 
-	// 等重新扫描把 BTC 加进来。
+	// Wait for the rescan to add BTC.
 	waitFor(t, 2*time.Second, func() bool { return hist.callCount(btcKey) >= 1 })
 	waitFor(t, 2*time.Second, func() bool {
 		for _, id := range proc.snapshot() {
@@ -519,12 +536,14 @@ func TestRunLiveRescanStartsSubscriptionForNewlyAppearedFeedKey(t *testing.T) {
 	<-done
 
 	if hist.callCount(btcKey) != 1 {
-		t.Errorf("BTC 那路行情应该只被回填一次，实际 %d 次", hist.callCount(btcKey))
+		t.Errorf("BTC feed should be backfilled exactly once, got %d", hist.callCount(btcKey))
 	}
 }
 
-// 多周期策略：触发周期是 15m，一个模块用更慢的 1h 背景周期。只有触发周期收到新
-// K 线才应该评估策略；评估时应该能从共享缓存里拼出背景周期的数据。
+// Multi-timeframe strategy: trigger timeframe is 15m, one module uses a
+// slower 1h background timeframe. Only the trigger timeframe receiving a new
+// candle should evaluate the strategy; evaluation should be able to assemble
+// the background timeframe's data from the shared cache.
 func TestRunLiveDispatchesMultiTimeframeStrategyOnTriggerOnly(t *testing.T) {
 	triggerKey := feedKey{"BTCUSDT", types.TF15m}
 	ctxKey := feedKey{"BTCUSDT", types.TF1h}
@@ -539,9 +558,12 @@ func TestRunLiveDispatchesMultiTimeframeStrategyOnTriggerOnly(t *testing.T) {
 	close(ctxCh)
 	live.enqueue(ctxKey, ctxCh)
 
-	// 触发周期的 channel 送两根、间隔一点时间再关闭：即便第一根到达时背景周期的
-	// 回填还没在另一个 goroutine 里落定（buildFeeds 会跳过这次评估，只打个警告日志），
-	// 第二根送达时也一定已经落定了——避免测试因 goroutine 调度先后顺序不同而偶发失败。
+	// The trigger timeframe's channel sends two candles with a delay before
+	// closing: even if the background timeframe's backfill hasn't settled in
+	// its other goroutine by the time the first candle arrives (buildFeeds
+	// just skips that evaluation with a warning log), it's guaranteed to have
+	// settled by the time the second one arrives — this avoids flaky failures
+	// from goroutine scheduling order.
 	triggerCh := make(chan types.Candle, 2)
 	triggerCh <- testCandle(101)
 	go func() {
@@ -562,26 +584,28 @@ func TestRunLiveDispatchesMultiTimeframeStrategyOnTriggerOnly(t *testing.T) {
 	}()
 
 	waitFor(t, 2*time.Second, func() bool { return len(proc.snapshot()) >= 1 })
-	time.Sleep(150 * time.Millisecond) // 给第二根触发K线留出被处理的时间
+	time.Sleep(150 * time.Millisecond) // leave time for the second trigger candle to be processed
 	cancel()
 	<-done
 
 	calls := proc.snapshot()
 	if len(calls) == 0 {
-		t.Fatal("触发周期收到新K线时应该评估策略")
+		t.Fatal("the strategy should be evaluated when the trigger timeframe receives a new candle")
 	}
 	if len(calls) > 2 {
-		t.Fatalf("只推送了 2 根触发周期K线，评估次数不该超过 2，实际 %d", len(calls))
+		t.Fatalf("only 2 trigger-timeframe candles were pushed, evaluation count should not exceed 2, got %d", len(calls))
 	}
-	// buildFeeds 要求所有需要的周期都齐了才会调用 Process，所以只要这里被调用过，
-	// 15m（触发）和 1h（背景）两个 feed 就一定都在——这正是要验证的核心行为：
-	// 触发周期的评估能正确从共享缓存里拼出背景周期的数据。
+	// buildFeeds only calls Process once every required timeframe is
+	// present, so if it was called at all, both the 15m (trigger) and 1h
+	// (background) feeds must be present — this is exactly the core behavior
+	// being verified: the trigger timeframe's evaluation can correctly
+	// assemble the background timeframe's data from the shared cache.
 	last := calls[len(calls)-1]
 	if _, ok := last[types.TF15m]; !ok {
-		t.Error("feeds 里应该有触发周期 15m 的数据")
+		t.Error("feeds should contain the trigger timeframe's (15m) data")
 	}
 	if _, ok := last[types.TF1h]; !ok {
-		t.Error("feeds 里应该有背景周期 1h 的数据")
+		t.Error("feeds should contain the background timeframe's (1h) data")
 	}
 }
 
@@ -591,7 +615,7 @@ func TestRunSymbolFeedStopsOnContextCancelWithoutSubscribing(t *testing.T) {
 	proc := &fakeProcessor{}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // 一开始就取消
+	cancel() // canceled from the start
 
 	done := make(chan struct{})
 	go func() {
@@ -602,6 +626,6 @@ func TestRunSymbolFeedStopsOnContextCancelWithoutSubscribing(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("ctx 已取消时应立即返回")
+		t.Fatal("should return immediately when ctx is already canceled")
 	}
 }

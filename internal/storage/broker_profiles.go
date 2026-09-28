@@ -9,10 +9,12 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// BrokerProfile 是一份保存下来的交易所下单通道凭据。EncryptedCredentials/KeySalt/
-// KeyNonce 是加密后的密文（见 internal/secretcrypto），这一层只负责存取字节，不关心
-// 加密算法、也不关心 EncryptedCredentials 里打包的是几个字段——那是调用方
-// （webui 包）的责任。UserID 是这份配置的归属用户。
+// BrokerProfile is a saved set of credentials for an exchange order-routing channel.
+// EncryptedCredentials/KeySalt/KeyNonce are the encrypted ciphertext (see
+// internal/secretcrypto) — this layer only stores and retrieves the bytes; it doesn't
+// care about the encryption algorithm, nor how many fields are packed into
+// EncryptedCredentials — that's the caller's responsibility (the webui package). UserID
+// is the owning user of this configuration.
 type BrokerProfile struct {
 	ID                   string
 	UserID               string
@@ -27,16 +29,19 @@ type BrokerProfile struct {
 	UpdatedAt            time.Time
 }
 
-// SaveBrokerProfile 插入一条新的交易所配置（不支持更新已有配置——改配置约定为
-// "删掉重加"，避免部分字段更新时不小心让密文和盐/nonce 不再匹配）。activate 为 true
-// 时在同一事务内把它设为该用户该 broker 当前生效的一份，该用户名下同 broker 的其它
-// 配置全部置为不生效——不同用户之间、同一用户的不同 broker 之间都互不影响。
+// SaveBrokerProfile inserts a new exchange configuration (updating an existing
+// configuration is not supported — the convention for changing config is "delete and
+// re-add," to avoid a partial field update accidentally leaving the ciphertext and
+// salt/nonce out of sync). When activate is true, within the same transaction it also
+// sets this row as the user's currently-active configuration for that broker, and
+// deactivates all of the user's other configurations for that broker — this has no
+// effect across different users, or across a single user's different brokers.
 func (s *Store) SaveBrokerProfile(ctx context.Context, p BrokerProfile, activate bool) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("开启事务失败：%w", err)
+		return fmt.Errorf("beginning transaction: %w", err)
 	}
-	defer tx.Rollback(ctx) //nolint:errcheck // 提交成功后 Rollback 是空操作
+	defer tx.Rollback(ctx) //nolint:errcheck // Rollback is a no-op once Commit has succeeded
 
 	const insertQ = `
 		INSERT INTO broker_profiles
@@ -45,7 +50,7 @@ func (s *Store) SaveBrokerProfile(ctx context.Context, p BrokerProfile, activate
 	if _, err := tx.Exec(ctx, insertQ,
 		p.ID, p.UserID, p.Label, p.Broker, p.KeyHint, p.EncryptedCredentials, p.KeySalt, p.KeyNonce,
 	); err != nil {
-		return fmt.Errorf("保存交易所配置失败：%w", err)
+		return fmt.Errorf("saving broker profile: %w", err)
 	}
 
 	if activate {
@@ -56,14 +61,16 @@ func (s *Store) SaveBrokerProfile(ctx context.Context, p BrokerProfile, activate
 	return tx.Commit(ctx)
 }
 
-// ActivateBrokerProfile 把某一份配置设为该用户该 broker 当前生效的一份，该用户名下
-// 同 broker 的其余配置全部置为不生效——先查出它属于哪个 broker（同时校验它确实属于
-// 当前用户），再按"用户+broker"分组去激活。userID 不匹配（配置存在但不是当前用户的）
-// 跟配置根本不存在一样返回 ErrNotFound。
+// ActivateBrokerProfile sets a given configuration as the user's currently-active one
+// for its broker, deactivating all of the user's other configurations for that same
+// broker — it first looks up which broker the row belongs to (also verifying it
+// actually belongs to the current user), then activates grouped by "user + broker." A
+// userID mismatch (configuration exists but belongs to a different user) returns
+// ErrNotFound, same as the configuration not existing at all.
 func (s *Store) ActivateBrokerProfile(ctx context.Context, userID, id string) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("开启事务失败：%w", err)
+		return fmt.Errorf("beginning transaction: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
@@ -72,9 +79,9 @@ func (s *Store) ActivateBrokerProfile(ctx context.Context, userID, id string) er
 		`SELECT broker FROM broker_profiles WHERE id = $1 AND user_id = $2`, id, userID,
 	).Scan(&broker); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("交易所配置 %s：%w", id, ErrNotFound)
+			return fmt.Errorf("broker profile %s: %w", id, ErrNotFound)
 		}
-		return fmt.Errorf("查询交易所配置失败：%w", err)
+		return fmt.Errorf("querying broker profile: %w", err)
 	}
 
 	if err := activateBrokerProfileTx(ctx, tx, userID, id, broker); err != nil {
@@ -88,32 +95,32 @@ func activateBrokerProfileTx(ctx context.Context, tx pgx.Tx, userID, id, broker 
 		`UPDATE broker_profiles SET is_active = false, updated_at = now() WHERE user_id = $1 AND broker = $2 AND is_active`,
 		userID, broker,
 	); err != nil {
-		return fmt.Errorf("清除原有生效配置失败：%w", err)
+		return fmt.Errorf("clearing previously active profile: %w", err)
 	}
 	tag, err := tx.Exec(ctx,
 		`UPDATE broker_profiles SET is_active = true, updated_at = now() WHERE id = $1 AND user_id = $2`, id, userID)
 	if err != nil {
-		return fmt.Errorf("设置生效配置失败：%w", err)
+		return fmt.Errorf("setting active profile: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("交易所配置 %s：%w", id, ErrNotFound)
+		return fmt.Errorf("broker profile %s: %w", id, ErrNotFound)
 	}
 	return nil
 }
 
-// DeleteBrokerProfile 删除一份保存的配置。
+// DeleteBrokerProfile deletes a saved configuration.
 func (s *Store) DeleteBrokerProfile(ctx context.Context, userID, id string) error {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM broker_profiles WHERE id = $1 AND user_id = $2`, id, userID)
 	if err != nil {
-		return fmt.Errorf("删除交易所配置失败：%w", err)
+		return fmt.Errorf("deleting broker profile: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("交易所配置 %s：%w", id, ErrNotFound)
+		return fmt.Errorf("broker profile %s: %w", id, ErrNotFound)
 	}
 	return nil
 }
 
-// GetBrokerProfile 按 ID 读取一份配置。
+// GetBrokerProfile reads one configuration by ID.
 func (s *Store) GetBrokerProfile(ctx context.Context, userID, id string) (BrokerProfile, error) {
 	const q = `
 		SELECT id, user_id, label, broker, key_hint, encrypted_credentials, key_salt, key_nonce, is_active, created_at, updated_at
@@ -122,23 +129,24 @@ func (s *Store) GetBrokerProfile(ctx context.Context, userID, id string) (Broker
 	err := s.pool.QueryRow(ctx, q, id, userID).Scan(&p.ID, &p.UserID, &p.Label, &p.Broker, &p.KeyHint,
 		&p.EncryptedCredentials, &p.KeySalt, &p.KeyNonce, &p.IsActive, &p.CreatedAt, &p.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return BrokerProfile{}, fmt.Errorf("交易所配置 %s：%w", id, ErrNotFound)
+		return BrokerProfile{}, fmt.Errorf("broker profile %s: %w", id, ErrNotFound)
 	}
 	if err != nil {
-		return BrokerProfile{}, fmt.Errorf("读取交易所配置 %s 失败：%w", id, err)
+		return BrokerProfile{}, fmt.Errorf("reading broker profile %s: %w", id, err)
 	}
 	return p, nil
 }
 
-// ListBrokerProfiles 列出该用户全部已保存的交易所配置（跨该用户名下所有 broker），
-// 按创建时间正序，供设置页面展示。
+// ListBrokerProfiles lists all of a user's saved exchange configurations (across every
+// broker the user has), ordered by creation time ascending, for display on the settings
+// page.
 func (s *Store) ListBrokerProfiles(ctx context.Context, userID string) ([]BrokerProfile, error) {
 	const q = `
 		SELECT id, user_id, label, broker, key_hint, encrypted_credentials, key_salt, key_nonce, is_active, created_at, updated_at
 		FROM broker_profiles WHERE user_id = $1 ORDER BY created_at`
 	rows, err := s.pool.Query(ctx, q, userID)
 	if err != nil {
-		return nil, fmt.Errorf("查询交易所配置失败：%w", err)
+		return nil, fmt.Errorf("querying broker profiles: %w", err)
 	}
 	defer rows.Close()
 
@@ -154,8 +162,9 @@ func (s *Store) ListBrokerProfiles(ctx context.Context, userID string) ([]Broker
 	return out, rows.Err()
 }
 
-// ActiveBrokerProfile 读取该用户某个下单通道当前生效的那份配置，没有任何一份生效时
-// 返回 ErrNotFound——cmd/executor 启动时据此判断能不能从数据库恢复出凭据。
+// ActiveBrokerProfile reads the user's currently-active configuration for a given order
+// routing channel, returning ErrNotFound when none is active — cmd/executor uses this at
+// startup to determine whether it can recover credentials from the database.
 func (s *Store) ActiveBrokerProfile(ctx context.Context, userID, broker string) (BrokerProfile, error) {
 	const q = `
 		SELECT id, user_id, label, broker, key_hint, encrypted_credentials, key_salt, key_nonce, is_active, created_at, updated_at
@@ -164,10 +173,10 @@ func (s *Store) ActiveBrokerProfile(ctx context.Context, userID, broker string) 
 	err := s.pool.QueryRow(ctx, q, userID, broker).Scan(&p.ID, &p.UserID, &p.Label, &p.Broker, &p.KeyHint,
 		&p.EncryptedCredentials, &p.KeySalt, &p.KeyNonce, &p.IsActive, &p.CreatedAt, &p.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return BrokerProfile{}, fmt.Errorf("%s 当前生效的交易所配置：%w", broker, ErrNotFound)
+		return BrokerProfile{}, fmt.Errorf("active broker profile for %s: %w", broker, ErrNotFound)
 	}
 	if err != nil {
-		return BrokerProfile{}, fmt.Errorf("读取 %s 当前生效的交易所配置失败：%w", broker, err)
+		return BrokerProfile{}, fmt.Errorf("reading active broker profile for %s: %w", broker, err)
 	}
 	return p, nil
 }

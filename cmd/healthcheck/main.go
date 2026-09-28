@@ -1,7 +1,8 @@
-// Command healthcheck 验证 docker-compose 起的三个依赖服务都能连上。
+// Command healthcheck verifies that the three dependency services started by
+// docker-compose are all reachable.
 //
-// 用法：go run ./cmd/healthcheck
-// 全部通过时退出码为 0，任意一项失败为 1。
+// Usage: go run ./cmd/healthcheck
+// Exit code is 0 if all checks pass, 1 if any fail.
 package main
 
 import (
@@ -46,10 +47,10 @@ func main() {
 
 	fmt.Println()
 	if failed > 0 {
-		fmt.Printf("%d/%d 项检查失败。请确认 `docker compose up -d` 已执行且容器健康。\n", failed, len(checks))
+		fmt.Printf("%d/%d checks failed. Confirm `docker compose up -d` has been run and the containers are healthy.\n", failed, len(checks))
 		os.Exit(1)
 	}
-	fmt.Printf("全部 %d 项依赖服务连接正常。\n", len(checks))
+	fmt.Printf("All %d dependency services are reachable.\n", len(checks))
 }
 
 func checkPostgres(ctx context.Context, cfg config.Config) (string, error) {
@@ -58,13 +59,13 @@ func checkPostgres(ctx context.Context, cfg config.Config) (string, error) {
 
 	conn, err := pgx.Connect(ctx, cfg.Postgres.DSN())
 	if err != nil {
-		return "", fmt.Errorf("连接失败 (%s:%d)：%w", cfg.Postgres.Host, cfg.Postgres.Port, err)
+		return "", fmt.Errorf("connection failed (%s:%d): %w", cfg.Postgres.Host, cfg.Postgres.Port, err)
 	}
 	defer conn.Close(context.Background())
 
 	var version string
 	if err := conn.QueryRow(ctx, "select version()").Scan(&version); err != nil {
-		return "", fmt.Errorf("查询失败：%w", err)
+		return "", fmt.Errorf("query failed: %w", err)
 	}
 	return truncate(version, 60), nil
 }
@@ -81,18 +82,19 @@ func checkRedis(ctx context.Context, cfg config.Config) (string, error) {
 	defer rdb.Close()
 
 	if err := rdb.Ping(ctx).Err(); err != nil {
-		return "", fmt.Errorf("PING 失败 (%s)：%w", cfg.Redis.Addr, err)
+		return "", fmt.Errorf("PING failed (%s): %w", cfg.Redis.Addr, err)
 	}
 
-	// 顺带验证读写通路，只 PING 通不代表能正常用作信号缓存。
+	// Also verify the read/write path — a successful PING alone doesn't prove
+	// it works as a signal cache.
 	const probeKey = "tradeforge:healthcheck"
 	if err := rdb.Set(ctx, probeKey, time.Now().Format(time.RFC3339), time.Minute).Err(); err != nil {
-		return "", fmt.Errorf("写入失败：%w", err)
+		return "", fmt.Errorf("write failed: %w", err)
 	}
 	if err := rdb.Del(ctx, probeKey).Err(); err != nil {
-		return "", fmt.Errorf("删除失败：%w", err)
+		return "", fmt.Errorf("delete failed: %w", err)
 	}
-	return fmt.Sprintf("%s 读写正常", cfg.Redis.Addr), nil
+	return fmt.Sprintf("%s read/write OK", cfg.Redis.Addr), nil
 }
 
 func checkKafka(ctx context.Context, cfg config.Config) (string, error) {
@@ -102,15 +104,15 @@ func checkKafka(ctx context.Context, cfg config.Config) (string, error) {
 	broker := cfg.Kafka.Brokers[0]
 	conn, err := (&kafka.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp", broker)
 	if err != nil {
-		return "", fmt.Errorf("连接失败 (%s)：%w", broker, err)
+		return "", fmt.Errorf("connection failed (%s): %w", broker, err)
 	}
 	defer conn.Close()
 
 	brokers, err := conn.Brokers()
 	if err != nil {
-		return "", fmt.Errorf("读取集群元数据失败：%w", err)
+		return "", fmt.Errorf("failed to read cluster metadata: %w", err)
 	}
-	return fmt.Sprintf("%s，集群 %d 个 broker", broker, len(brokers)), nil
+	return fmt.Sprintf("%s, cluster has %d broker(s)", broker, len(brokers)), nil
 }
 
 func truncate(s string, n int) string {

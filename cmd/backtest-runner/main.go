@@ -1,10 +1,13 @@
-// Command backtest-runner 在历史 K 线上逐根重放策略，输出决策流（JSONL）。
+// Command backtest-runner replays a strategy candle by candle over
+// historical data, emitting a decision stream (JSONL).
 //
-// 重放逻辑本身在 internal/backtest（原本直接写在这个命令里，画板加了"运行回测"
-// 按钮后 internal/webui 也需要在内存里跑一遍同样的重放，所以提出来做成一个包共用，
-// 不允许 CLI 和 webui 各跑一份可能漂移的重放实现）。
+// The replay logic itself lives in internal/backtest (it used to be written
+// directly in this command, but once the builder got a "run backtest"
+// button, internal/webui also needed to run the same replay in-process, so
+// it was factored out into a shared package — the CLI and webui must not
+// each run their own replay implementation that could drift apart).
 //
-// 用法：
+// Usage:
 //
 //	backtest-runner -strategy s.json -candles btc.csv > decisions.jsonl
 package main
@@ -25,9 +28,12 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// contextCandlesFlag 收集重复出现的 -context-candles timeframe=path 参数，供多周期
-// 策略提供除触发周期以外、模块用到的其它（更慢）周期的历史 K 线。标准库 flag 不支持
-// 重复 flag 收集成切片，用 flag.Value 接口自己实现。
+// contextCandlesFlag collects repeated -context-candles timeframe=path
+// flags, supplying a multi-timeframe strategy with historical candles for
+// the other (slower) timeframes its modules use besides the trigger
+// timeframe. The standard flag package doesn't support collecting a
+// repeated flag into a slice, so this implements the flag.Value interface
+// itself.
 type contextCandlesFlag map[types.Timeframe]string
 
 func (f contextCandlesFlag) String() string {
@@ -41,21 +47,21 @@ func (f contextCandlesFlag) String() string {
 func (f contextCandlesFlag) Set(value string) error {
 	tf, path, ok := strings.Cut(value, "=")
 	if !ok || tf == "" || path == "" {
-		return fmt.Errorf("格式应为 timeframe=path，实际 %q", value)
+		return fmt.Errorf("expected format timeframe=path, got %q", value)
 	}
 	f[types.Timeframe(tf)] = path
 	return nil
 }
 
 func main() {
-	strategyPath := flag.String("strategy", "", "策略配置 JSON 文件路径（必填）")
-	candlesPath := flag.String("candles", "", "触发周期的历史 K 线 CSV 文件路径（必填）")
-	outPath := flag.String("out", "", "输出文件路径，留空则写到标准输出")
-	window := flag.Int("window", backtest.DefaultWindow, "喂给模块的最大历史 K 线根数")
-	quiet := flag.Bool("quiet", false, "抑制模块降级等警告日志")
+	strategyPath := flag.String("strategy", "", "path to the strategy config JSON file (required)")
+	candlesPath := flag.String("candles", "", "path to the historical candle CSV for the trigger timeframe (required)")
+	outPath := flag.String("out", "", "output file path; leave empty to write to stdout")
+	window := flag.Int("window", backtest.DefaultWindow, "max number of historical candles fed to modules")
+	quiet := flag.Bool("quiet", false, "suppress warning logs such as module degradation")
 	contextCandles := make(contextCandlesFlag)
-	flag.Var(contextCandles, "context-candles", "多周期策略里除触发周期外，其它周期的历史 K 线，"+
-		"格式 timeframe=path，可重复指定（如 -context-candles 1h=btc_1h.csv）")
+	flag.Var(contextCandles, "context-candles", "historical candles for timeframes other than the trigger timeframe in a multi-timeframe strategy, "+
+		"format timeframe=path, may be repeated (e.g. -context-candles 1h=btc_1h.csv)")
 	flag.Parse()
 
 	if *strategyPath == "" || *candlesPath == "" {
@@ -65,16 +71,18 @@ func main() {
 
 	cfg, err := loadStrategy(*strategyPath)
 	if err != nil {
-		fatal("读取策略配置失败：%v", err)
+		fatal("failed to read strategy config: %v", err)
 	}
 
 	md, err := marketdata.LoadCSV(*candlesPath, cfg.Symbol, cfg.Timeframe)
 	if err != nil {
-		fatal("读取行情失败：%v", err)
+		fatal("failed to read market data: %v", err)
 	}
 
-	// 校验策略需要的每个周期（触发周期本身除外）都提供了对应的 -context-candles，
-	// 缺一个就直接报错退出，而不是悄悄跳过、让那个模块在整场回测里全程降级。
+	// Verify that every timeframe the strategy needs (other than the trigger
+	// timeframe itself) has a matching -context-candles entry. Missing one
+	// is a hard error and exit, rather than silently skipping it and letting
+	// that module run degraded for the entire backtest.
 	contextFeeds := make(map[types.Timeframe]types.MarketData, len(contextCandles))
 	for _, tf := range cfg.RequiredTimeframes() {
 		if tf == cfg.Timeframe {
@@ -82,11 +90,11 @@ func main() {
 		}
 		path, ok := contextCandles[tf]
 		if !ok {
-			fatal("策略需要 %s 周期的行情，但未提供对应的 -context-candles %s=<path>", tf, tf)
+			fatal("strategy needs %s timeframe market data, but no matching -context-candles %s=<path> was provided", tf, tf)
 		}
 		cmd, err := marketdata.LoadCSV(path, cfg.Symbol, tf)
 		if err != nil {
-			fatal("读取 %s 周期的行情失败：%v", tf, err)
+			fatal("failed to read %s timeframe market data: %v", tf, err)
 		}
 		contextFeeds[tf] = cmd
 	}
@@ -98,20 +106,20 @@ func main() {
 
 	meta, decisions, err := backtest.Replay(context.Background(), cfg, md, contextFeeds, *window, logger)
 	if err != nil {
-		fatal("重放失败：%v", err)
+		fatal("replay failed: %v", err)
 	}
 
 	out := io.Writer(os.Stdout)
 	if *outPath != "" {
 		f, err := os.Create(*outPath)
 		if err != nil {
-			fatal("创建输出文件失败：%v", err)
+			fatal("failed to create output file: %v", err)
 		}
 		defer f.Close()
 		out = f
 	}
 	if err := backtest.WriteJSONL(out, meta, decisions); err != nil {
-		fatal("写出决策流失败：%v", err)
+		fatal("failed to write decision stream: %v", err)
 	}
 }
 
@@ -122,11 +130,12 @@ func loadStrategy(path string) (types.StrategyConfig, error) {
 	}
 	var cfg types.StrategyConfig
 	dec := json.NewDecoder(bytes.NewReader(blob))
-	// 拒绝未知字段：策略文件里多出的字段往往是手改时的笔误，
-	// 静默忽略会让人以为改动生效了。
+	// Reject unknown fields: extra fields in a strategy file are usually a
+	// typo from manual editing — silently ignoring them would make someone
+	// think their change took effect.
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&cfg); err != nil {
-		return types.StrategyConfig{}, fmt.Errorf("解析策略 JSON 失败：%w", err)
+		return types.StrategyConfig{}, fmt.Errorf("failed to parse strategy JSON: %w", err)
 	}
 	return cfg, nil
 }

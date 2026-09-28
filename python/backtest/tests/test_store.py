@@ -1,4 +1,4 @@
-"""result_to_row() 的序列化测试——不连数据库，只验证字段形状。"""
+"""Serialization tests for result_to_row() -- no database connection, just checks field shapes."""
 
 from __future__ import annotations
 
@@ -60,17 +60,20 @@ def test_result_to_row_includes_equity_curve_matching_source():
 
     assert len(curve) == len(result.equity_curve)
     for point, (want_time, want_equity) in zip(curve, result.equity_curve):
-        # 序列化后应该带上 "Z" 时区后缀——Go 那边的 time.Time.UnmarshalJSON 要求
-        # RFC3339 必须显式带时区，裸时间戳（naive datetime 的 .isoformat()）会
-        # 解析失败，这是本次真实端到端验证时复现到的一个真实 bug。
+        # Serialized output must carry a "Z" timezone suffix -- Go's
+        # time.Time.UnmarshalJSON requires RFC3339 to be explicitly
+        # timezone-aware, and a bare timestamp (a naive datetime's
+        # .isoformat()) fails to parse. This reproduces a real bug found
+        # during real end-to-end verification.
         assert point["time"] == want_time.isoformat() + "Z"
         assert point["equity"] == str(want_equity)
 
 
 def test_result_to_row_timestamps_are_timezone_aware_rfc3339():
-    # 真实端到端验证时复现到的 bug：segments/trades/equity_curve 里嵌的时间戳如果
-    # 没有时区后缀，Go 端 time.Time.UnmarshalJSON 会直接报错拒绝整条记录——
-    # 这里对三处都做断言，防止同样的疏漏在其中任何一处重新出现。
+    # A bug reproduced during real end-to-end verification: if timestamps embedded in
+    # segments/trades/equity_curve lack a timezone suffix, Go's time.Time.UnmarshalJSON
+    # rejects the whole record outright -- asserting on all three here guards against
+    # the same oversight recurring in any one of them.
     candles = make_candles(["100", "101", "102", "103", "104", "103", "102"])
     decisions = make_decisions(len(candles), {0: Direction.LONG, 4: Direction.SHORT})
     result = run_backtest(
@@ -85,20 +88,21 @@ def test_result_to_row_timestamps_are_timezone_aware_rfc3339():
         assert seg["end"].endswith("Z"), seg
 
     trades = json.loads(row["trades"])
-    assert trades, "这个场景应该至少有一笔交易，测试才有意义"
+    assert trades, "this scenario should produce at least one trade, or the test proves nothing"
     for t in trades:
         assert t["entry_time"].endswith("Z"), t
         assert t["exit_time"].endswith("Z"), t
 
     curve = json.loads(row["equity_curve"])
-    assert curve, "权益曲线不应为空"
+    assert curve, "equity curve should not be empty"
     for point in curve:
         assert point["time"].endswith("Z"), point
 
 
 def test_result_to_row_equity_curve_empty_list_serializes_cleanly():
-    # 只有一根K线时权益曲线至少有一个点（起始权益），但构造一个刻意退化的场景
-    # 覆盖"曲线为空列表"也不该报错——json.dumps([]) 应该老老实实给出 "[]"。
+    # With a single candle the equity curve still has at least one point (the starting
+    # equity), but we deliberately construct a degenerate scenario to cover "curve is an
+    # empty list" too -- it must not raise; json.dumps([]) should simply give back "[]".
     candles = make_candles(["100"])
     decisions = make_decisions(1)
     result = run_backtest(

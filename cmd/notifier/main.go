@@ -1,26 +1,34 @@
-// Command notifier 是信号提醒层的入口。
+// Command notifier is the entry point for the signal alert layer.
 //
-// 它从 Kafka 消费组合引擎产出的决策，跟 cmd/executor 是同一个 topic 的独立消费组——
-// 两者互不知晓对方存在，互不干扰（见 internal/messaging.NewDecisionReader 的
-// "groupID 相同的实例之间会分摊分区"注释：不同 groupID 是各自完整的一份消费）。
+// It consumes decisions produced by the composition engine from Kafka, as
+// an independent consumer group from cmd/executor's, on the same topic —
+// the two are unaware of each other and don't interfere (see the
+// "instances sharing the same groupID split partitions between them"
+// comment on internal/messaging.NewDecisionReader: different groupIDs each
+// get their own full copy of the stream).
 //
-// 跟 cmd/executor 的关键差异：执行层只关心 LIVE（且只在注册时检查一次），提醒层
-// 同时服务 PAPER_TRADING（预览/验证体验）和 LIVE（真实提醒）——这是产品决策：
-// 模拟盘阶段也要提醒，帮用户在真金白银之前建立对策略的信任感。LIVE_ELIGIBLE/
-// SUSPENDED/DRAFT/BACKTESTED 都不提醒。
+// The key difference from cmd/executor: the execution layer only cares
+// about LIVE (and only checks once, at registration time), while the alert
+// layer serves both PAPER_TRADING (preview/validation experience) and LIVE
+// (real alerts) — this is a product decision: alerts should fire during
+// paper trading too, to help users build trust in a strategy before
+// risking real money. LIVE_ELIGIBLE/SUSPENDED/DRAFT/BACKTESTED never alert.
 //
-// 用法：
+// Usage:
 //
-//	go run ./cmd/notifier                                    # 多用户模式：服务全部用户
-//	go run ./cmd/notifier -owner-email you@example.com        # 单用户模式（较少用，主要为部署对称性保留）
-//	go run ./cmd/notifier -dry-run                            # 只打印将要发送的内容，不真正调用任何外部接口
+//	go run ./cmd/notifier                                    # multi-tenant mode: serves all users
+//	go run ./cmd/notifier -owner-email you@example.com        # single-tenant mode (less common, kept mainly for deployment symmetry)
+//	go run ./cmd/notifier -dry-run                            # only print what would be sent, without calling any external API
 //
-// 部署级配置（跟 TF_MASTER_KEY 同一类：整个部署共用一份，不是每用户各自的）：
-// TF_SMTP_HOST/TF_SMTP_PORT/TF_SMTP_USERNAME/TF_SMTP_PASSWORD/TF_SMTP_FROM（邮件渠道）、
-// TF_TELEGRAM_BOT_TOKEN（Telegram 渠道）、TF_VAPID_PUBLIC_KEY/TF_VAPID_PRIVATE_KEY/
-// TF_VAPID_SUBJECT（web push 渠道）。任何一组缺失只会让对应渠道在发送时报错并记入
-// notification_deliveries 的 failed 记录，不会阻止进程启动或影响其它渠道——
-// 一个部署完全可以只配邮件+webhook，不配 Telegram/push。
+// Deployment-level config (same category as TF_MASTER_KEY: one shared value
+// per deployment, not per user): TF_SMTP_HOST/TF_SMTP_PORT/
+// TF_SMTP_USERNAME/TF_SMTP_PASSWORD/TF_SMTP_FROM (email channel),
+// TF_TELEGRAM_BOT_TOKEN (Telegram channel), TF_VAPID_PUBLIC_KEY/
+// TF_VAPID_PRIVATE_KEY/TF_VAPID_SUBJECT (web push channel). Any missing
+// group just makes the corresponding channel error at send time and get
+// recorded as a failed row in notification_deliveries — it never blocks
+// startup or affects other channels; a deployment can perfectly well
+// configure only email+webhook and skip Telegram/push.
 package main
 
 import (
@@ -42,9 +50,10 @@ import (
 
 func main() {
 	ownerEmail := flag.String("owner-email", "",
-		"单用户模式：只服务这一个用户（可选，该用户的邮箱）；留空则是多用户模式，服务全部用户的决策")
-	group := flag.String("group", "tradeforge-notifier", "Kafka 消费组 ID")
-	dryRun := flag.Bool("dry-run", false, "只打印将要发送的内容，不真正调用邮件/Telegram/webhook/推送接口")
+		"single-tenant mode: serve only this one user (optional, that user's email); "+
+			"empty means multi-tenant mode, serving all users' decisions")
+	group := flag.String("group", "tradeforge-notifier", "Kafka consumer group ID")
+	dryRun := flag.Bool("dry-run", false, "only print what would be sent, without actually calling email/Telegram/webhook/push APIs")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -56,17 +65,18 @@ func main() {
 
 	store, err := storage.Open(ctx, cfg.Postgres)
 	if err != nil {
-		fatal("连接数据库失败：%v", err)
+		fatal("failed to connect to the database: %v", err)
 	}
 	defer store.Close()
 
-	// 留空 -owner-email = 多用户模式：ownerUserID 保持空字符串，handleDecision 不做
-	// 任何按用户过滤，服务全部用户的决策。
+	// Empty -owner-email = multi-tenant mode: ownerUserID stays an empty
+	// string, and handleDecision does no per-user filtering, serving
+	// decisions for all users.
 	ownerUserID := ""
 	if trimmed := strings.TrimSpace(*ownerEmail); trimmed != "" {
 		owner, err := store.GetUserByEmail(ctx, trimmed)
 		if err != nil {
-			fatal("找不到 -owner-email 指定的用户 %q：%v", trimmed, err)
+			fatal("could not find the user specified by -owner-email %q: %v", trimmed, err)
 		}
 		ownerUserID = owner.ID
 	}
@@ -75,31 +85,34 @@ func main() {
 	senders := buildSenders(cfg, store, *dryRun, logger)
 
 	if err := messaging.EnsureTopics(ctx, cfg.Kafka); err != nil {
-		logger.Warn("创建 Kafka topic 失败，将依赖自动创建", "err", err)
+		logger.Warn("failed to create Kafka topics, relying on auto-creation", "err", err)
 	}
 	reader := messaging.NewDecisionReader(cfg.Kafka, *group)
 	defer reader.Close()
 
-	logger.Info("开始消费决策用于提醒",
+	logger.Info("started consuming decisions for alerts",
 		"topic", cfg.Kafka.DecisionTopic, "group", *group, "multi_tenant", ownerUserID == "", "dry_run", *dryRun)
 	consume(ctx, reader, store, senders, ownerUserID, logger)
 
-	logger.Info("收到停止信号，正在关闭提醒层")
+	logger.Info("received stop signal, shutting down the alert layer")
 }
 
-// warnIfUnconfigured 对每一组缺失的部署级配置发一条警告，不阻止启动——一个部署
-// 完全可以只配置部分渠道。跟 cmd/webui/main.go 对未配置 Agent 时的处理是同一个
-// "缺配置只降级、不拒绝启动"原则，但比它更进一步：这里连拒绝启动都不做，因为
-// 四个渠道里任意子集缺失都不影响其它渠道正常工作。
+// warnIfUnconfigured logs a warning for each missing group of
+// deployment-level config, without blocking startup — a deployment can
+// perfectly well configure only some channels. This is the same "missing
+// config only degrades, never refuses to start" principle cmd/webui/main.go
+// applies when the Agent isn't configured, but taken a step further: it
+// doesn't even refuse to start here, because any subset of the four
+// channels being missing has no effect on the others working normally.
 func warnIfUnconfigured(n config.NotificationConfig, logger *slog.Logger) {
 	if n.SMTP.Host == "" {
-		logger.Warn("未配置 SMTP（TF_SMTP_HOST 等），邮件渠道不可用")
+		logger.Warn("SMTP not configured (TF_SMTP_HOST etc.), email channel unavailable")
 	}
 	if n.Telegram.BotToken == "" {
-		logger.Warn("未配置 Telegram bot token（TF_TELEGRAM_BOT_TOKEN），Telegram 渠道不可用")
+		logger.Warn("Telegram bot token not configured (TF_TELEGRAM_BOT_TOKEN), Telegram channel unavailable")
 	}
 	if n.WebPush.VAPIDPrivateKey == "" {
-		logger.Warn("未配置 VAPID 密钥（TF_VAPID_PRIVATE_KEY 等），web push 渠道不可用")
+		logger.Warn("VAPID keys not configured (TF_VAPID_PRIVATE_KEY etc.), web push channel unavailable")
 	}
 }
 

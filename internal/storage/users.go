@@ -10,12 +10,13 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// ErrEmailTaken 表示注册时邮箱已经被占用（大小写不敏感）。
-var ErrEmailTaken = errors.New("邮箱已被注册")
+// ErrEmailTaken indicates the email is already registered at signup (case-insensitive).
+var ErrEmailTaken = errors.New("email already registered")
 
-// User 是一个平台账号。PasswordHash 是 bcrypt 哈希——这是登录口令的哈希算法，
-// 跟 internal/secretcrypto 给存储的交易所/LLM 凭据做 AES 加密用的 scrypt 派生密钥
-// 是两件完全独立的事，不要混用。
+// User is a platform account. PasswordHash is a bcrypt hash -- this is the
+// hashing algorithm for the login password, a completely separate thing
+// from the scrypt-derived key that internal/secretcrypto uses to AES-encrypt
+// stored exchange/LLM credentials. Don't conflate the two.
 type User struct {
 	ID           string
 	Email        string
@@ -24,9 +25,11 @@ type User struct {
 	UpdatedAt    time.Time
 }
 
-// CreateUser 插入一个新账号。邮箱唯一性冲突（大小写不敏感，见 005_users.sql 的
-// idx_users_email_lower）映射成 ErrEmailTaken，调用方据此给出"该邮箱已注册"这类
-// 事实性提示，不是泄露"数据库唯一约束冲突"这种内部细节。
+// CreateUser inserts a new account. A unique-email conflict (case-insensitive,
+// via idx_users_email_lower in 005_users.sql) is mapped to ErrEmailTaken, so
+// the caller can surface a factual "this email is already registered"
+// message instead of leaking an internal detail like "database unique
+// constraint violation".
 func (s *Store) CreateUser(ctx context.Context, u User) error {
 	const q = `
 		INSERT INTO users (id, email, password_hash, created_at, updated_at)
@@ -36,12 +39,13 @@ func (s *Store) CreateUser(ctx context.Context, u User) error {
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			return ErrEmailTaken
 		}
-		return fmt.Errorf("创建账号失败：%w", err)
+		return fmt.Errorf("create account: %w", err)
 	}
 	return nil
 }
 
-// GetUserByEmail 按邮箱查账号（大小写不敏感），登录时用来核对密码。
+// GetUserByEmail looks up an account by email (case-insensitive), used at
+// login to check the password.
 func (s *Store) GetUserByEmail(ctx context.Context, email string) (User, error) {
 	const q = `
 		SELECT id, email, password_hash, created_at, updated_at
@@ -49,15 +53,15 @@ func (s *Store) GetUserByEmail(ctx context.Context, email string) (User, error) 
 	var u User
 	err := s.pool.QueryRow(ctx, q, email).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt, &u.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return User{}, fmt.Errorf("账号 %s：%w", email, ErrNotFound)
+		return User{}, fmt.Errorf("account %s: %w", email, ErrNotFound)
 	}
 	if err != nil {
-		return User{}, fmt.Errorf("读取账号失败：%w", err)
+		return User{}, fmt.Errorf("read account: %w", err)
 	}
 	return u, nil
 }
 
-// GetUser 按 ID 查账号。
+// GetUser looks up an account by ID.
 func (s *Store) GetUser(ctx context.Context, id string) (User, error) {
 	const q = `
 		SELECT id, email, password_hash, created_at, updated_at
@@ -65,10 +69,10 @@ func (s *Store) GetUser(ctx context.Context, id string) (User, error) {
 	var u User
 	err := s.pool.QueryRow(ctx, q, id).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.CreatedAt, &u.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return User{}, fmt.Errorf("账号 %s：%w", id, ErrNotFound)
+		return User{}, fmt.Errorf("account %s: %w", id, ErrNotFound)
 	}
 	if err != nil {
-		return User{}, fmt.Errorf("读取账号失败：%w", err)
+		return User{}, fmt.Errorf("read account: %w", err)
 	}
 	return u, nil
 }

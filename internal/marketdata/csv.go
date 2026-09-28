@@ -1,4 +1,4 @@
-// Package marketdata 负责行情数据的加载与格式转换。
+// Package marketdata handles loading and format conversion of market data.
 package marketdata
 
 import (
@@ -16,7 +16,8 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// 支持的 CSV 列名。首行必须是表头；列顺序任意，缺列会明确报错。
+// Supported CSV column names. The first row must be a header; column order is
+// arbitrary, and a missing column produces an explicit error.
 const (
 	colOpenTime  = "open_time"
 	colOpen      = "open"
@@ -29,27 +30,28 @@ const (
 	colTrades    = "trades"
 )
 
-// LoadCSV 从文件读取历史 K 线。
+// LoadCSV reads historical candles from a file.
 //
-// 价量字段一律用 decimal.NewFromString 解析，绝不经过 strconv.ParseFloat——
-// 那一步会在读入阶段就悄悄引入精度误差，后面再怎么用 decimal 都补不回来。
+// Price/volume fields are always parsed with decimal.NewFromString, never
+// strconv.ParseFloat — that step would silently introduce precision errors at
+// read time that no amount of decimal usage downstream could recover from.
 func LoadCSV(path string, symbol string, tf types.Timeframe) (types.MarketData, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return types.MarketData{}, fmt.Errorf("打开行情文件失败：%w", err)
+		return types.MarketData{}, fmt.Errorf("failed to open market data file: %w", err)
 	}
 	defer f.Close()
 	return ReadCSV(f, symbol, tf)
 }
 
-// ReadCSV 从 io.Reader 读取历史 K 线。
+// ReadCSV reads historical candles from an io.Reader.
 func ReadCSV(r io.Reader, symbol string, tf types.Timeframe) (types.MarketData, error) {
 	cr := csv.NewReader(r)
 	cr.TrimLeadingSpace = true
 
 	header, err := cr.Read()
 	if err != nil {
-		return types.MarketData{}, fmt.Errorf("读取表头失败：%w", err)
+		return types.MarketData{}, fmt.Errorf("failed to read header: %w", err)
 	}
 	idx := make(map[string]int, len(header))
 	for i, name := range header {
@@ -57,7 +59,7 @@ func ReadCSV(r io.Reader, symbol string, tf types.Timeframe) (types.MarketData, 
 	}
 	for _, required := range []string{colOpenTime, colOpen, colHigh, colLow, colClose, colVolume} {
 		if _, ok := idx[required]; !ok {
-			return types.MarketData{}, fmt.Errorf("行情文件缺少必需的列 %q（现有列：%v）", required, header)
+			return types.MarketData{}, fmt.Errorf("market data file is missing required column %q (existing columns: %v)", required, header)
 		}
 	}
 
@@ -70,21 +72,22 @@ func ReadCSV(r io.Reader, symbol string, tf types.Timeframe) (types.MarketData, 
 		}
 		line++
 		if err != nil {
-			return types.MarketData{}, fmt.Errorf("第 %d 行解析失败：%w", line, err)
+			return types.MarketData{}, fmt.Errorf("failed to parse line %d: %w", line, err)
 		}
 
 		c, err := parseRow(rec, idx, tf)
 		if err != nil {
-			return types.MarketData{}, fmt.Errorf("第 %d 行：%w", line, err)
+			return types.MarketData{}, fmt.Errorf("line %d: %w", line, err)
 		}
 		md.Candles = append(md.Candles, c)
 	}
 
 	if len(md.Candles) == 0 {
-		return types.MarketData{}, fmt.Errorf("行情文件中没有任何 K 线数据")
+		return types.MarketData{}, fmt.Errorf("market data file contains no candle data")
 	}
 
-	// 模块假定 Candles 按时间升序，这里主动排序而不是相信输入文件。
+	// Modules assume Candles are in ascending time order, so we sort
+	// proactively here rather than trust the input file.
 	sort.Slice(md.Candles, func(i, j int) bool {
 		return md.Candles[i].OpenTime.Before(md.Candles[j].OpenTime)
 	})
@@ -105,7 +108,7 @@ func parseRow(rec []string, idx map[string]int, tf types.Timeframe) (types.Candl
 
 	openTime, err := parseTime(get(colOpenTime))
 	if err != nil {
-		return types.Candle{}, fmt.Errorf("open_time 解析失败：%w", err)
+		return types.Candle{}, fmt.Errorf("failed to parse open_time: %w", err)
 	}
 
 	c := types.Candle{OpenTime: openTime}
@@ -118,7 +121,7 @@ func parseRow(rec []string, idx map[string]int, tf types.Timeframe) (types.Candl
 	} {
 		v, err := decimal.NewFromString(get(field.col))
 		if err != nil {
-			return types.Candle{}, fmt.Errorf("%s 不是合法数值：%w", field.col, err)
+			return types.Candle{}, fmt.Errorf("%s is not a valid number: %w", field.col, err)
 		}
 		*field.dst = v
 	}
@@ -126,14 +129,14 @@ func parseRow(rec []string, idx map[string]int, tf types.Timeframe) (types.Candl
 	if s := get(colTakerBuy); s != "" {
 		v, err := decimal.NewFromString(s)
 		if err != nil {
-			return types.Candle{}, fmt.Errorf("taker_buy_volume 不是合法数值：%w", err)
+			return types.Candle{}, fmt.Errorf("taker_buy_volume is not a valid number: %w", err)
 		}
 		c.TakerBuyVolume = v
 	}
 	if s := get(colTrades); s != "" {
 		n, err := strconv.ParseInt(s, 10, 64)
 		if err != nil {
-			return types.Candle{}, fmt.Errorf("trades 不是整数：%w", err)
+			return types.Candle{}, fmt.Errorf("trades is not an integer: %w", err)
 		}
 		c.Trades = n
 	}
@@ -141,7 +144,7 @@ func parseRow(rec []string, idx map[string]int, tf types.Timeframe) (types.Candl
 	if s := get(colCloseTime); s != "" {
 		t, err := parseTime(s)
 		if err != nil {
-			return types.Candle{}, fmt.Errorf("close_time 解析失败：%w", err)
+			return types.Candle{}, fmt.Errorf("failed to parse close_time: %w", err)
 		}
 		c.CloseTime = t
 	} else {
@@ -149,45 +152,48 @@ func parseRow(rec []string, idx map[string]int, tf types.Timeframe) (types.Candl
 	}
 
 	if c.High.LessThan(c.Low) {
-		return types.Candle{}, fmt.Errorf("最高价 %s 低于最低价 %s，数据异常", c.High, c.Low)
+		return types.Candle{}, fmt.Errorf("high %s is below low %s, data is inconsistent", c.High, c.Low)
 	}
 	return c, nil
 }
 
-// parseTime 接受 RFC3339 字符串或 Unix 毫秒/秒时间戳。
+// parseTime accepts an RFC3339 string or a Unix millisecond/second timestamp.
 func parseTime(s string) (time.Time, error) {
 	if s == "" {
-		return time.Time{}, fmt.Errorf("时间为空")
+		return time.Time{}, fmt.Errorf("time is empty")
 	}
 	if t, err := time.Parse(time.RFC3339, s); err == nil {
 		return t.UTC(), nil
 	}
 	n, err := strconv.ParseInt(s, 10, 64)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("既不是 RFC3339 也不是 Unix 时间戳：%q", s)
+		return time.Time{}, fmt.Errorf("not RFC3339 nor a Unix timestamp: %q", s)
 	}
-	// 交易所的 K 线接口普遍用毫秒；13 位以上按毫秒解释。
+	// Exchange candle APIs commonly use milliseconds; 13+ digits are
+	// interpreted as milliseconds.
 	if n > 1e11 {
 		return time.UnixMilli(n).UTC(), nil
 	}
 	return time.Unix(n, 0).UTC(), nil
 }
 
-// checkContinuity 检查时间序列是否有重复或倒序。
+// checkContinuity checks whether the time series has duplicate or
+// out-of-order timestamps.
 //
-// 缺口只警告不报错（交易所维护期确实会缺 K 线），但重复时间戳会让
-// 回测把同一根 K 线算两次，属于必须拦下的数据问题。
+// Gaps are not an error (exchange maintenance windows genuinely produce
+// missing candles), but duplicate timestamps would make the backtest count
+// the same candle twice, which is a data problem that must be caught.
 func checkContinuity(md types.MarketData) error {
 	for i := 1; i < len(md.Candles); i++ {
 		if !md.Candles[i].OpenTime.After(md.Candles[i-1].OpenTime) {
-			return fmt.Errorf("第 %d 根与第 %d 根 K 线时间相同或倒序（%s）",
+			return fmt.Errorf("candle %d and candle %d have the same or out-of-order timestamp (%s)",
 				i, i+1, md.Candles[i].OpenTime.Format(time.RFC3339))
 		}
 	}
 	return nil
 }
 
-// WriteCSV 把 K 线写成 CSV，供生成测试数据使用。
+// WriteCSV writes candles out as CSV, for generating test data.
 func WriteCSV(w io.Writer, md types.MarketData) error {
 	cw := csv.NewWriter(w)
 	defer cw.Flush()

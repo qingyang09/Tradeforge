@@ -9,11 +9,15 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// AgentProfile 是一份保存下来的 LLM 供应商配置。EncryptedAPIKey/KeySalt/KeyNonce
-// 是加密后的密文（见 internal/secretcrypto），这一层只负责存取字节，不关心
-// 加密算法——密钥管理是调用方（webui 包）的责任，storage 包不该知道服务端主密钥
-// 这种概念。UserID 是这份配置的归属用户——每个用户各自最多一份生效配置
-// （见 007_agent_profiles_ownership.sql 的分组唯一索引），不同用户互不影响。
+// AgentProfile is a saved LLM provider configuration. EncryptedAPIKey/
+// KeySalt/KeyNonce are the encrypted ciphertext (see internal/secretcrypto);
+// this layer only stores and retrieves bytes and doesn't concern itself with
+// the encryption algorithm -- key management is the caller's (webui
+// package's) responsibility, the storage package shouldn't know about
+// concepts like a server-side master key. UserID is the owner of this
+// config -- each user has at most one active config at a time (see the
+// partial unique index in 007_agent_profiles_ownership.sql); different
+// users don't affect each other.
 type AgentProfile struct {
 	ID              string
 	UserID          string
@@ -30,16 +34,19 @@ type AgentProfile struct {
 	UpdatedAt       time.Time
 }
 
-// SaveAgentProfile 插入一条新的模型配置（不支持更新已有配置——改配置约定为"删掉重加"，
-// 避免部分字段更新时不小心让密文和盐/nonce 不再匹配）。activate 为 true 时在同一事务内
-// 把它设为该用户当前生效的一份，该用户名下的其它配置全部置为不生效——不同用户之间
-// 互不影响。
+// SaveAgentProfile inserts a new model config (updating an existing config
+// is not supported -- the convention for changing a config is "delete and
+// re-add," to avoid a partial field update accidentally leaving the
+// ciphertext out of sync with its salt/nonce). When activate is true, it
+// sets this config as the user's currently active one within the same
+// transaction, deactivating all of that user's other configs -- different
+// users don't affect each other.
 func (s *Store) SaveAgentProfile(ctx context.Context, p AgentProfile, activate bool) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("开启事务失败：%w", err)
+		return fmt.Errorf("begin transaction: %w", err)
 	}
-	defer tx.Rollback(ctx) //nolint:errcheck // 提交成功后 Rollback 是空操作
+	defer tx.Rollback(ctx) //nolint:errcheck // Rollback is a no-op after a successful commit
 
 	const insertQ = `
 		INSERT INTO agent_profiles
@@ -48,7 +55,7 @@ func (s *Store) SaveAgentProfile(ctx context.Context, p AgentProfile, activate b
 	if _, err := tx.Exec(ctx, insertQ,
 		p.ID, p.UserID, p.Label, p.Provider, p.Model, p.BaseURL, p.KeyHint, p.EncryptedAPIKey, p.KeySalt, p.KeyNonce,
 	); err != nil {
-		return fmt.Errorf("保存模型配置失败：%w", err)
+		return fmt.Errorf("save model config: %w", err)
 	}
 
 	if activate {
@@ -59,15 +66,19 @@ func (s *Store) SaveAgentProfile(ctx context.Context, p AgentProfile, activate b
 	return tx.Commit(ctx)
 }
 
-// ActivateAgentProfile 把某一份配置设为该用户当前生效的一份，该用户名下其余全部置为
-// 不生效——部分唯一索引（见 007_agent_profiles_ownership.sql）保证同一用户同一时刻
-// 只有一行 is_active = true，这里用事务显式地"先全部关掉、再打开这一行"，不依赖索引
-// 冲突去兜底。userID 不匹配（这份配置存在但不是当前用户的）跟配置根本不存在一样返回
-// ErrNotFound——不让调用方探测出"这个 ID 存在，只是不是你的"。
+// ActivateAgentProfile sets one config as the user's currently active one,
+// deactivating all others under that user -- a partial unique index (see
+// 007_agent_profiles_ownership.sql) guarantees at most one row with
+// is_active = true per user at any time; this method uses a transaction to
+// explicitly "turn everything off first, then turn this one on," rather
+// than relying on an index conflict as a backstop. A userID mismatch (this
+// config exists but belongs to a different user) returns ErrNotFound, same
+// as if the config didn't exist at all -- this keeps the caller from
+// probing whether "this ID exists, it's just not yours".
 func (s *Store) ActivateAgentProfile(ctx context.Context, userID, id string) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("开启事务失败：%w", err)
+		return fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
@@ -81,34 +92,37 @@ func activateProfileTx(ctx context.Context, tx pgx.Tx, userID, id string) error 
 	if _, err := tx.Exec(ctx,
 		`UPDATE agent_profiles SET is_active = false, updated_at = now() WHERE user_id = $1 AND is_active`, userID,
 	); err != nil {
-		return fmt.Errorf("清除原有生效配置失败：%w", err)
+		return fmt.Errorf("clear existing active config: %w", err)
 	}
 	tag, err := tx.Exec(ctx,
 		`UPDATE agent_profiles SET is_active = true, updated_at = now() WHERE id = $1 AND user_id = $2`, id, userID)
 	if err != nil {
-		return fmt.Errorf("设置生效配置失败：%w", err)
+		return fmt.Errorf("set active config: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("模型配置 %s：%w", id, ErrNotFound)
+		return fmt.Errorf("model config %s: %w", id, ErrNotFound)
 	}
 	return nil
 }
 
-// DeleteAgentProfile 删除一份保存的配置。删除当前生效的那份不会自动激活另一份——
-// 界面回落到"未配置"状态，避免用户没注意到就悄悄切换到另一把可能不是他想用的 key。
+// DeleteAgentProfile deletes a saved config. Deleting the currently active
+// one doesn't automatically activate another -- the UI falls back to an
+// "unconfigured" state, avoiding a silent switch to another key the user
+// might not have noticed and might not have wanted.
 func (s *Store) DeleteAgentProfile(ctx context.Context, userID, id string) error {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM agent_profiles WHERE id = $1 AND user_id = $2`, id, userID)
 	if err != nil {
-		return fmt.Errorf("删除模型配置失败：%w", err)
+		return fmt.Errorf("delete model config: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("模型配置 %s：%w", id, ErrNotFound)
+		return fmt.Errorf("model config %s: %w", id, ErrNotFound)
 	}
 	return nil
 }
 
-// GetAgentProfile 按 ID 读取一份配置——激活/删除前用它确认这份配置真的存在，
-// 激活时还要用它把加密的 API key 取出来解密。
+// GetAgentProfile reads a config by ID -- used before activating/deleting to
+// confirm it actually exists, and used during activation to pull out the
+// encrypted API key for decryption.
 func (s *Store) GetAgentProfile(ctx context.Context, userID, id string) (AgentProfile, error) {
 	const q = `
 		SELECT id, user_id, label, provider, model, base_url, key_hint, encrypted_api_key, key_salt, key_nonce, is_active, created_at, updated_at
@@ -117,22 +131,23 @@ func (s *Store) GetAgentProfile(ctx context.Context, userID, id string) (AgentPr
 	err := s.pool.QueryRow(ctx, q, id, userID).Scan(&p.ID, &p.UserID, &p.Label, &p.Provider, &p.Model, &p.BaseURL, &p.KeyHint,
 		&p.EncryptedAPIKey, &p.KeySalt, &p.KeyNonce, &p.IsActive, &p.CreatedAt, &p.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return AgentProfile{}, fmt.Errorf("模型配置 %s：%w", id, ErrNotFound)
+		return AgentProfile{}, fmt.Errorf("model config %s: %w", id, ErrNotFound)
 	}
 	if err != nil {
-		return AgentProfile{}, fmt.Errorf("读取模型配置 %s 失败：%w", id, err)
+		return AgentProfile{}, fmt.Errorf("read model config %s: %w", id, err)
 	}
 	return p, nil
 }
 
-// ListAgentProfiles 列出该用户全部已保存的模型配置，按创建时间正序，供设置页面展示。
+// ListAgentProfiles lists all of the user's saved model configs, ordered by
+// creation time ascending, for display on the settings page.
 func (s *Store) ListAgentProfiles(ctx context.Context, userID string) ([]AgentProfile, error) {
 	const q = `
 		SELECT id, user_id, label, provider, model, base_url, key_hint, encrypted_api_key, key_salt, key_nonce, is_active, created_at, updated_at
 		FROM agent_profiles WHERE user_id = $1 ORDER BY created_at`
 	rows, err := s.pool.Query(ctx, q, userID)
 	if err != nil {
-		return nil, fmt.Errorf("查询模型配置失败：%w", err)
+		return nil, fmt.Errorf("query model configs: %w", err)
 	}
 	defer rows.Close()
 
@@ -148,7 +163,8 @@ func (s *Store) ListAgentProfiles(ctx context.Context, userID string) ([]AgentPr
 	return out, rows.Err()
 }
 
-// ActiveAgentProfile 读取该用户当前生效的那份配置，没有任何一份生效时返回 ErrNotFound。
+// ActiveAgentProfile reads the user's currently active config, returning
+// ErrNotFound if none is active.
 func (s *Store) ActiveAgentProfile(ctx context.Context, userID string) (AgentProfile, error) {
 	const q = `
 		SELECT id, user_id, label, provider, model, base_url, key_hint, encrypted_api_key, key_salt, key_nonce, is_active, created_at, updated_at
@@ -157,10 +173,10 @@ func (s *Store) ActiveAgentProfile(ctx context.Context, userID string) (AgentPro
 	err := s.pool.QueryRow(ctx, q, userID).Scan(&p.ID, &p.UserID, &p.Label, &p.Provider, &p.Model, &p.BaseURL, &p.KeyHint,
 		&p.EncryptedAPIKey, &p.KeySalt, &p.KeyNonce, &p.IsActive, &p.CreatedAt, &p.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return AgentProfile{}, fmt.Errorf("当前生效的模型配置：%w", ErrNotFound)
+		return AgentProfile{}, fmt.Errorf("active model config: %w", ErrNotFound)
 	}
 	if err != nil {
-		return AgentProfile{}, fmt.Errorf("读取当前生效的模型配置失败：%w", err)
+		return AgentProfile{}, fmt.Errorf("read active model config: %w", err)
 	}
 	return p, nil
 }

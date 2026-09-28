@@ -12,17 +12,20 @@ import (
 	"tradeforge/internal/config"
 )
 
-// DefaultOpenAIModel 是 OpenAI 供应商在未显式指定模型时使用的默认模型。
+// DefaultOpenAIModel is the model the OpenAI provider uses when no model is
+// explicitly specified.
 const DefaultOpenAIModel = "gpt-4o"
 
-// DefaultOpenAIBaseURL 是 OpenAI 官方 API 地址。
+// DefaultOpenAIBaseURL is OpenAI's official API address.
 const DefaultOpenAIBaseURL = "https://api.openai.com/v1"
 
-// OpenAILLM 用 OpenAI 的 Chat Completions API 实现 LLM。
+// OpenAILLM implements LLM using OpenAI's Chat Completions API.
 //
-// 跟 AnthropicLLM 结构上完全对称：同样强制走单一工具调用（而不是"请你输出 JSON"）
-// 拿到结构化输出，同样的合规要求——绝不允许自由文本直接进入执行链路——在这里
-// 同样必须守住，不能因为换了供应商就降低约束强度。
+// Structurally a perfect mirror of AnthropicLLM: it likewise forces a single
+// tool call (instead of "please output JSON") to get structured output, and
+// the same compliance requirement — free-form text must never enter the
+// execution chain — must be upheld here just as strictly; switching vendors
+// is no excuse to relax the constraint.
 type OpenAILLM struct {
 	client    openai.Client
 	model     string
@@ -30,7 +33,7 @@ type OpenAILLM struct {
 	maxTokens int64
 }
 
-// NewOpenAILLM 按配置构造客户端。
+// NewOpenAILLM constructs a client from the given config.
 func NewOpenAILLM(cfg config.AgentConfig) (*OpenAILLM, error) {
 	if cfg.APIKey == "" {
 		return nil, ErrNoAPIKey
@@ -54,10 +57,10 @@ func NewOpenAILLM(cfg config.AgentConfig) (*OpenAILLM, error) {
 	}, nil
 }
 
-// Complete 实现 LLM。
+// Complete implements LLM.
 func (a *OpenAILLM) Complete(ctx context.Context, system string, schema Schema, turns []Turn) (string, error) {
 	if len(turns) == 0 {
-		return "", errors.New("对话轮次为空")
+		return "", errors.New("conversation has no turns")
 	}
 
 	msgs := make([]openai.ChatCompletionMessageParamUnion, 0, len(turns)+1)
@@ -76,8 +79,10 @@ func (a *OpenAILLM) Complete(ctx context.Context, system string, schema Schema, 
 			Name:        toolName,
 			Description: openai.String("提交翻译结果。这是唯一允许的输出通道。"),
 			Parameters:  shared.FunctionParameters(schema),
-			// strict 让 API 保证参数严格符合 schema，语义等价于 AnthropicLLM 里的
-			// Strict: true——两家供应商都必须走这条路，不能有一个是"尽量符合"。
+			// strict makes the API guarantee the arguments strictly conform to
+			// the schema, semantically equivalent to AnthropicLLM's Strict: true
+			// — both vendors must follow this path, neither gets to be
+			// "best effort".
 			Strict: openai.Bool(true),
 		},
 	}
@@ -87,27 +92,27 @@ func (a *OpenAILLM) Complete(ctx context.Context, system string, schema Schema, 
 		Messages:            msgs,
 		Tools:               []openai.ChatCompletionToolParam{tool},
 		MaxCompletionTokens: openai.Int(a.maxTokens),
-		// 强制走工具调用，堵死模型返回自由文本的可能，跟 Anthropic 侧的
-		// ToolChoice 是同一个目的。
+		// Force tool-use routing to close off any path for the model to return
+		// free-form text — same purpose as the ToolChoice on the Anthropic side.
 		ToolChoice: openai.ChatCompletionToolChoiceOptionParamOfChatCompletionNamedToolChoice(
 			openai.ChatCompletionNamedToolChoiceFunctionParam{Name: toolName},
 		),
 	})
 	if err != nil {
-		return "", fmt.Errorf("调用模型失败：%w", err)
+		return "", fmt.Errorf("model call failed: %w", err)
 	}
 	if len(resp.Choices) == 0 {
-		return "", errors.New("模型未返回任何选择")
+		return "", errors.New("model returned no choices")
 	}
 
 	msg := resp.Choices[0].Message
 	if msg.Refusal != "" {
-		return "", fmt.Errorf("模型拒绝了本次请求（%s）", msg.Refusal)
+		return "", fmt.Errorf("model refused this request (%s)", msg.Refusal)
 	}
 	for _, call := range msg.ToolCalls {
 		if call.Function.Name == toolName {
 			return call.Function.Arguments, nil
 		}
 	}
-	return "", errors.New("模型未通过工具通道返回结果")
+	return "", errors.New("model did not return a result via the tool channel")
 }

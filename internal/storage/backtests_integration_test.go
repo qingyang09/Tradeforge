@@ -1,6 +1,6 @@
 //go:build integration
 
-// 需要 docker-compose 起的 Postgres 才能运行：
+// Requires a Postgres started via docker-compose to run:
 //
 //	docker compose up -d
 //	go test -tags=integration ./internal/storage/... -run Backtest -v
@@ -19,14 +19,16 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// insertBacktestResultRow 手工拼一行写入 backtest_results，形状对齐
-// python/backtest/tradeforge_backtest/store.py 的 result_to_row()——Go 侧目前没有
-// 写方法，只有读方法，所以测试数据只能这样构造，而不是调用某个 Store 方法生成。
+// insertBacktestResultRow hand-assembles a row to insert into
+// backtest_results, shaped to match result_to_row() in
+// python/backtest/tradeforge_backtest/store.py -- the Go side currently has
+// no write method, only read methods, so test data has to be constructed
+// this way instead of via some Store method.
 func insertBacktestResultRow(t *testing.T, ctx context.Context, s *Store, strategyID string) string {
 	t.Helper()
 
 	metricsJSON := func(tradeCount int, sharpe float64, totalFees, finalEquity string) []byte {
-		// total_fees/final_equity 按字符串写入，跟 Python 端 Metrics.to_dict() 完全一致。
+		// total_fees/final_equity are written as strings, exactly matching the Python side's Metrics.to_dict().
 		b, err := json.Marshal(map[string]any{
 			"total_return": 0.12, "annualized_return": 0.5, "sharpe_ratio": sharpe,
 			"sortino_ratio": 1.1, "max_drawdown": 0.08, "win_rate": 0.6,
@@ -94,7 +96,7 @@ func insertBacktestResultRow(t *testing.T, ctx context.Context, s *Store, strate
 	_, err = s.pool.Exec(ctx, q, id, strategyID, "BTCUSDT", overall, inSample, outOfSample,
 		segments, feeModel, trades, equityCurve, "1000.123456789012345678", dataStart, dataEnd, "signal-replay/test")
 	if err != nil {
-		t.Fatalf("写入测试回测结果失败：%v", err)
+		t.Fatalf("insert test backtest result: %v", err)
 	}
 	return id
 }
@@ -106,87 +108,87 @@ func TestBacktestResultsRoundTrip(t *testing.T) {
 
 	store, err := Open(ctx, cfg.Postgres)
 	if err != nil {
-		t.Fatalf("连接 Postgres 失败（是否已 docker compose up -d？）：%v", err)
+		t.Fatalf("connect to Postgres (did you run docker compose up -d?): %v", err)
 	}
 	defer store.Close()
 
 	u := createTestUserForStorage(ctx, t, store, "backtests-roundtrip")
 	defer func() {
 		if _, err := store.pool.Exec(context.Background(), `DELETE FROM users WHERE id = $1`, u.ID); err != nil {
-			t.Errorf("清理测试数据失败：%v", err)
+			t.Errorf("clean up test data: %v", err)
 		}
 	}()
 
 	sc := types.StrategyConfig{
-		ID: idgen.NewUUID(), UserID: u.ID, Name: "回测结果集成测试", Symbol: "BTCUSDT",
+		ID: idgen.NewUUID(), UserID: u.ID, Name: "backtest results integration test", Symbol: "BTCUSDT",
 		Timeframe: types.TF1h, Combine: types.CombineAll,
 		Modules: []types.ModuleConfig{{Module: "volume_breakout", Params: map[string]any{}}},
 		Risk:    types.RiskConfig{MaxPositionSizeQuote: decimal.NewFromInt(1000)},
 		State:   types.StateDraft,
 	}
 	if err := store.SaveStrategy(ctx, sc); err != nil {
-		t.Fatalf("保存策略失败：%v", err)
+		t.Fatalf("save strategy: %v", err)
 	}
 
 	id := insertBacktestResultRow(t, ctx, store, sc.ID)
 
 	latest, err := store.LatestBacktestResult(ctx, u.ID, sc.ID)
 	if err != nil {
-		t.Fatalf("读取最近一次回测结果失败：%v", err)
+		t.Fatalf("read latest backtest result: %v", err)
 	}
 	if latest.ID != id {
-		t.Errorf("ID = %s，期望 %s", latest.ID, id)
+		t.Errorf("ID = %s, want %s", latest.ID, id)
 	}
 	if latest.OutOfSample.TradeCount != 3 || latest.OutOfSample.SharpeRatio != 0.4 {
-		t.Errorf("样本外指标不符：%+v", latest.OutOfSample)
+		t.Errorf("out-of-sample metrics mismatch: %+v", latest.OutOfSample)
 	}
 	if latest.InSample.TradeCount != 7 || latest.InSample.SharpeRatio != 2.5 {
-		t.Errorf("样本内指标不符：%+v", latest.InSample)
+		t.Errorf("in-sample metrics mismatch: %+v", latest.InSample)
 	}
-	// total_fees/final_equity 是 Python 端按字符串写入的 decimal 字段，必须精确往返。
+	// total_fees/final_equity are decimal fields written as strings by the Python side; they must round-trip exactly.
 	wantFees, _ := decimal.NewFromString("4.50")
 	if !latest.OutOfSample.TotalFees.Equal(wantFees) {
-		t.Errorf("样本外手续费 = %s，期望 %s", latest.OutOfSample.TotalFees, wantFees)
+		t.Errorf("out-of-sample fees = %s, want %s", latest.OutOfSample.TotalFees, wantFees)
 	}
 	if len(latest.Segments) != 2 || latest.Segments[0].Label != "in_sample" {
-		t.Errorf("segments 解析不符：%+v", latest.Segments)
+		t.Errorf("segments parsed incorrectly: %+v", latest.Segments)
 	}
 	if latest.FeeModel.TakerFeeRate != 0.0004 {
-		t.Errorf("fee_model 解析不符：%+v", latest.FeeModel)
+		t.Errorf("fee_model parsed incorrectly: %+v", latest.FeeModel)
 	}
 	if len(latest.Trades) != 1 {
-		t.Fatalf("trades 数量 = %d，期望 1", len(latest.Trades))
+		t.Fatalf("trades count = %d, want 1", len(latest.Trades))
 	}
 	trade := latest.Trades[0]
 	if trade.Segment != "out_of_sample" || trade.ExitReason != "signal" {
-		t.Errorf("trade 字段不符：%+v", trade)
+		t.Errorf("trade fields mismatch: %+v", trade)
 	}
 	wantPnL, _ := decimal.NewFromString("7.125")
 	if !trade.PnL.Equal(wantPnL) {
-		t.Errorf("trade.PnL = %s，期望 %s（精度必须完整往返）", trade.PnL, wantPnL)
+		t.Errorf("trade.PnL = %s, want %s (precision must round-trip exactly)", trade.PnL, wantPnL)
 	}
 	if len(trade.TriggerSignals) != 1 || trade.TriggerSignals[0].Module != "volume_breakout" {
-		t.Errorf("trigger_signals 解析不符：%+v", trade.TriggerSignals)
+		t.Errorf("trigger_signals parsed incorrectly: %+v", trade.TriggerSignals)
 	}
 	wantCapital, _ := decimal.NewFromString("1000.123456789012345678")
 	if !latest.InitialCapital.Equal(wantCapital) {
-		t.Errorf("initial_capital = %s，期望 %s", latest.InitialCapital, wantCapital)
+		t.Errorf("initial_capital = %s, want %s", latest.InitialCapital, wantCapital)
 	}
 	if len(latest.EquityCurve) != 3 {
-		t.Fatalf("equity_curve 长度 = %d，期望 3", len(latest.EquityCurve))
+		t.Fatalf("equity_curve length = %d, want 3", len(latest.EquityCurve))
 	}
 	wantMidEquity, _ := decimal.NewFromString("1080.00")
 	wantSplitAt := time.Date(2025, 2, 1, 0, 0, 0, 0, time.UTC)
 	if !latest.EquityCurve[1].Equity.Equal(wantMidEquity) || !latest.EquityCurve[1].Time.Equal(wantSplitAt) {
-		t.Errorf("equity_curve[1] = %+v，期望 equity=%s time=%s", latest.EquityCurve[1], wantMidEquity, wantSplitAt)
+		t.Errorf("equity_curve[1] = %+v, want equity=%s time=%s", latest.EquityCurve[1], wantMidEquity, wantSplitAt)
 	}
 
 	list, err := store.ListBacktestResults(ctx, u.ID, sc.ID, 10)
 	if err != nil {
-		t.Fatalf("列出回测结果失败：%v", err)
+		t.Fatalf("list backtest results: %v", err)
 	}
 	if len(list) != 1 {
-		t.Fatalf("回测结果数量 = %d，期望 1", len(list))
+		t.Fatalf("backtest results count = %d, want 1", len(list))
 	}
 }
 
@@ -197,29 +199,29 @@ func TestLatestBacktestResultErrorsWhenNeverRun(t *testing.T) {
 
 	store, err := Open(ctx, cfg.Postgres)
 	if err != nil {
-		t.Fatalf("连接 Postgres 失败：%v", err)
+		t.Fatalf("connect to Postgres: %v", err)
 	}
 	defer store.Close()
 
 	u := createTestUserForStorage(ctx, t, store, "backtests-never-run")
 	defer func() {
 		if _, err := store.pool.Exec(context.Background(), `DELETE FROM users WHERE id = $1`, u.ID); err != nil {
-			t.Errorf("清理测试数据失败：%v", err)
+			t.Errorf("clean up test data: %v", err)
 		}
 	}()
 
 	sc := types.StrategyConfig{
-		ID: idgen.NewUUID(), UserID: u.ID, Name: "从未回测过", Symbol: "BTCUSDT",
+		ID: idgen.NewUUID(), UserID: u.ID, Name: "never backtested", Symbol: "BTCUSDT",
 		Timeframe: types.TF1h, Combine: types.CombineAll,
 		Modules: []types.ModuleConfig{{Module: "volume_breakout", Params: map[string]any{}}},
 		Risk:    types.RiskConfig{MaxPositionSizeQuote: decimal.NewFromInt(1000)},
 		State:   types.StateDraft,
 	}
 	if err := store.SaveStrategy(ctx, sc); err != nil {
-		t.Fatalf("保存策略失败：%v", err)
+		t.Fatalf("save strategy: %v", err)
 	}
 
 	if _, err := store.LatestBacktestResult(ctx, u.ID, sc.ID); err == nil {
-		t.Fatal("从未回测过的策略应当返回错误")
+		t.Fatal("a strategy that has never been backtested should return an error")
 	}
 }

@@ -1,41 +1,63 @@
-// Command executor 是多标的执行层的入口。
+// Command executor is the entry point for the multi-symbol execution layer.
 //
-// 它从 Kafka 消费组合引擎产出的决策，按策略 ID 路由到各自的执行实例。
-// 每个标的一个 worker、一条队列，互相隔离。
+// It consumes decisions produced by the combination engine from Kafka and
+// routes them by strategy ID to their own execution instances. One worker
+// and one queue per symbol, isolated from each other.
 //
-// 用法：
+// Usage:
 //
-//	go run ./cmd/executor                                                  # 多用户模式：跑这个 broker 通道下所有用户的 PAPER_TRADING 策略
-//	go run ./cmd/executor -state LIVE                                      # 多用户模式：跑所有 LIVE 状态的策略
-//	go run ./cmd/executor -broker okx-demo                                 # 多用户模式：跑所有在 OKX demo 上配了凭据的用户
-//	go run ./cmd/executor -owner-email you@example.com                     # 单用户模式：只跑这一个用户（独立进程，兼容旧行为）
+//	go run ./cmd/executor                                                  # multi-tenant mode: run PAPER_TRADING strategies for all users on this broker channel
+//	go run ./cmd/executor -state LIVE                                      # multi-tenant mode: run all LIVE strategies
+//	go run ./cmd/executor -broker okx-demo                                 # multi-tenant mode: run all users with credentials configured for OKX demo
+//	go run ./cmd/executor -owner-email you@example.com                     # single-tenant mode: serve only this one user (separate process, backward-compatible behavior)
 //
-// 多用户并发执行（第二阶段）：-owner-email 现在是可选的。留空 = 多用户模式——这个进程
-// 服务 -broker 指定的这个交易所通道下所有用户，每个用户的策略用他自己在数据库里保存的
-// 凭据执行（内存缓存 + 定时刷新，见 brokerCache），互不影响；不同用户交易同一个标的时，
-// 底层行情/风控本来就是按策略 ID 隔离的，天然安全。显式指定 -owner-email = 单用户模式，
-// 完全保留改造前的行为（含下面提到的环境变量凭据回退）——留给需要独立进程、独享资源的
-// 大客户，不是纯粹的兼容包袱。
+// Multi-tenant concurrent execution (phase 2): -owner-email is now optional.
+// Left empty = multi-tenant mode — this process serves all users on the
+// exchange channel given by -broker, and each user's strategies execute
+// with their own credentials saved in the database (in-memory cache with
+// periodic refresh, see brokerCache), without affecting each other; when
+// different users trade the same symbol, the underlying market data/risk
+// management is already isolated by strategy ID, so this is inherently
+// safe. Explicitly setting -owner-email = single-tenant mode, which fully
+// preserves pre-refactor behavior (including the env-var credential
+// fallback mentioned below) — reserved for large customers who need a
+// dedicated process with exclusive resources, not just leftover
+// compatibility baggage.
 //
-// 多用户模式下环境变量凭据回退被完全禁用（见 loadBrokerCredentials 的 multiTenant
-// 参数）：如果不禁用，部署环境里设的 TF_OKX_API_KEY 等变量会被这个通道下所有用户共用，
-// 等于所有人的真实资金都打到同一个交易所账户——这是资金串号级别的问题，不是普通 bug，
-// 只有单用户模式（-owner-email 显式指定）才允许用环境变量。
+// In multi-tenant mode, the env-var credential fallback is completely
+// disabled (see the multiTenant parameter on loadBrokerCredentials): if it
+// weren't, variables like TF_OKX_API_KEY set in the deployment environment
+// would be shared by every user on that channel, meaning everyone's real
+// funds would hit the same exchange account — that's a fund cross-contamination
+// issue, not an ordinary bug, so env vars are only allowed in single-tenant
+// mode (explicit -owner-email).
 //
-// 每 -promotion-interval 一个周期，这个进程会重新扫描一次策略列表：新出现的策略自动
-// 注册、离开目标状态的策略自动摘除——不需要重启进程就能让新用户/新策略生效，重启会打断
-// 这个进程上所有其它正在跑的用户，多用户共享一个进程后应该尽量避免。broker 凭据缓存的
-// 有效期也复用这同一个间隔：新注册的策略最多等一个周期就能用上新配置的凭据；但已经在跑
-// 的策略换了凭据不会热更新，仍然需要重启（或等它被摘除重新注册）才能生效。
+// Every -promotion-interval cycle, this process rescans the strategy list:
+// newly-appeared strategies are auto-registered, and strategies that left
+// the target state are auto-removed — so new users/strategies take effect
+// without restarting the process. A restart would interrupt every other
+// user currently running on this process, which should be avoided as much
+// as possible now that multiple tenants share one process. The broker
+// credential cache's TTL reuses this same interval: a newly-registered
+// strategy waits at most one cycle to pick up newly-configured credentials;
+// but an already-running strategy whose credentials changed does not hot-reload
+// — it still needs to be restarted (or wait to be removed and re-registered)
+// for the change to take effect.
 //
-// 安全约定：默认只使用纯内存模拟盘通道（paper）。接交易所需要显式指定 -broker，
-// 且当前版本每一家都只允许打到测试网/模拟盘。单用户模式下凭据可以来自环境变量
-// （binance-testnet 需要 TF_BINANCE_API_KEY / TF_BINANCE_API_SECRET；okx-demo 需要
-// TF_OKX_API_KEY / TF_OKX_API_SECRET / TF_OKX_PASSPHRASE；bybit-testnet 需要
-// TF_BYBIT_API_KEY / TF_BYBIT_API_SECRET；bitget-demo 需要 TF_BITGET_API_KEY /
-// TF_BITGET_API_SECRET / TF_BITGET_PASSPHRASE），环境变量没配全时会退回读取该用户
-// 在 Web 界面设置页面里保存的凭据（需要同一个 TF_MASTER_KEY 才能解密——见
-// internal/webui/handlers_settings_brokers.go）。多用户模式下只走数据库这一条路径。
+// Safety convention: by default, only the pure in-memory paper-trading
+// channel (paper) is used. Connecting to a real exchange requires
+// explicitly setting -broker, and the current version only allows hitting
+// each exchange's testnet/demo account. In single-tenant mode, credentials
+// can come from environment variables (binance-testnet needs
+// TF_BINANCE_API_KEY / TF_BINANCE_API_SECRET; okx-demo needs
+// TF_OKX_API_KEY / TF_OKX_API_SECRET / TF_OKX_PASSPHRASE; bybit-testnet
+// needs TF_BYBIT_API_KEY / TF_BYBIT_API_SECRET; bitget-demo needs
+// TF_BITGET_API_KEY / TF_BITGET_API_SECRET / TF_BITGET_PASSPHRASE); when
+// the env vars aren't fully set, it falls back to reading the credentials
+// that user saved on the web UI's settings page (needs the same
+// TF_MASTER_KEY to decrypt — see
+// internal/webui/handlers_settings_brokers.go). In multi-tenant mode, only
+// the database path is used.
 package main
 
 import (
@@ -63,14 +85,14 @@ import (
 
 func main() {
 	ownerEmail := flag.String("owner-email", "",
-		"单用户模式：只服务这一个用户（可选，该用户的邮箱）；留空则是多用户模式，服务 -broker 指定通道下的所有用户")
+		"single-tenant mode: serve only this one user (optional, their email); leave empty for multi-tenant mode, serving all users on the -broker channel")
 	stateFlag := flag.String("state", string(types.StatePaperTrading),
-		"加载处于该状态的策略（PAPER_TRADING / LIVE_ELIGIBLE / LIVE）")
+		"load strategies in this state (PAPER_TRADING / LIVE_ELIGIBLE / LIVE)")
 	brokerFlag := flag.String("broker", "paper",
-		"下单通道：paper（纯内存模拟盘，默认）/ binance-testnet / okx-demo / bybit-testnet / bitget-demo")
-	group := flag.String("group", "tradeforge-executor", "Kafka 消费组 ID")
+		"order channel: paper (pure in-memory paper trading, default) / binance-testnet / okx-demo / bybit-testnet / bitget-demo")
+	group := flag.String("group", "tradeforge-executor", "Kafka consumer group ID")
 	promotionInterval := flag.Duration("promotion-interval", 5*time.Minute,
-		"检查模拟盘策略是否达标、重新扫描策略列表（新增/摘除）、刷新 broker 凭据缓存共用的间隔")
+		"shared interval for checking whether paper-trading strategies qualify for promotion, rescanning the strategy list (additions/removals), and refreshing the broker credential cache")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -78,10 +100,10 @@ func main() {
 
 	state := types.StrategyState(*stateFlag)
 	if !state.Valid() {
-		fatal("状态 %q 不合法", *stateFlag)
+		fatal("invalid state %q", *stateFlag)
 	}
 	if state == types.StateDraft || state == types.StateBacktested {
-		fatal("状态 %s 的策略不允许产生任何交易", state)
+		fatal("strategies in state %s are not allowed to produce any trades", state)
 	}
 
 	cfg := config.Load()
@@ -90,17 +112,18 @@ func main() {
 
 	store, err := storage.Open(ctx, cfg.Postgres)
 	if err != nil {
-		fatal("连接数据库失败：%v", err)
+		fatal("failed to connect to database: %v", err)
 	}
 	defer store.Close()
 
-	// 留空 -owner-email = 多用户模式：ownerUserID 保持空字符串，下游所有分支
-	// （加载策略、解析凭据）都按"空字符串=跨全部用户"来处理。
+	// -owner-email left empty = multi-tenant mode: ownerUserID stays an empty
+	// string, and every downstream branch (loading strategies, resolving
+	// credentials) treats "" as "across all users."
 	ownerUserID := ""
 	if trimmed := strings.TrimSpace(*ownerEmail); trimmed != "" {
 		owner, err := store.GetUserByEmail(ctx, trimmed)
 		if err != nil {
-			fatal("找不到 -owner-email 指定的用户 %q：%v", trimmed, err)
+			fatal("could not find the user specified by -owner-email %q: %v", trimmed, err)
 		}
 		ownerUserID = owner.ID
 	}
@@ -113,11 +136,11 @@ func main() {
 
 	reconcileRegistrations(ctx, store, sup, brokers, ownerUserID, state, logger)
 	if len(sup.StrategyIDs()) == 0 {
-		logger.Warn("没有找到匹配的策略，执行层空转", "multi_tenant", multiTenant, "state", state)
+		logger.Warn("no matching strategies found, execution layer is idling", "multi_tenant", multiTenant, "state", state)
 	}
 
 	if err := messaging.EnsureTopics(ctx, cfg.Kafka); err != nil {
-		logger.Warn("创建 Kafka topic 失败，将依赖自动创建", "err", err)
+		logger.Warn("failed to create Kafka topics, relying on auto-creation", "err", err)
 	}
 	reader := messaging.NewDecisionReader(cfg.Kafka, *group)
 	defer reader.Close()
@@ -125,18 +148,20 @@ func main() {
 	go runPromotionLoop(ctx, store, ownerUserID, strategy.DefaultGate(), logger, *promotionInterval)
 	go runReconcileLoop(ctx, store, sup, brokers, ownerUserID, state, logger, *promotionInterval)
 
-	logger.Info("开始消费决策",
+	logger.Info("starting to consume decisions",
 		"topic", cfg.Kafka.DecisionTopic, "group", *group, "multi_tenant", multiTenant, "broker", *brokerFlag)
 	consume(ctx, reader, sup, logger)
 
-	logger.Info("收到停止信号，正在关闭执行层")
+	logger.Info("received stop signal, shutting down execution layer")
 	printSummary(sup, logger)
 }
 
-// executorStore 是 cmd/executor 运行时依赖的全部持久化能力——用接口而不是直接依赖
-// *storage.Store，是为了让 registerOne/reconcileRegistrations/brokerCache 这条链路
-// 不需要真实 Postgres 就能单元测试，跟 brokerCredentialStore/promotionStore 是同一个
-// 模式。*storage.Store 结构性满足这个接口，不需要任何额外代码。
+// executorStore is the full set of persistence capabilities cmd/executor
+// depends on at runtime — using an interface instead of depending directly
+// on *storage.Store lets the registerOne/reconcileRegistrations/brokerCache
+// chain be unit-tested without a real Postgres, the same pattern as
+// brokerCredentialStore/promotionStore. *storage.Store satisfies this
+// interface structurally, with no extra code needed.
 type executorStore interface {
 	brokerCredentialStore
 	execution.OrderRecorder
@@ -145,8 +170,10 @@ type executorStore interface {
 	ListStrategiesByStateAllUsers(ctx context.Context, state types.StrategyState) ([]types.StrategyConfig, error)
 }
 
-// loadStrategies 按 ownerUserID 是否为空分支查询：非空 = 单用户模式，只查这一个用户的；
-// 空 = 多用户模式，跨全部用户查——跟 checkPromotions（promote.go）用的是同一个分支模式。
+// loadStrategies branches its query on whether ownerUserID is empty:
+// non-empty = single-tenant mode, query just that one user; empty =
+// multi-tenant mode, query across all users — the same branching pattern
+// used by checkPromotions (promote.go).
 func loadStrategies(ctx context.Context, store executorStore, ownerUserID string, state types.StrategyState) ([]types.StrategyConfig, error) {
 	if ownerUserID != "" {
 		return store.ListStrategiesByState(ctx, ownerUserID, state)
@@ -154,19 +181,24 @@ func loadStrategies(ctx context.Context, store executorStore, ownerUserID string
 	return store.ListStrategiesByStateAllUsers(ctx, state)
 }
 
-// reconcileRegistrations 把 sup 当前注册的策略集合与数据库最新状态做一次差集：新出现
-// 的策略注册进去，不在新列表里的（被删除、或状态已经流转出这个进程关心的范围）摘除。
+// reconcileRegistrations diffs the set of strategies currently registered
+// in sup against the latest database state: newly-appeared strategies get
+// registered, and ones not in the new list (deleted, or their state has
+// moved outside the range this process cares about) get removed.
 //
-// 多用户共享一个进程之后，这不是锦上添花：如果没有这一步，"一个用户的新策略要生效，
-// 得重启整个进程"，而重启会打断这个进程上所有其它用户正在跑的策略（内存里的
-// RiskManager/Stats 状态全部丢失）——这跟"合并成一个进程服务所有人"想要的效果正好相反。
+// Now that multiple tenants share one process, this isn't a nice-to-have:
+// without this step, "a user's new strategy taking effect" would require
+// restarting the entire process, and a restart interrupts every other
+// user's strategies currently running on this process (all in-memory
+// RiskManager/Stats state is lost) — exactly the opposite of what
+// "merging into one process serving everyone" is meant to achieve.
 func reconcileRegistrations(
 	ctx context.Context, store executorStore, sup *execution.Supervisor, brokers *brokerCache,
 	ownerUserID string, state types.StrategyState, logger *slog.Logger,
 ) {
 	strategies, err := loadStrategies(ctx, store, ownerUserID, state)
 	if err != nil {
-		logger.Error("重新扫描策略列表失败，保留现有注册不变", "err", err)
+		logger.Error("failed to rescan strategy list, keeping existing registrations unchanged", "err", err)
 		return
 	}
 
@@ -181,21 +213,24 @@ func reconcileRegistrations(
 			continue
 		}
 		if err := sup.Unregister(id); err != nil {
-			logger.Error("摘除已离开目标状态的策略失败", "strategy_id", id, "err", err)
+			logger.Error("failed to remove a strategy that left the target state", "strategy_id", id, "err", err)
 			continue
 		}
-		logger.Info("已停止执行实例（策略已离开目标状态）", "strategy_id", id)
+		logger.Info("stopped execution instance (strategy left the target state)", "strategy_id", id)
 	}
 }
 
-// registerOne 给单个策略解析它自己归属用户的 broker、注册进 Supervisor。凭据解析失败
-// 或注册失败都只跳过这一条策略，不影响同一批次里其它用户/其它策略——隔离原则从这里
-// 就开始生效。errors.Is(err, execution.ErrAlreadyRegistered) 是正常情况（上一轮扫描
-// 已经注册过了），静默跳过，不当错误处理。
+// registerOne resolves the broker for a single strategy's owning user and
+// registers it with the Supervisor. Whether credential resolution or
+// registration fails, only that one strategy is skipped — it doesn't affect
+// other users/strategies in the same batch, which is where the isolation
+// principle starts taking effect. errors.Is(err,
+// execution.ErrAlreadyRegistered) is a normal case (already registered in
+// the previous scan pass) and is silently skipped, not treated as an error.
 func registerOne(ctx context.Context, store executorStore, sup *execution.Supervisor, brokers *brokerCache, s types.StrategyConfig, logger *slog.Logger) {
 	br, err := brokers.get(ctx, s.UserID)
 	if err != nil {
-		logger.Error("解析用户交易所凭据失败，已跳过该策略",
+		logger.Error("failed to resolve the user's exchange credentials, skipping this strategy",
 			"strategy_id", s.ID, "user_id", s.UserID, "err", err)
 		return
 	}
@@ -206,18 +241,21 @@ func registerOne(ctx context.Context, store executorStore, sup *execution.Superv
 		if errors.Is(err, execution.ErrAlreadyRegistered) {
 			return
 		}
-		logger.Error("策略注册失败，已跳过",
+		logger.Error("strategy registration failed, skipping",
 			"strategy_id", s.ID, "symbol", s.Symbol, "err", err)
 		return
 	}
-	logger.Info("已启动执行实例",
+	logger.Info("started execution instance",
 		"strategy_id", s.ID, "user_id", s.UserID, "symbol", s.Symbol, "name", s.Name,
 		"modules", len(s.Modules), "combine", s.Combine)
 }
 
-// runReconcileLoop 按固定间隔重复调用 reconcileRegistrations，直到 ctx 被取消。
-// 跟 runPromotionLoop 复用同一个 -promotion-interval 值，但各自独立的 ticker——不需要
-// 精确同步到同一个时刻，只是不新增第二个"多久刷新一次"的心智负担。
+// runReconcileLoop calls reconcileRegistrations repeatedly at a fixed
+// interval until ctx is cancelled. It reuses the same -promotion-interval
+// value as runPromotionLoop, but with its own independent ticker — there's
+// no need for the two to be precisely synced to the same moment, this just
+// avoids introducing a second "how often does this refresh" concept to keep
+// track of.
 func runReconcileLoop(
 	ctx context.Context, store executorStore, sup *execution.Supervisor, brokers *brokerCache,
 	ownerUserID string, state types.StrategyState, logger *slog.Logger, interval time.Duration,
@@ -244,7 +282,7 @@ func consume(
 			if ctx.Err() != nil {
 				return
 			}
-			logger.Error("读取决策失败，稍后重试", "err", err)
+			logger.Error("failed to read decision, will retry shortly", "err", err)
 			select {
 			case <-ctx.Done():
 				return
@@ -254,43 +292,55 @@ func consume(
 		}
 
 		if err := sup.Dispatch(d); err != nil {
-			// 未注册的策略是常态：同一个 topic 上会有其它状态的策略的决策。
+			// An unregistered strategy is normal: the same topic carries
+			// decisions for strategies in other states too.
 			if !errors.Is(err, execution.ErrUnknownStrategy) {
-				logger.Warn("投递决策失败", "strategy_id", d.StrategyID, "err", err)
+				logger.Warn("failed to dispatch decision", "strategy_id", d.StrategyID, "err", err)
 			}
 		}
 	}
 }
 
-// brokerCredentialStore 是 buildBroker 所需的最小持久化接口，只为了让它不需要真实
-// Postgres 就能单元测试——跟 promote.go 的 promotionStore 是同一个模式。
-// *storage.Store 结构性满足这个接口，不需要任何额外代码。
+// brokerCredentialStore is the minimal persistence interface buildBroker
+// needs, purely so it can be unit-tested without a real Postgres — the same
+// pattern as promote.go's promotionStore. *storage.Store satisfies this
+// interface structurally, with no extra code needed.
 type brokerCredentialStore interface {
 	ActiveBrokerProfile(ctx context.Context, userID, broker string) (storage.BrokerProfile, error)
 }
 
-// brokerCacheEntry 是 brokerCache 里的一条缓存。
+// brokerCacheEntry is one cached entry in brokerCache.
 type brokerCacheEntry struct {
 	broker    execution.Broker
 	fetchedAt time.Time
 }
 
-// brokerCache 按用户缓存已构造好的下单通道实例——同一个用户的凭据解密/构造有实打实的
-// 代价，不该每次注册策略都重新做一遍。结构照抄 internal/webui/server.go 的 agentCache
-// 模式：RWMutex 保护的 map，缓存命中优先读，未命中/过期才现建。
+// brokerCache caches constructed order-channel instances per user — a given
+// user's credential decryption/construction has a real cost and shouldn't
+// be redone every time a strategy is registered. The structure copies the
+// agentCache pattern from internal/webui/server.go: an RWMutex-protected
+// map, reading from cache on hit, building fresh only on miss/expiry.
 //
-// key 只用 userID，不带 broker 种类：-broker 在一个进程的生命周期里是常量，不需要再
-// 拿来当缓存 key 的一个维度。
+// The key is just userID, with no broker kind: -broker is constant for the
+// lifetime of a process, so it doesn't need to be a dimension of the cache
+// key too.
 //
-// 跟 agentCache 的关键差异，是刻意的：agentCache 会缓存"确认没配置"的空结果，因为它在
-// 每个 HTTP 请求的热路径上，重复查库代价是真实的；brokerCache 只在策略注册/定期重新
-// 扫描时才会被访问（分钟级频率，不是每秒级），缓存失败结果的唯一效果是让"用户刚配好
-// 交易所凭据，等着已有的 PAPER_TRADING 策略在下个扫描周期自动跑起来"这个多用户 SaaS
-// 的核心体验失效——不值得。这里只缓存成功，失败永远重试。
+// The key difference from agentCache is deliberate: agentCache caches
+// "confirmed not configured" empty results, because it sits on the hot path
+// of every HTTP request where repeated DB lookups have a real cost;
+// brokerCache is only accessed during strategy registration/periodic
+// rescans (minute-level frequency, not per-second), so caching failed
+// results would only break the core multi-tenant SaaS experience of "a user
+// just configured exchange credentials and is waiting for their existing
+// PAPER_TRADING strategy to automatically start on the next scan cycle" —
+// not worth it. Only successes are cached here; failures always retry.
 //
-// 成功结果给一个 TTL，过期只影响下一次全新的 get 调用（也就是新注册的策略），不会给
-// 已经在跑的 Worker 热替换凭据——Worker 的 broker 是构造时固定的私有字段，没有 setter。
-// 要让一个已经在跑的策略换用新凭据，仍然需要它先被摘除再重新注册（见 main.go 顶部注释）。
+// Successful results get a TTL; expiry only affects the next fresh get call
+// (i.e. a newly-registered strategy) and does not hot-swap credentials into
+// an already-running Worker — a Worker's broker is a private field fixed at
+// construction time, with no setter. Getting an already-running strategy to
+// use new credentials still requires it to be removed and re-registered
+// first (see the comment at the top of main.go).
 type brokerCache struct {
 	mu      sync.RWMutex
 	entries map[string]brokerCacheEntry // key: userID
@@ -332,18 +382,24 @@ func (c *brokerCache) get(ctx context.Context, userID string) (execution.Broker,
 	return br, nil
 }
 
-// buildBroker 按 -broker 选中的通道构造下单实例。单用户模式（multiTenant=false）下
-// 凭据优先从环境变量读取（历史行为，脚本化部署不用碰数据库），环境变量没配全时退回
-// 读取该用户在 Web 界面设置页面里保存的、当前生效的一份；多用户模式（multiTenant=true）
-// 下环境变量回退被完全禁用，只走数据库——见 loadBrokerCredentials 顶部注释，这不是
-// 简化，是防止多用户共享一份环境变量凭据导致资金串号的必要限制。
+// buildBroker constructs an order instance for the channel chosen by
+// -broker. In single-tenant mode (multiTenant=false), credentials are read
+// from environment variables first (legacy behavior, so scripted
+// deployments don't need to touch the database); when the env vars aren't
+// fully set, it falls back to reading the currently-active profile that
+// user saved on the web UI's settings page. In multi-tenant mode
+// (multiTenant=true), the env-var fallback is completely disabled and only
+// the database is used — see the comment at the top of
+// loadBrokerCredentials; this isn't a simplification, it's a necessary
+// restriction to prevent multiple tenants sharing one set of env-var
+// credentials, which would cross-contaminate funds.
 func buildBroker(ctx context.Context, store brokerCredentialStore, masterKey, ownerUserID, name string, multiTenant bool) (execution.Broker, error) {
 	kind := execution.BrokerKind(name)
 	if kind == "" {
 		kind = execution.BrokerKindPaper
 	}
 	if !kind.Valid() {
-		return nil, fmt.Errorf("未知的下单通道 %q（可选：paper / binance-testnet / okx-demo / bybit-testnet / bitget-demo）", name)
+		return nil, fmt.Errorf("unknown order channel %q (options: paper / binance-testnet / okx-demo / bybit-testnet / bitget-demo)", name)
 	}
 	if kind == execution.BrokerKindPaper {
 		return execution.NewBroker(kind, "", "", "")
@@ -356,8 +412,10 @@ func buildBroker(ctx context.Context, store brokerCredentialStore, masterKey, ow
 	return execution.NewBroker(kind, apiKey, apiSecret, passphrase)
 }
 
-// envVarsForBroker 是各下单通道对应的环境变量名——保留跟此前版本相同的变量名，
-// 不因为新增了数据库存储路径就破坏已有的脚本化部署方式。
+// envVarsForBroker is the environment variable names for each order
+// channel — kept identical to the previous version's variable names, since
+// adding a database storage path shouldn't break existing scripted
+// deployments.
 func envVarsForBroker(kind execution.BrokerKind) (apiKeyVar, apiSecretVar, passphraseVar string) {
 	switch kind {
 	case execution.BrokerKindBinanceTestnet:
@@ -373,13 +431,20 @@ func envVarsForBroker(kind execution.BrokerKind) (apiKeyVar, apiSecretVar, passp
 	}
 }
 
-// loadBrokerCredentials 单用户模式（multiTenant=false）下优先用环境变量，缺失时退回
-// 数据库里该用户当前生效的一份配置（需要 TF_MASTER_KEY 才能解密，是加密全部用户凭据的
-// 服务端主密钥，不是任何人的登录密码——见 internal/webui/handlers_settings_brokers.go）。
+// loadBrokerCredentials, in single-tenant mode (multiTenant=false), prefers
+// environment variables and falls back to the user's currently-active
+// profile in the database when they're missing (needs TF_MASTER_KEY to
+// decrypt — the server-side master key that encrypts every user's
+// credentials, not anyone's login password — see
+// internal/webui/handlers_settings_brokers.go).
 //
-// 多用户模式（multiTenant=true）下完全跳过环境变量检查，直接走这个用户自己在数据库里
-// 的凭据——环境变量是整个进程共享的一份，多用户模式下用它会让这个 broker 通道下所有
-// 用户的策略全部用同一份凭据下单，是资金串号级别的问题，不是可以放行的历史兼容行为。
+// In multi-tenant mode (multiTenant=true), the env-var check is skipped
+// entirely and it goes straight to this user's own credentials in the
+// database — environment variables are shared across the whole process, so
+// using them in multi-tenant mode would make every user's strategies on
+// this broker channel place orders with the same credentials, which is a
+// fund cross-contamination issue, not backward-compatible behavior that can
+// be allowed through.
 func loadBrokerCredentials(ctx context.Context, store brokerCredentialStore, masterKey, ownerUserID string, kind execution.BrokerKind, multiTenant bool) (apiKey, apiSecret, passphrase string, err error) {
 	keyVar, secretVar, passVar := envVarsForBroker(kind)
 	if !multiTenant {
@@ -394,25 +459,25 @@ func loadBrokerCredentials(ctx context.Context, store brokerCredentialStore, mas
 
 	if masterKey == "" {
 		if multiTenant {
-			return "", "", "", fmt.Errorf("%s 缺少凭据：没有 TF_MASTER_KEY，无法读取用户已保存的配置", kind)
+			return "", "", "", fmt.Errorf("%s is missing credentials: no TF_MASTER_KEY, cannot read the user's saved profile", kind)
 		}
 		return "", "", "", fmt.Errorf(
-			"%s 缺少凭据：环境变量 %s/%s 未配置，且没有 TF_MASTER_KEY 无法读取已保存的配置",
+			"%s is missing credentials: environment variables %s/%s are not set, and no TF_MASTER_KEY to read a saved profile",
 			kind, keyVar, secretVar)
 	}
 	profile, err := store.ActiveBrokerProfile(ctx, ownerUserID, string(kind))
 	if err != nil {
 		if multiTenant {
 			return "", "", "", fmt.Errorf(
-				"%s 缺少凭据：该用户在数据库里没有当前生效的配置（请先在设置页面保存一份）：%w", kind, err)
+				"%s is missing credentials: this user has no currently-active profile in the database (save one on the settings page first): %w", kind, err)
 		}
 		return "", "", "", fmt.Errorf(
-			"%s 缺少凭据：环境变量未配置，数据库里也没有该用户当前生效的配置（请先在设置页面保存一份）：%w",
+			"%s is missing credentials: environment variables are not set, and this user has no currently-active profile in the database either (save one on the settings page first): %w",
 			kind, err)
 	}
 	plaintext, err := secretcrypto.Decrypt(masterKey, profile.EncryptedCredentials, profile.KeySalt, profile.KeyNonce)
 	if err != nil {
-		return "", "", "", fmt.Errorf("解密 %s 已保存的配置失败（TF_MASTER_KEY 是否跟保存时一致）：%w", kind, err)
+		return "", "", "", fmt.Errorf("failed to decrypt %s's saved profile (does TF_MASTER_KEY match the one used when it was saved?): %w", kind, err)
 	}
 	var creds struct {
 		APIKey     string `json:"api_key"`
@@ -420,7 +485,7 @@ func loadBrokerCredentials(ctx context.Context, store brokerCredentialStore, mas
 		Passphrase string `json:"passphrase"`
 	}
 	if err := json.Unmarshal([]byte(plaintext), &creds); err != nil {
-		return "", "", "", fmt.Errorf("解析 %s 已保存的配置失败：%w", kind, err)
+		return "", "", "", fmt.Errorf("failed to parse %s's saved profile: %w", kind, err)
 	}
 	return creds.APIKey, creds.APISecret, creds.Passphrase, nil
 }
@@ -428,7 +493,7 @@ func loadBrokerCredentials(ctx context.Context, store brokerCredentialStore, mas
 func printSummary(sup *execution.Supervisor, logger *slog.Logger) {
 	for _, ss := range sup.StatsByStrategy() {
 		st := ss.Stats
-		logger.Info("执行实例统计",
+		logger.Info("execution instance stats",
 			"strategy_id", ss.StrategyID,
 			"symbol", ss.Symbol,
 			"decisions", st.DecisionsSeen,

@@ -8,14 +8,18 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// Schema 是传给 LLM 的 JSON Schema（用 map 表示，便于直接序列化）。
+// Schema is the JSON Schema handed to the LLM (represented as a map, for
+// direct serialization).
 type Schema map[string]any
 
-// BuildSchema 依据模块注册表动态生成 Agent 输出的 JSON Schema。
+// BuildSchema dynamically generates the Agent's output JSON Schema from the
+// module registry.
 //
-// 关键点：模块名的枚举、每个模块的参数名与取值范围，全部从注册表现场读取，
-// 而不是手写一份。这样"平台有哪些模块"只有一个事实来源，
-// 新增模块时 schema 自动跟上，LLM 也就没有发明模块的空间。
+// Key point: the module-name enum, and each module's parameter names and
+// allowed ranges, are all read live from the registry rather than
+// hand-written. That way "what modules the platform has" has a single source
+// of truth — the schema automatically stays current when a module is added,
+// leaving the LLM no room to invent one.
 func BuildSchema(reg *modules.Registry) Schema {
 	return Schema{
 		"type":                 "object",
@@ -105,12 +109,13 @@ func strategyConfigSchema(reg *modules.Registry) map[string]any {
 	}
 }
 
-// moduleConfigSchema 为单个模块生成一个 schema 分支：
-// module 字段被 const 锁死，params 的属性表由该模块的 RequiredParams 现场生成。
+// moduleConfigSchema generates one schema branch for a single module: the
+// module field is pinned with const, and the params property table is
+// generated live from that module's RequiredParams.
 //
-// 用 oneOf + const 而不是一个笼统的 "params: object"，是为了让
-// "cvd_orderflow 上写了 lookback 参数"这类错误在 schema 层就被挡住，
-// 而不是等到运行期才报错。
+// Using oneOf + const instead of one generic "params: object" is so that
+// mistakes like "a lookback parameter written under cvd_orderflow" get
+// blocked at the schema level, rather than only erroring at runtime.
 func moduleConfigSchema(m modules.SignalModule, timeframes []string) map[string]any {
 	props := map[string]any{}
 	for _, spec := range m.RequiredParams() {
@@ -249,10 +254,13 @@ func riskSchema() map[string]any {
 	}
 }
 
-// ModuleCatalog 生成给 LLM 看的模块清单文本，作为 system prompt 的一部分。
+// ModuleCatalog generates the module-catalog text shown to the LLM, used as
+// part of the system prompt.
 //
-// schema 负责机器可校验的硬约束，这份清单负责让模型理解每个模块与参数的含义——
-// 两者都从注册表生成，不会互相打架。
+// The schema handles machine-checkable hard constraints; this catalog is
+// what lets the model understand the meaning of each module and parameter —
+// both are generated from the registry, so they never fall out of sync with
+// each other.
 func ModuleCatalog(reg *modules.Registry) string {
 	var b []byte
 	appendf := func(format string, args ...any) {

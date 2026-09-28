@@ -12,14 +12,17 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// ---------- 回测结果 ----------
+// ---------- Backtest results ----------
 //
-// 只读：backtest_results 表目前只由 python/backtest/tradeforge_backtest/store.py 的
-// save_result() 写入，Go 侧没有对应的写方法，界面只负责把已有结果读出来展示。
+// Read-only: the backtest_results table is currently written only by
+// save_result() in python/backtest/tradeforge_backtest/store.py. The Go side
+// has no corresponding write method; the UI is only responsible for reading
+// and displaying existing results.
 
-// ListBacktestResults 按运行时间倒序读取某策略的回测结果。userID 通过 JOIN strategies
-// 传递校验归属——backtest_results 表本身没有 user_id 列，见 postgres.go 的
-// ListDecisions 注释，同一个原则。
+// ListBacktestResults reads a strategy's backtest results in reverse run-time
+// order. userID is validated by JOINing strategies -- the backtest_results
+// table itself has no user_id column, see the comment on ListDecisions in
+// postgres.go, same principle.
 func (s *Store) ListBacktestResults(ctx context.Context, userID, strategyID string, limit int) ([]types.BacktestResult, error) {
 	if limit <= 0 {
 		limit = 20
@@ -32,7 +35,7 @@ func (s *Store) ListBacktestResults(ctx context.Context, userID, strategyID stri
 		WHERE br.strategy_id = $1 AND s.user_id = $2 ORDER BY br.ran_at DESC LIMIT $3`
 	rows, err := s.pool.Query(ctx, q, strategyID, userID, limit)
 	if err != nil {
-		return nil, fmt.Errorf("查询回测结果失败：%w", err)
+		return nil, fmt.Errorf("query backtest results: %w", err)
 	}
 	defer rows.Close()
 
@@ -47,7 +50,8 @@ func (s *Store) ListBacktestResults(ctx context.Context, userID, strategyID stri
 	return out, rows.Err()
 }
 
-// LatestBacktestResult 读取某策略最近一次回测结果；从未回测过时返回 ErrNotFound。
+// LatestBacktestResult reads a strategy's most recent backtest result;
+// returns ErrNotFound if it has never been backtested.
 func (s *Store) LatestBacktestResult(ctx context.Context, userID, strategyID string) (types.BacktestResult, error) {
 	const q = `
 		SELECT br.id, br.strategy_id, br.symbol, br.overall, br.in_sample, br.out_of_sample,
@@ -58,7 +62,7 @@ func (s *Store) LatestBacktestResult(ctx context.Context, userID, strategyID str
 	row := s.pool.QueryRow(ctx, q, strategyID, userID)
 	r, err := scanBacktestResult(row)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return types.BacktestResult{}, fmt.Errorf("策略 %s：%w", strategyID, ErrNotFound)
+		return types.BacktestResult{}, fmt.Errorf("strategy %s: %w", strategyID, ErrNotFound)
 	}
 	if err != nil {
 		return types.BacktestResult{}, err
@@ -66,7 +70,8 @@ func (s *Store) LatestBacktestResult(ctx context.Context, userID, strategyID str
 	return r, nil
 }
 
-// rowScanner 是 pgx.Rows 里 Scan 用到的最小子集，便于两个查询共用同一段解析逻辑。
+// rowScanner is the minimal subset of pgx.Rows' Scan used here, so both
+// queries can share the same parsing logic.
 type rowScanner interface {
 	Scan(dest ...any) error
 }
@@ -81,44 +86,46 @@ func scanBacktestResult(row rowScanner) (types.BacktestResult, error) {
 		&segments, &feeModel, &trades, &equityCurve, &initialCapital,
 		&r.DataStart, &r.DataEnd, &r.EngineVersion, &r.RanAt,
 	); err != nil {
-		return types.BacktestResult{}, fmt.Errorf("读取回测结果失败：%w", err)
+		return types.BacktestResult{}, fmt.Errorf("read backtest result: %w", err)
 	}
 
-	// overall/in_sample/out_of_sample 里的 total_fees、final_equity 由 Python 端按字符串写入
-	// （str(Decimal(...))），decimal.Decimal 的 UnmarshalJSON 原生支持带引号字符串，
-	// 不需要额外转换。
+	// total_fees and final_equity inside overall/in_sample/out_of_sample are
+	// written by the Python side as strings (str(Decimal(...))).
+	// decimal.Decimal's UnmarshalJSON natively supports quoted strings, so no
+	// extra conversion is needed.
 	if err := json.Unmarshal(overall, &r.Overall); err != nil {
-		return types.BacktestResult{}, fmt.Errorf("反序列化 overall 指标失败：%w", err)
+		return types.BacktestResult{}, fmt.Errorf("unmarshal overall metrics: %w", err)
 	}
 	if err := json.Unmarshal(inSample, &r.InSample); err != nil {
-		return types.BacktestResult{}, fmt.Errorf("反序列化 in_sample 指标失败：%w", err)
+		return types.BacktestResult{}, fmt.Errorf("unmarshal in_sample metrics: %w", err)
 	}
 	if err := json.Unmarshal(outOfSample, &r.OutOfSample); err != nil {
-		return types.BacktestResult{}, fmt.Errorf("反序列化 out_of_sample 指标失败：%w", err)
+		return types.BacktestResult{}, fmt.Errorf("unmarshal out_of_sample metrics: %w", err)
 	}
 	if err := json.Unmarshal(segments, &r.Segments); err != nil {
-		return types.BacktestResult{}, fmt.Errorf("反序列化 segments 失败：%w", err)
+		return types.BacktestResult{}, fmt.Errorf("unmarshal segments: %w", err)
 	}
 	if err := json.Unmarshal(feeModel, &r.FeeModel); err != nil {
-		return types.BacktestResult{}, fmt.Errorf("反序列化 fee_model 失败：%w", err)
+		return types.BacktestResult{}, fmt.Errorf("unmarshal fee_model: %w", err)
 	}
-	// trades 列允许为空（NULL 或空数组），两种情况都不算错误。
+	// The trades column may be empty (NULL or an empty array); neither case is an error.
 	if len(trades) > 0 {
 		if err := json.Unmarshal(trades, &r.Trades); err != nil {
-			return types.BacktestResult{}, fmt.Errorf("反序列化 trades 失败：%w", err)
+			return types.BacktestResult{}, fmt.Errorf("unmarshal trades: %w", err)
 		}
 	}
-	// equity_curve 是后加的列，2026-09 之前的历史记录这一列是 NULL——不是错误，
-	// 界面对这些旧记录退回近似曲线即可。
+	// equity_curve is a column added later; historical rows from before
+	// 2026-09 have it as NULL -- not an error, the UI just falls back to an
+	// approximate curve for those old records.
 	if len(equityCurve) > 0 {
 		if err := json.Unmarshal(equityCurve, &r.EquityCurve); err != nil {
-			return types.BacktestResult{}, fmt.Errorf("反序列化 equity_curve 失败：%w", err)
+			return types.BacktestResult{}, fmt.Errorf("unmarshal equity_curve: %w", err)
 		}
 	}
 
 	cap, err := decimal.NewFromString(initialCapital)
 	if err != nil {
-		return types.BacktestResult{}, fmt.Errorf("解析初始资金 %q 失败：%w", initialCapital, err)
+		return types.BacktestResult{}, fmt.Errorf("parse initial capital %q: %w", initialCapital, err)
 	}
 	r.InitialCapital = cap
 

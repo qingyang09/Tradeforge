@@ -1,7 +1,8 @@
-"""绩效指标计算。
+"""Performance metrics computation.
 
-所有指标都基于逐根 K 线的权益曲线，而不是逐笔交易的盈亏——
-后者算出的夏普会忽略持仓期间的浮动波动，系统性偏高。
+All metrics are derived from the per-candle equity curve, not trade-by-trade
+P&L — a Sharpe computed from trade P&L ignores mark-to-market swings while a
+position is open, which systematically inflates it.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from decimal import Decimal
 
 from .model import Metrics, Segment, Trade
 
-# 每年的秒数，用于把任意周期的收益折算成年化。
+# Seconds per year, used to annualize returns over an arbitrary period.
 SECONDS_PER_YEAR = 365.25 * 24 * 3600
 
 
@@ -23,10 +24,11 @@ def compute_metrics(
     *,
     risk_free_rate: float = 0.0,
 ) -> Metrics:
-    """由权益曲线与交易明细计算全部绩效指标。
+    """Compute all performance metrics from the equity curve and trade log.
 
-    equity_curve 至少要有两个点才能算出收益；不足时返回零值指标，
-    而不是抛异常——"数据太少所以没有结论"是正常情况。
+    equity_curve needs at least two points to compute a return; if it has
+    fewer, this returns zero-valued metrics rather than raising — "too
+    little data to draw a conclusion" is a normal outcome, not an error.
     """
     m = Metrics(
         trade_count=len(trades),
@@ -63,10 +65,11 @@ def metrics_for_segment(
     split_at: datetime,
     initial_capital: Decimal,
 ) -> Metrics:
-    """只用某一段（样本内或样本外）的数据计算指标。
+    """Compute metrics using only one segment's (in- or out-of-sample) data.
 
-    样本外的起始权益取分割点当时的权益，而不是最初的本金——
-    否则样本外收益里会掺进样本内赚到（或亏掉）的部分。
+    The out-of-sample starting equity is the equity at the split point, not
+    the original initial capital — otherwise the out-of-sample return would
+    include gains (or losses) made during the in-sample period.
     """
     if segment is Segment.IN_SAMPLE:
         curve = [(t, v) for t, v in equity_curve if t <= split_at]
@@ -81,22 +84,23 @@ def metrics_for_segment(
 
 
 def _bar_returns(curve: list[tuple[datetime, Decimal]]) -> list[float]:
-    """逐根 K 线的简单收益率序列。"""
+    """Simple per-candle return series."""
     out: list[float] = []
     for i in range(1, len(curve)):
         prev = curve[i - 1][1]
         if prev <= 0:
-            # 权益归零后再谈收益率没有意义，直接截断。
+            # No meaningful return once equity has hit zero — stop here.
             break
         out.append(float((curve[i][1] - prev) / prev))
     return out
 
 
 def _periods_per_year(curve: list[tuple[datetime, Decimal]]) -> float:
-    """由权益曲线的实际采样间隔推断年化因子。
+    """Infer the annualization factor from the equity curve's actual sampling interval.
 
-    不硬编码"日线 = 252"这类常数：同一个回测引擎要服务 1m 到 1d 的所有周期，
-    从数据本身推断才不会在换周期时算错。
+    We don't hard-code a constant like "daily = 252": the same backtest
+    engine serves every timeframe from 1m to 1d, and only inferring it from
+    the data itself avoids getting it wrong when the timeframe changes.
     """
     if len(curve) < 2:
         return 1.0
@@ -115,7 +119,8 @@ def _annualize(total_return: float, elapsed_secs: float) -> float:
         return 0.0
     growth = 1.0 + total_return
     if growth <= 0:
-        # 本金亏光，年化收益记为 -100%，不做复利外推。
+        # Capital wiped out — record annualized return as -100%, don't
+        # extrapolate compounding.
         return -1.0
     return growth ** (1.0 / years) - 1.0
 
@@ -133,9 +138,10 @@ def _sharpe(returns: list[float], periods_per_year: float, rf: float) -> float:
 
 
 def _sortino(returns: list[float], periods_per_year: float, rf: float) -> float:
-    """索提诺比率：只用下行波动做分母。
+    """Sortino ratio: uses only downside deviation as the denominator.
 
-    与夏普的区别在于，向上的波动不算作风险——这对偏度大的策略更公平。
+    Unlike Sharpe, upside volatility doesn't count as risk — fairer for
+    strategies with skewed return distributions.
     """
     if len(returns) < 2:
         return 0.0
@@ -143,8 +149,9 @@ def _sortino(returns: list[float], periods_per_year: float, rf: float) -> float:
     mean = sum(excess) / len(excess)
     downside = [r for r in excess if r < 0]
     if not downside:
-        # 没有任何下行波动。返回 0 而不是 inf：一个"无穷大夏普"展示给用户
-        # 只会造成误导，通常意味着样本太少。
+        # No downside deviation at all. Return 0 rather than inf: showing
+        # the user an "infinite Sharpe" is just misleading, and usually
+        # means the sample is too small.
         return 0.0
     dd = math.sqrt(sum(r**2 for r in downside) / len(downside))
     if dd == 0:
@@ -153,7 +160,7 @@ def _sortino(returns: list[float], periods_per_year: float, rf: float) -> float:
 
 
 def _max_drawdown(curve: list[tuple[datetime, Decimal]]) -> float:
-    """最大回撤，返回正数（0.2 表示最深回撤 20%）。"""
+    """Max drawdown, returned as a positive number (0.2 = a 20% deepest drawdown)."""
     peak = curve[0][1]
     worst = 0.0
     for _, equity in curve:
@@ -166,11 +173,12 @@ def _max_drawdown(curve: list[tuple[datetime, Decimal]]) -> float:
 
 
 def _profit_factor(trades: list[Trade]) -> float:
-    """盈亏比 = 总盈利 / 总亏损。"""
+    """Profit factor = total gains / total losses."""
     gains = sum((t.pnl for t in trades if t.pnl > 0), Decimal(0))
     losses = sum((-t.pnl for t in trades if t.pnl < 0), Decimal(0))
     if losses == 0:
-        # 一笔亏损都没有。同样不返回 inf——真实策略不存在这种情况，
-        # 出现时几乎总是样本太少。
+        # No losing trades at all. Again, don't return inf — no real
+        # strategy actually has this property; when it shows up it's
+        # almost always too small a sample.
         return 0.0 if gains == 0 else float(gains)
     return float(gains / losses)

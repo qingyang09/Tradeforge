@@ -1,4 +1,4 @@
-"""从磁盘加载回测输入：K 线 CSV、决策 JSONL、策略配置 JSON。"""
+"""Load backtest inputs from disk: candle CSV, decision JSONL, strategy config JSON."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from typing import Any
 
 from .model import Candle, FeeModel, RiskConfig
 
-# 与 Go 侧 internal/marketdata/csv.go 保持一致的列名。
+# Column names kept in sync with internal/marketdata/csv.go on the Go side.
 _REQUIRED_COLUMNS = ("open_time", "open", "high", "low", "close", "volume")
 
 _TIMEFRAME_SECONDS = {
@@ -20,20 +20,21 @@ _TIMEFRAME_SECONDS = {
 
 
 def load_candles(path: str | Path, timeframe: str = "1h") -> list[Candle]:
-    """读取 K 线 CSV。
+    """Read candles from a CSV file.
 
-    数值一律用 ``Decimal(str)`` 构造而不是 ``Decimal(float)``：
-    后者会把 CSV 里的 "0.1" 变成 0.1000000000000000055511151231257827，
-    在几千根 K 线上累积后足以改变回测结论。
+    Numbers are always constructed with ``Decimal(str)``, never ``Decimal(float)``: the
+    latter turns "0.1" from the CSV into 0.1000000000000000055511151231257827, and
+    across thousands of candles that's enough drift to change the backtest's
+    conclusions.
     """
     path = Path(path)
     with path.open(newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         if reader.fieldnames is None:
-            raise ValueError(f"{path} 没有表头")
+            raise ValueError(f"{path} has no header row")
         missing = [c for c in _REQUIRED_COLUMNS if c not in reader.fieldnames]
         if missing:
-            raise ValueError(f"{path} 缺少必需的列：{missing}")
+            raise ValueError(f"{path} is missing required columns: {missing}")
 
         span = timedelta(seconds=_TIMEFRAME_SECONDS.get(timeframe, 3600))
         candles: list[Candle] = []
@@ -53,19 +54,19 @@ def load_candles(path: str | Path, timeframe: str = "1h") -> list[Candle]:
                         volume=Decimal(row["volume"].strip()),
                     )
                 )
-            except Exception as exc:  # noqa: BLE001 — 附上行号后重新抛出
-                raise ValueError(f"{path} 第 {lineno} 行解析失败：{exc}") from exc
+            except Exception as exc:  # noqa: BLE001 — re-raised with the line number attached
+                raise ValueError(f"{path} failed to parse line {lineno}: {exc}") from exc
 
     if not candles:
-        raise ValueError(f"{path} 中没有任何 K 线")
+        raise ValueError(f"{path} contains no candles")
     candles.sort(key=lambda c: c.open_time)
     return candles
 
 
 def load_decisions_jsonl(path: str | Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """读取 backtest-runner 输出的 JSONL。
+    """Read the JSONL emitted by backtest-runner.
 
-    返回 (决策行列表, 头部元信息)。
+    Returns (list of decision rows, header metadata).
     """
     path = Path(path)
     meta: dict[str, Any] = {}
@@ -79,24 +80,24 @@ def load_decisions_jsonl(path: str | Path) -> tuple[list[dict[str, Any]], dict[s
             try:
                 obj = json.loads(line)
             except json.JSONDecodeError as exc:
-                raise ValueError(f"{path} 第 {lineno} 行不是合法 JSON：{exc}") from exc
+                raise ValueError(f"{path} line {lineno} is not valid JSON: {exc}") from exc
             if obj.get("type") == "meta":
                 meta = obj
             elif obj.get("type") == "decision":
                 rows.append(obj)
 
     if not rows:
-        raise ValueError(f"{path} 中没有任何决策记录")
+        raise ValueError(f"{path} contains no decision records")
     return rows, meta
 
 
 def load_strategy(path: str | Path) -> dict[str, Any]:
-    """读取策略配置 JSON。"""
+    """Read the strategy config JSON."""
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
 def risk_from_strategy(cfg: dict[str, Any]) -> RiskConfig:
-    """从策略配置中提取风控参数。"""
+    """Extract risk-control parameters from a strategy config."""
     risk = cfg.get("risk") or {}
     return RiskConfig(
         max_position_size_quote=_dec(risk.get("max_position_size_quote"), "1000"),
@@ -113,7 +114,7 @@ def risk_from_strategy(cfg: dict[str, Any]) -> RiskConfig:
 
 
 def fee_model_from_dict(data: dict[str, Any] | None) -> FeeModel:
-    """从字典构造手续费模型，缺项使用保守默认值。"""
+    """Build a fee model from a dict, falling back to conservative defaults for missing fields."""
     data = data or {}
     return FeeModel(
         maker_fee_rate=_dec(data.get("maker_fee_rate"), "0.0002"),
@@ -129,11 +130,11 @@ def _dec(value: Any, default: str) -> Decimal:
 
 
 def _duration_secs(value: Any) -> float:
-    """解析 Go 风格的时长字符串（"4h"、"90m"、"1h30m"）。"""
+    """Parse a Go-style duration string ("4h", "90m", "1h30m")."""
     if not value:
         return 0.0
     if isinstance(value, (int, float)):
-        # 纳秒整数形式（time.Duration 的零值序列化）。
+        # Integer nanoseconds form (how time.Duration serializes).
         return float(value) / 1e9
 
     text = str(value).strip()
@@ -156,12 +157,12 @@ def _duration_secs(value: Any) -> float:
 
 def _apply_unit(number: str, unit: str, units: dict[str, float]) -> float:
     if unit not in units:
-        raise ValueError(f"无法识别的时长单位 {unit!r}")
+        raise ValueError(f"unrecognized duration unit {unit!r}")
     return float(number) * units[unit]
 
 
 def _parse_time(s: str) -> datetime:
-    """解析 RFC3339 字符串或 Unix 时间戳，统一返回 naive UTC。"""
+    """Parse an RFC3339 string or Unix timestamp, always returning naive UTC."""
     s = s.strip()
     try:
         dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
@@ -169,5 +170,5 @@ def _parse_time(s: str) -> datetime:
     except ValueError:
         pass
     n = int(s)
-    # 交易所 K 线接口普遍用毫秒。
+    # Exchange candle APIs generally use milliseconds.
     return datetime.utcfromtimestamp(n / 1000 if n > 1e11 else n)

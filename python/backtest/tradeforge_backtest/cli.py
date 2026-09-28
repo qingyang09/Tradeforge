@@ -1,6 +1,6 @@
-"""命令行入口：把决策流与 K 线跑成一份回测结果。
+"""CLI entry point: run a decision stream against candles to produce a backtest result.
 
-用法::
+Usage::
 
     python -m tradeforge_backtest.cli \\
         --strategy strategy.json --candles btc.csv --decisions decisions.jsonl
@@ -27,26 +27,26 @@ from .loaders import (
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="tradeforge-backtest",
-        description="在历史数据上回测一个策略配置（含手续费与滑点建模）",
+        description="Backtest a strategy configuration against historical data (with fee and slippage modeling)",
     )
-    p.add_argument("--strategy", required=True, help="策略配置 JSON 路径")
-    p.add_argument("--candles", required=True, help="历史 K 线 CSV 路径")
+    p.add_argument("--strategy", required=True, help="Path to strategy config JSON")
+    p.add_argument("--candles", required=True, help="Path to historical candle CSV")
     p.add_argument(
         "--decisions", required=True,
-        help="backtest-runner 输出的决策 JSONL 路径",
+        help="Path to the decision JSONL emitted by backtest-runner",
     )
     p.add_argument(
         "--capital", default=str(DEFAULT_INITIAL_CAPITAL),
-        help=f"初始资金，默认 {DEFAULT_INITIAL_CAPITAL}",
+        help=f"Initial capital, default {DEFAULT_INITIAL_CAPITAL}",
     )
     p.add_argument(
         "--split", type=float, default=DEFAULT_SPLIT_RATIO,
-        help=f"样本内占比，默认 {DEFAULT_SPLIT_RATIO}（其余为样本外）",
+        help=f"In-sample fraction, default {DEFAULT_SPLIT_RATIO} (remainder is out-of-sample)",
     )
-    p.add_argument("--taker-fee", default=None, help="吃单费率，默认 0.0004")
-    p.add_argument("--slippage-bps", default=None, help="滑点（基点），默认 5")
-    p.add_argument("--no-save", action="store_true", help="只打印结果，不写数据库")
-    p.add_argument("--json-out", default=None, help="把完整结果另存为 JSON 文件")
+    p.add_argument("--taker-fee", default=None, help="Taker fee rate, default 0.0004")
+    p.add_argument("--slippage-bps", default=None, help="Slippage (basis points), default 5")
+    p.add_argument("--no-save", action="store_true", help="Only print the result, don't write to the database")
+    p.add_argument("--json-out", default=None, help="Save the full result to a separate JSON file")
     return p
 
 
@@ -58,18 +58,18 @@ def main(argv: list[str] | None = None) -> int:
     candles = load_candles(args.candles, timeframe=timeframe)
     rows, meta = load_decisions_jsonl(args.decisions)
 
-    # 决策流必须来自同一份行情，否则指标全是错的。
+    # The decision stream must come from the same market data, or every metric will be wrong.
     if meta.get("symbol") and meta["symbol"] != strategy.get("symbol"):
         print(
-            f"错误：决策流的标的 {meta['symbol']} 与策略配置的 "
-            f"{strategy.get('symbol')} 不一致",
+            f"Error: decision stream symbol {meta['symbol']} does not match strategy "
+            f"config symbol {strategy.get('symbol')}",
             file=sys.stderr,
         )
         return 2
     if len(rows) != len(candles):
         print(
-            f"错误：决策数 {len(rows)} 与 K 线数 {len(candles)} 不一致；"
-            "请确认两者由同一份行情生成",
+            f"Error: decision count {len(rows)} does not match candle count {len(candles)}; "
+            "make sure both were generated from the same market data",
             file=sys.stderr,
         )
         return 2
@@ -96,7 +96,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if not result.parameters_validated_out_of_sample:
         print(
-            "\n注意：样本外区间没有产生交易，本次回测未对该策略形成有效验证。",
+            "\nNote: no trades were produced in the out-of-sample segment; "
+            "this backtest did not meaningfully validate the strategy.",
             file=sys.stderr,
         )
 
@@ -105,16 +106,16 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(_result_to_json(result), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        print(f"\n完整结果已写入 {args.json_out}")
+        print(f"\nFull result written to {args.json_out}")
 
     if not args.no_save:
         from .store import save_result
 
         try:
             rid = save_result(result)
-            print(f"\n回测结果已落库，记录 ID：{rid}")
-        except Exception as exc:  # noqa: BLE001 — 落库失败不应吞掉已算出的结果
-            print(f"\n写库失败（结果已在上方打印）：{exc}", file=sys.stderr)
+            print(f"\nBacktest result saved, record ID: {rid}")
+        except Exception as exc:  # noqa: BLE001 — a save failure shouldn't swallow the already-computed result
+            print(f"\nFailed to save to database (result was already printed above): {exc}", file=sys.stderr)
             return 1
 
     return 0

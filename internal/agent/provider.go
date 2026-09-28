@@ -8,16 +8,22 @@ import (
 	"tradeforge/internal/config"
 )
 
-// Provider 标识翻译层可以对接的大语言模型供应商。
+// Provider identifies a large language model vendor the translation layer can
+// talk to.
 //
-// Agent 的全部逻辑（schema 校验、合规检查、确认循环）只依赖 LLM 接口，不关心
-// 具体是哪家——新增一个供应商只需要在 providerSpecs 里登记一行。
+// None of the Agent's logic (schema validation, compliance checks, the
+// confirmation loop) depends on which vendor is in use — it only depends on
+// the LLM interface — so adding a new provider just means registering one
+// entry in providerSpecs.
 //
-// 除 Anthropic 走原生 SDK 外，其余全部复用 OpenAILLM：这些供应商都提供
-// OpenAI 兼容的 Chat Completions 接口（同样的请求/响应格式、同样的 tool-calling
-// 机制），只是 BaseURL、默认模型不同，没有必要为每一家单独写一份客户端代码。
-// ProviderCustom 是为不在这份名单里的供应商（自建网关、本地模型、新出现的厂商）
-// 留的逃生舱：用户自己填 API 地址，只要对方兼容 OpenAI 协议就能接。
+// Except for Anthropic, which uses its native SDK, every other provider
+// reuses OpenAILLM: they all expose an OpenAI-compatible Chat Completions
+// interface (same request/response shape, same tool-calling mechanism), just
+// with a different BaseURL and default model, so there's no need to write a
+// separate client for each one. ProviderCustom is the escape hatch for
+// vendors not on this list (self-hosted gateways, local models, new entrants):
+// the user supplies their own API address, and anything OpenAI-protocol
+// compatible works.
 type Provider string
 
 const (
@@ -33,19 +39,24 @@ const (
 	ProviderCustom    Provider = "custom"
 )
 
-// Providers 列出当前支持的供应商，顺序即界面展示顺序。
+// Providers lists the currently supported vendors, in the order they should
+// be displayed in the UI.
 var Providers = []Provider{
 	ProviderAnthropic, ProviderOpenAI, ProviderGemini, ProviderGrok,
 	ProviderDeepSeek, ProviderMistral, ProviderQwen, ProviderGLM, ProviderKimi,
 	ProviderCustom,
 }
 
-// providerSpec 登记一个供应商的展示名、OpenAI 兼容层地址、默认模型。
+// providerSpec registers a vendor's display name, OpenAI-compatible-layer
+// address, and default model.
 //
-// BaseURL 为空只对 Anthropic 成立，表示走原生 SDK 而不是 OpenAI 兼容层。
-// 这里列出的地址是各家官方文档在实现时的公开信息，没有用真实 key 逐一验证过
-// （这个环境里没有各家的 API key）——接入前建议对照对应厂商的最新文档确认一遍，
-// 尤其是 BaseURL 和模型名，这些厂商更新频率不低。
+// An empty BaseURL is only valid for Anthropic, meaning it goes through the
+// native SDK rather than an OpenAI-compatible layer. The addresses listed
+// here reflect each vendor's public documentation as of implementation time
+// and haven't been individually verified with a real key (no vendor API keys
+// are available in this environment) — before wiring one up, cross-check the
+// vendor's latest docs, especially the BaseURL and model name, since these
+// vendors update fairly often.
 type providerSpec struct {
 	label        string
 	baseURL      string
@@ -89,13 +100,13 @@ var providerSpecs = map[Provider]providerSpec{
 	},
 }
 
-// Valid 报告是否为已支持的供应商。
+// Valid reports whether this is a supported provider.
 func (p Provider) Valid() bool {
 	_, ok := providerSpecs[p]
 	return ok
 }
 
-// Label 返回供应商的人类可读名称，供界面展示。
+// Label returns the provider's human-readable name, for display in the UI.
 func (p Provider) Label() string {
 	if s, ok := providerSpecs[p]; ok {
 		return s.label
@@ -103,27 +114,31 @@ func (p Provider) Label() string {
 	return string(p)
 }
 
-// DefaultModel 返回该供应商在未显式指定模型时使用的默认模型。
-// ProviderCustom 没有默认模型，调用方必须显式指定。
+// DefaultModel returns the model this provider uses when none is explicitly
+// specified. ProviderCustom has no default model; callers must specify one.
 func (p Provider) DefaultModel() string {
 	return providerSpecs[p].defaultModel
 }
 
-// RequiresBaseURL 报告该供应商是否必须由调用方显式提供 API 地址
-// （目前只有 ProviderCustom，因为它不在预置名单里）。
+// RequiresBaseURL reports whether this provider requires the caller to
+// explicitly supply an API address (currently only ProviderCustom, since it
+// isn't on the preset list).
 func (p Provider) RequiresBaseURL() bool {
 	return p == ProviderCustom
 }
 
-// NewLLM 按供应商构造对应的 LLM 实现。
+// NewLLM constructs the LLM implementation for the given provider.
 //
-// apiKey 必填；model 为空时使用该供应商的默认模型（ProviderCustom 除外，
-// 必须显式指定）；baseURL 只有 ProviderCustom 会用到，其余供应商用各自登记的地址，
-// 传了也会被忽略——不能让一次误填的自定义地址意外顶替掉某个知名供应商的官方端点。
+// apiKey is required; when model is empty, the provider's default model is
+// used (except for ProviderCustom, which must specify one explicitly);
+// baseURL is only used by ProviderCustom — other providers use their own
+// registered address and ignore whatever is passed in, so a mistakenly
+// filled-in custom address can't accidentally override a well-known
+// provider's official endpoint.
 func NewLLM(provider Provider, apiKey, model, baseURL string, cfg config.AgentConfig) (LLM, error) {
 	spec, ok := providerSpecs[provider]
 	if !ok {
-		return nil, fmt.Errorf("不支持的模型供应商 %q", provider)
+		return nil, fmt.Errorf("unsupported model provider %q", provider)
 	}
 	if apiKey == "" {
 		return nil, ErrNoAPIKey
@@ -144,10 +159,10 @@ func NewLLM(provider Provider, apiKey, model, baseURL string, cfg config.AgentCo
 	if provider.RequiresBaseURL() {
 		cfg.BaseURL = strings.TrimSpace(baseURL)
 		if cfg.BaseURL == "" {
-			return nil, errors.New("自定义供应商必须填写 API 地址")
+			return nil, errors.New("custom provider requires an API address")
 		}
 		if cfg.Model == "" {
-			return nil, errors.New("自定义供应商必须填写模型名称")
+			return nil, errors.New("custom provider requires a model name")
 		}
 	}
 	return NewOpenAILLM(cfg)

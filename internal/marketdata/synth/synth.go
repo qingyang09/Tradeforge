@@ -1,7 +1,9 @@
-// Package synth 生成确定性的合成 K 线，供单元测试与本地演示使用。
+// Package synth generates deterministic synthetic candles for unit tests and
+// local demos.
 //
-// 它刻意不引入随机数种子以外的任何不确定性：同样的参数永远生成同样的数据，
-// 这样测试断言的是算法行为，而不是碰巧的数据。
+// It deliberately introduces no randomness beyond an explicit RNG seed: the
+// same parameters always produce the same data, so tests assert on algorithm
+// behavior rather than on data that just happens to work.
 package synth
 
 import (
@@ -14,7 +16,7 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// Builder 逐根构造 K 线序列。
+// Builder constructs a candle sequence one candle at a time.
 type Builder struct {
 	symbol    string
 	timeframe types.Timeframe
@@ -22,14 +24,16 @@ type Builder struct {
 	candles   []types.Candle
 }
 
-// New 创建一个从 start 开始、指定周期的构造器。
+// New creates a builder starting at start with the given timeframe.
 func New(symbol string, tf types.Timeframe, start time.Time) *Builder {
 	return &Builder{symbol: symbol, timeframe: tf, start: start}
 }
 
-// Add 追加一根 K 线，价量用 float 书写以便测试可读，内部转成 decimal 存储。
+// Add appends one candle. Price/volume are written as float for test
+// readability and converted to decimal internally for storage.
 //
-// 主动买入量按 takerBuyRatio 从总量中切分：0.5 表示买卖各半。
+// Taker buy volume is split from total volume by takerBuyRatio: 0.5 means an
+// even split.
 func (b *Builder) Add(open, high, low, close, volume, takerBuyRatio float64) *Builder {
 	idx := len(b.candles)
 	openTime := b.start.Add(time.Duration(idx) * b.timeframe.Duration())
@@ -48,12 +52,13 @@ func (b *Builder) Add(open, high, low, close, volume, takerBuyRatio float64) *Bu
 	return b
 }
 
-// AddFlat 追加一根以 price 为中心、几乎没有波动的 K 线。
+// AddFlat appends a candle centered on price with almost no movement.
 func (b *Builder) AddFlat(price, volume float64) *Builder {
 	return b.Add(price, price*1.0005, price*0.9995, price, volume, 0.5)
 }
 
-// AddBar 追加一根从 open 走到 close 的 K 线，影线按实体的 20% 自动生成。
+// AddBar appends a candle moving from open to close, with wicks auto-generated
+// at 20% of the body.
 func (b *Builder) AddBar(open, close, volume, takerBuyRatio float64) *Builder {
 	body := math.Abs(close - open)
 	wick := body * 0.2
@@ -65,20 +70,24 @@ func (b *Builder) AddBar(open, close, volume, takerBuyRatio float64) *Builder {
 	return b.Add(open, high, low, close, volume, takerBuyRatio)
 }
 
-// Build 返回构造好的 MarketData。
+// Build returns the constructed MarketData.
 func (b *Builder) Build() types.MarketData {
 	return types.MarketData{Symbol: b.symbol, Timeframe: b.timeframe, Candles: b.candles}
 }
 
-// Len 返回当前已构造的 K 线数量。
+// Len returns the number of candles constructed so far.
 func (b *Builder) Len() int { return len(b.candles) }
 
-// Oscillate 追加 n 根在 [low, high] 之间来回震荡的 K 线，
-// 用于制造反复触及同一支撑/阻力位的行情。
+// Oscillate appends n candles that swing back and forth between [low, high],
+// used to produce price action that repeatedly touches the same
+// support/resistance level.
 //
-// 影线的处理是刻意的：只有走到端点的那一根（"到达根"）才带出端点方向的影线，
-// 从对侧折返的第一根不带。否则两根相邻 K 线会留下等高的高点，
-// 而等高的相邻高点按定义不构成摆动点，整段行情会一个关键位都识别不出来。
+// The wick handling is deliberate: only the candle that reaches an endpoint
+// (the "arrival candle") gets a wick in that endpoint's direction; the first
+// candle turning back from the opposite side does not. Otherwise two adjacent
+// candles would leave equal-height highs, and equal-height adjacent highs by
+// definition don't form a swing point — the whole run would fail to identify
+// a single key level.
 func (b *Builder) Oscillate(n int, low, high, volume float64) *Builder {
 	const stepsPerLeg = 4
 	wick := (high - low) * 0.02
@@ -91,7 +100,8 @@ func (b *Builder) Oscillate(n int, low, high, volume float64) *Builder {
 		if !goingUp {
 			target = low
 		}
-		// 剩余根数均分到目标价，最后一根正好落在端点上。
+		// The remaining candles are split evenly toward the target price, so
+		// the last one lands exactly on the endpoint.
 		closePrice := price + (target-price)/float64(stepsPerLeg-s)
 		arrival := s == stepsPerLeg-1
 
@@ -122,7 +132,8 @@ func (b *Builder) Oscillate(n int, low, high, volume float64) *Builder {
 	return b
 }
 
-// Trend 追加 n 根单向推进的 K 线，从 from 线性走到 to。
+// Trend appends n candles moving in one direction, walking linearly from from
+// to to.
 func (b *Builder) Trend(n int, from, to, volume, takerBuyRatio float64) *Builder {
 	if n <= 0 {
 		return b
@@ -136,7 +147,8 @@ func (b *Builder) Trend(n int, from, to, volume, takerBuyRatio float64) *Builder
 	return b
 }
 
-// RandomWalk 追加 n 根伪随机游走的 K 线。seed 固定则结果完全可复现。
+// RandomWalk appends n pseudo-random-walk candles. A fixed seed makes the
+// result fully reproducible.
 func (b *Builder) RandomWalk(n int, start, volatility, volume float64, seed int64) *Builder {
 	rng := rand.New(rand.NewSource(seed))
 	price := start

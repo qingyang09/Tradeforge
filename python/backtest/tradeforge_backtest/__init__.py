@@ -1,14 +1,16 @@
-"""TradeForge 回测引擎。
+"""TradeForge backtesting engine.
 
-职责分工（重要）：
+Division of responsibility (important):
 
-* **信号重放在 Go 侧**（``cmd/backtest-runner``），直接复用实盘用的
-  ``internal/engine``。如果在这里用 Python 再实现一遍支撑阻力、CVD 等模块，
-  两份实现迟早漂移，那时回测评估的就是另一个策略了。
-* **本包负责撮合模拟、手续费滑点建模、绩效统计与样本内外切分**——
-  也就是 Python 真正擅长的部分。
+* **Signal replay lives on the Go side** (``cmd/backtest-runner``), reusing
+  ``internal/engine`` directly — the same code path used in live trading. Re-implementing
+  support/resistance, CVD, etc. here in Python would let the two implementations drift
+  apart over time, and at that point the backtest would be evaluating a different
+  strategy than the one actually running live.
+* **This package handles fill simulation, fee/slippage modeling, performance
+  statistics, and in/out-of-sample splitting** — the part Python is actually good at.
 
-典型用法::
+Typical usage::
 
     from tradeforge_backtest import load_candles, load_decisions_jsonl, run_backtest
 

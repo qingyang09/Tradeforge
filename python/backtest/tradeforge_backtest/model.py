@@ -1,7 +1,8 @@
-"""回测的核心数据结构。
+"""Core data structures for the backtest engine.
 
-约定：所有金额、价格、数量一律使用 ``decimal.Decimal``，禁止 float。
-绩效比率（夏普、胜率等）是无量纲统计量，允许使用 float。
+Convention: all amounts, prices, and quantities use ``decimal.Decimal`` —
+float is forbidden. Performance ratios (Sharpe, win rate, etc.) are
+dimensionless statistics and may use float.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from typing import Any
 
 
 class Direction(str, Enum):
-    """信号或持仓方向。"""
+    """Direction of a signal or position."""
 
     LONG = "LONG"
     SHORT = "SHORT"
@@ -22,7 +23,7 @@ class Direction(str, Enum):
 
     @property
     def sign(self) -> int:
-        """多头 +1、空头 -1、中性 0。"""
+        """+1 for long, -1 for short, 0 for neutral."""
         return {Direction.LONG: 1, Direction.SHORT: -1}.get(self, 0)
 
     def opposite(self) -> "Direction":
@@ -33,7 +34,7 @@ class Direction(str, Enum):
 
 
 class Segment(str, Enum):
-    """样本内 / 样本外标记。"""
+    """In-sample vs. out-of-sample marker."""
 
     IN_SAMPLE = "in_sample"
     OUT_OF_SAMPLE = "out_of_sample"
@@ -41,7 +42,7 @@ class Segment(str, Enum):
 
 @dataclass(frozen=True)
 class Candle:
-    """一根 K 线。"""
+    """A single OHLCV candle."""
 
     open_time: datetime
     close_time: datetime
@@ -54,7 +55,7 @@ class Candle:
 
 @dataclass(frozen=True)
 class Decision:
-    """信号重放产出的一条决策，对应一根 K 线。"""
+    """One decision produced by signal replay, corresponding to one candle."""
 
     index: int
     bar_time: datetime
@@ -68,10 +69,12 @@ class Decision:
 
 @dataclass(frozen=True)
 class FeeModel:
-    """手续费与滑点建模。
+    """Fee and slippage model.
 
-    裸价格回测是被明确禁止的：不建模成本的回测会把一批实际亏损的高频策略
-    显示成盈利，这类结果比没有回测更有害。
+    Bare-price backtesting is explicitly forbidden: a backtest that doesn't
+    model cost will show a batch of genuinely lossy high-frequency strategies
+    as profitable — that kind of result is more harmful than no backtest at
+    all.
     """
 
     maker_fee_rate: Decimal = Decimal("0.0002")
@@ -79,9 +82,10 @@ class FeeModel:
     slippage_bps: Decimal = Decimal("5")
 
     def fill_price(self, mid: Decimal, side: Direction) -> Decimal:
-        """按滑点调整成交价。
+        """Adjust the fill price for slippage.
 
-        滑点永远对交易者不利：买入时价格上浮，卖出时价格下压。
+        Slippage always works against the trader: price moves up on a buy,
+        down on a sell.
         """
         slip = mid * self.slippage_bps / Decimal("10000")
         if side is Direction.LONG:
@@ -91,28 +95,38 @@ class FeeModel:
         return mid
 
     def fee(self, notional: Decimal) -> Decimal:
-        """按吃单费率计算手续费。
+        """Compute the fee at the taker rate.
 
-        统一按 taker 计算是有意的保守取向：市价单本来就是吃单，
-        而限价单能否成交在回测里无从判断，假设成 maker 会系统性低估成本。
+        Always using the taker rate is a deliberately conservative choice: a
+        market order is a taker fill by definition, and whether a limit order
+        would actually fill as a maker can't be known in a backtest —
+        assuming maker fills would systematically understate cost.
         """
         return abs(notional) * self.taker_fee_rate
 
 
 @dataclass(frozen=True)
 class RiskConfig:
-    """标的级别的风控参数。
+    """Per-symbol risk parameters.
 
-    stop_loss_mode/take_profit_mode 是 "pct"（默认，固定百分比，见 *_pct）或
-    "support_resistance"（用 support_resistance 模块在开仓那一刻检测到的最近支撑/阻力位
-    当阈值）。跟 Go 侧 pkg/types.RiskConfig 保持同一套语义——两边都要理解这两种模式，
-    否则回测算出来的止损止盈跟实盘执行的不是同一个策略，比没有回测更危险。
+    stop_loss_mode/take_profit_mode is either "pct" (default, a fixed
+    percentage — see *_pct) or "support_resistance" (use the nearest
+    support/resistance level the support_resistance module detected at the
+    moment of entry as the threshold). This must stay semantically identical
+    to Go's pkg/types.RiskConfig — both sides need to understand both modes,
+    otherwise the stop-loss/take-profit the backtest computes and what live
+    execution actually does are not the same strategy, which is more
+    dangerous than not backtesting at all.
 
-    position_sizing_mode 是 "fixed_quote"（默认，固定金额，见 max_position_size_quote）
-    或 "risk_pct"（按 account_equity_quote × risk_per_trade_pct ÷ 止损距离百分比动态算）。
-    跟 Go 侧 pkg/types.RiskConfig 保持同一套语义，公式必须一字不差地一致——两边算出来
-    不是同一个仓位，回测就是在评估另一个策略。max_position_size_quote 在两种模式下都
-    生效：risk_pct 模式下它是算出来的仓位的硬上限，超过就整笔拒绝，不做静默裁剪。
+    position_sizing_mode is either "fixed_quote" (default, a fixed amount —
+    see max_position_size_quote) or "risk_pct" (computed dynamically as
+    account_equity_quote × risk_per_trade_pct ÷ stop-loss distance as a
+    percentage). This must also stay semantically identical to Go's
+    pkg/types.RiskConfig, and the formula must match exactly — if the two
+    sides compute different position sizes, the backtest is evaluating a
+    different strategy. max_position_size_quote applies in both modes: under
+    risk_pct it's a hard cap on the computed position size — exceeding it
+    rejects the whole trade rather than silently clamping it.
     """
 
     max_position_size_quote: Decimal
@@ -129,7 +143,7 @@ class RiskConfig:
 
 @dataclass(frozen=True)
 class Trade:
-    """一笔完整的往返交易。"""
+    """One complete round-trip trade."""
 
     entry_time: datetime
     exit_time: datetime
@@ -149,13 +163,13 @@ class Trade:
 
     @property
     def gross_pnl(self) -> Decimal:
-        """未扣手续费的毛盈亏。"""
+        """P&L before fees."""
         return self.pnl + self.fees
 
 
 @dataclass
 class Metrics:
-    """一段区间上的绩效指标。"""
+    """Performance metrics over a period."""
 
     total_return: float = 0.0
     annualized_return: float = 0.0
@@ -185,11 +199,12 @@ class Metrics:
 
 @dataclass
 class BacktestResult:
-    """一次回测的完整产物。
+    """The complete output of one backtest run.
 
-    ``in_sample`` 与 ``out_of_sample`` 分开保存是硬性要求：
-    只有样本外指标才代表"参数没有在这段数据上被调过"。
-    展示时混用两者，等于把过拟合的结果当成真实表现给用户看。
+    Keeping ``in_sample`` and ``out_of_sample`` separate is a hard
+    requirement: only the out-of-sample metrics represent "parameters that
+    weren't tuned on this data." Mixing the two when displaying results
+    means showing the user an overfit result as if it were real performance.
     """
 
     strategy_id: str
@@ -209,33 +224,35 @@ class BacktestResult:
 
     @property
     def parameters_validated_out_of_sample(self) -> bool:
-        """样本外区间是否真的产生了交易。
+        """Whether the out-of-sample period actually produced any trades.
 
-        样本外一笔交易都没有时，样本外指标全是零值——那不是"表现平平"，
-        而是"根本没有验证过"。展示层必须能区分这两种情况。
+        When there isn't a single out-of-sample trade, the out-of-sample
+        metrics are all zero — that's not "mediocre performance," it's "never
+        actually validated." The display layer must be able to tell the two
+        apart.
         """
         return self.out_of_sample.trade_count > 0
 
     def summary(self) -> str:
-        """人类可读的摘要，刻意把样本外放在最显眼的位置。"""
+        """Human-readable summary that deliberately puts out-of-sample first."""
         lines = [
-            f"策略 {self.strategy_id}  标的 {self.symbol}",
-            f"数据区间：{self.data_start:%Y-%m-%d} ~ {self.data_end:%Y-%m-%d}"
-            f"（样本内/外分割点 {self.split_at:%Y-%m-%d}）",
-            f"手续费 {self.fee_model.taker_fee_rate}  滑点 {self.fee_model.slippage_bps} bps",
+            f"Strategy {self.strategy_id}  Symbol {self.symbol}",
+            f"Data range: {self.data_start:%Y-%m-%d} ~ {self.data_end:%Y-%m-%d}"
+            f" (in/out-of-sample split at {self.split_at:%Y-%m-%d})",
+            f"Fee {self.fee_model.taker_fee_rate}  Slippage {self.fee_model.slippage_bps} bps",
             "",
-            "【样本外】——判断策略能否进入模拟盘的唯一依据",
+            "[Out-of-sample] -- the only basis for deciding whether the strategy can enter paper trading",
         ]
         if not self.parameters_validated_out_of_sample:
-            lines.append("  样本外区间内没有产生任何交易，本次回测未对策略形成有效验证。")
+            lines.append("  No trades were produced in the out-of-sample period; this backtest did not meaningfully validate the strategy.")
         else:
             lines.append(_fmt_metrics(self.out_of_sample))
         lines += [
             "",
-            "【样本内】——参数若经过调优，是在这段数据上调的，不可作为预期表现",
+            "[In-sample] -- if parameters were tuned, they were tuned on this data; not representative of expected performance",
             _fmt_metrics(self.in_sample),
             "",
-            "【全区间】",
+            "[Full period]",
             _fmt_metrics(self.overall),
         ]
         return "\n".join(lines)
@@ -243,9 +260,9 @@ class BacktestResult:
 
 def _fmt_metrics(m: Metrics) -> str:
     return (
-        f"  总收益 {m.total_return:+.2%}   年化 {m.annualized_return:+.2%}   "
-        f"最大回撤 {m.max_drawdown:.2%}\n"
-        f"  夏普 {m.sharpe_ratio:.2f}   索提诺 {m.sortino_ratio:.2f}   "
-        f"胜率 {m.win_rate:.2%}   盈亏比 {m.profit_factor:.2f}\n"
-        f"  交易 {m.trade_count} 笔   手续费合计 {m.total_fees}   期末权益 {m.final_equity}"
+        f"  Total return {m.total_return:+.2%}   Annualized {m.annualized_return:+.2%}   "
+        f"Max drawdown {m.max_drawdown:.2%}\n"
+        f"  Sharpe {m.sharpe_ratio:.2f}   Sortino {m.sortino_ratio:.2f}   "
+        f"Win rate {m.win_rate:.2%}   Profit factor {m.profit_factor:.2f}\n"
+        f"  Trades {m.trade_count}   Total fees {m.total_fees}   Final equity {m.final_equity}"
     )

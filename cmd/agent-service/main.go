@@ -1,11 +1,13 @@
-// Command agent-service 跑通"一句话 → Agent 复述 → 用户确认 → 配置入库"的完整闭环。
+// Command agent-service runs the full loop: "one sentence -> Agent
+// restates it -> user confirms -> config saved."
 //
-// 用法：
+// Usage:
 //
-//	go run ./cmd/agent-service            # 交互模式，需要 ANTHROPIC_API_KEY
-//	go run ./cmd/agent-service -schema    # 只打印 Agent 使用的 JSON Schema 与提示词
+//	go run ./cmd/agent-service            # interactive mode, needs ANTHROPIC_API_KEY
+//	go run ./cmd/agent-service -schema    # just print the Agent's JSON Schema and prompt
 //
-// 未配置 API 密钥时会明确报错并退出，绝不静默降级成"假装翻译"。
+// If no API key is configured, it fails loudly and exits — it never
+// silently falls back to "pretend to translate."
 package main
 
 import (
@@ -27,8 +29,8 @@ import (
 )
 
 func main() {
-	showSchema := flag.Bool("schema", false, "打印 JSON Schema 与 system prompt 后退出")
-	dryRun := flag.Bool("dry-run", false, "确认后只打印配置，不写入数据库")
+	showSchema := flag.Bool("schema", false, "print the JSON Schema and system prompt, then exit")
+	dryRun := flag.Bool("dry-run", false, "after confirmation, only print the config instead of writing it to the database")
 	flag.Parse()
 
 	cfg := config.Load()
@@ -41,8 +43,8 @@ func main() {
 
 	llm, err := agent.NewAnthropicLLM(cfg.Agent)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "无法初始化 Agent：%v\n\n"+
-			"请先设置 ANTHROPIC_API_KEY 环境变量，或用 -schema 查看提示词与 Schema。\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to initialize Agent: %v\n\n"+
+			"Set the ANTHROPIC_API_KEY environment variable first, or use -schema to view the prompt and schema.\n", err)
 		os.Exit(1)
 	}
 
@@ -53,7 +55,7 @@ func main() {
 	if !*dryRun {
 		store, err = storage.Open(ctx, cfg.Postgres)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "连接数据库失败：%v\n（可加 -dry-run 跳过入库）\n", err)
+			fmt.Fprintf(os.Stderr, "Failed to connect to database: %v\n(add -dry-run to skip saving)\n", err)
 			os.Exit(1)
 		}
 		defer store.Close()
@@ -62,8 +64,8 @@ func main() {
 	in := bufio.NewScanner(os.Stdin)
 	in.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
-	fmt.Println("用一句话描述你想执行的交易规则（输入空行退出）。")
-	fmt.Println("提示：本工具只负责把你的规则翻译成配置，不提供任何投资建议。")
+	fmt.Println("Describe the trading rule you want to run in one sentence (enter a blank line to quit).")
+	fmt.Println("Note: this tool only translates your rule into a config; it does not offer any investment advice.")
 
 	for {
 		fmt.Print("\n> ")
@@ -77,11 +79,11 @@ func main() {
 
 		proposal, history, err := runClarificationLoop(ctx, a, in, utterance)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "翻译失败：%v\n", err)
+			fmt.Fprintf(os.Stderr, "Translation failed: %v\n", err)
 			continue
 		}
 		if proposal == nil {
-			continue // 用户中途放弃
+			continue // user gave up partway through
 		}
 		_ = history
 
@@ -91,7 +93,8 @@ func main() {
 	}
 }
 
-// runClarificationLoop 反复翻译，直到 Agent 不再提问或用户放弃。
+// runClarificationLoop translates repeatedly until the Agent stops asking
+// questions or the user gives up.
 func runClarificationLoop(
 	ctx context.Context, a *agent.Agent, in *bufio.Scanner, utterance string,
 ) (*agent.Proposal, []agent.Turn, error) {
@@ -107,17 +110,17 @@ func runClarificationLoop(
 			return p, history, nil
 		}
 
-		fmt.Println("\n还需要你补充几点信息：")
+		fmt.Println("\nA few more details are needed:")
 		for i, q := range p.Questions {
 			fmt.Printf("  %d) %s\n", i+1, q)
 		}
-		fmt.Print("\n你的回答（空行放弃）> ")
+		fmt.Print("\nYour answer (blank line to give up) > ")
 		if !in.Scan() {
 			return nil, nil, nil
 		}
 		answer := strings.TrimSpace(in.Text())
 		if answer == "" {
-			fmt.Println("已放弃本次翻译。")
+			fmt.Println("Translation abandoned.")
 			return nil, nil, nil
 		}
 
@@ -127,85 +130,86 @@ func runClarificationLoop(
 		)
 		current = answer
 	}
-	return nil, nil, errors.New("澄清轮次过多，请把规则描述得更完整一些后重试")
+	return nil, nil, errors.New("too many clarification rounds; describe the rule more completely and try again")
 }
 
-// confirmAndSave 展示复述、等待用户确认，确认后才写库。
+// confirmAndSave shows the restatement, waits for user confirmation, and
+// only saves to the database after confirmation.
 func confirmAndSave(
 	ctx context.Context, a *agent.Agent, in *bufio.Scanner,
 	store *storage.Store, p *agent.Proposal, dryRun bool,
 ) bool {
 	fmt.Println("\n" + strings.Repeat("─", 70))
-	fmt.Println("我理解你的策略是这样：")
+	fmt.Println("Here's my understanding of your strategy:")
 	fmt.Println()
 	fmt.Println("  " + strings.ReplaceAll(p.Restatement, "\n", "\n  "))
 	fmt.Println()
 	printConfigSummary(*p.Config)
 	fmt.Println(strings.Repeat("─", 70))
-	fmt.Print("确认无误请输入 y，其它任意输入表示重来 > ")
+	fmt.Print("Enter y to confirm, anything else to start over > ")
 
 	if !in.Scan() || strings.ToLower(strings.TrimSpace(in.Text())) != "y" {
-		fmt.Println("已取消，配置未写入系统。")
+		fmt.Println("Cancelled; the config was not saved.")
 		return false
 	}
 
 	cfg, err := a.Confirm(p, true)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "确认失败：%v\n", err)
+		fmt.Fprintf(os.Stderr, "Confirmation failed: %v\n", err)
 		return false
 	}
 	cfg.ID = idgen.NewUUID()
 
 	if dryRun {
 		blob, _ := json.MarshalIndent(cfg, "", "  ")
-		fmt.Printf("\n[dry-run] 未写库。配置内容：\n%s\n", blob)
+		fmt.Printf("\n[dry-run] Not saved. Config:\n%s\n", blob)
 		return true
 	}
 
 	if err := store.SaveStrategy(ctx, cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "写入数据库失败：%v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to save to database: %v\n", err)
 		return false
 	}
 	if err := store.RecordTransition(ctx, storage.Transition{
 		StrategyID: cfg.ID, From: "", To: types.StateDraft,
-		Actor: "user:cli", Reason: "用户确认了 Agent 的翻译结果",
+		Actor: "user:cli", Reason: "user confirmed the Agent's translation result",
 		Evidence: map[string]any{"source_utterance": cfg.SourceUtterance, "attempts": p.Attempts},
 	}); err != nil {
-		fmt.Fprintf(os.Stderr, "写入审计记录失败：%v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to write audit record: %v\n", err)
 	}
 
-	fmt.Printf("\n已保存，策略 ID：%s（当前状态：%s）\n", cfg.ID, cfg.State)
-	fmt.Println("下一步：运行回测。未通过回测与模拟盘之前，该策略无法进入实盘。")
+	fmt.Printf("\nSaved. Strategy ID: %s (current state: %s)\n", cfg.ID, cfg.State)
+	fmt.Println("Next step: run a backtest. The strategy can't go live until it passes backtesting and paper trading.")
 	return true
 }
 
 func printConfigSummary(c types.StrategyConfig) {
-	fmt.Printf("  标的：%s    周期：%s    组合方式：%s", c.Symbol, c.Timeframe, c.Combine)
+	fmt.Printf("  Symbol: %s    Timeframe: %s    Combine: %s", c.Symbol, c.Timeframe, c.Combine)
 	if c.Combine == types.CombineWeighted {
-		fmt.Printf("（阈值 %.2f）", c.Threshold)
+		fmt.Printf(" (threshold %.2f)", c.Threshold)
 	}
-	fmt.Println("\n  模块：")
+	fmt.Println("\n  Modules:")
 	for _, m := range c.Modules {
 		fmt.Printf("    - %s", m.Module)
 		if m.Weight > 0 {
-			fmt.Printf("（权重 %.2f）", m.Weight)
+			fmt.Printf(" (weight %.2f)", m.Weight)
 		}
 		if len(m.Params) > 0 {
-			fmt.Printf("  参数 %v", m.Params)
+			fmt.Printf("  params %v", m.Params)
 		} else {
-			fmt.Print("  参数：全部使用系统默认值")
+			fmt.Print("  params: all system defaults")
 		}
 		fmt.Println()
 	}
-	fmt.Printf("  风控：单笔上限 %s", c.Risk.MaxPositionSizeQuote)
+	fmt.Printf("  Risk: max position %s", c.Risk.MaxPositionSizeQuote)
 	if c.Risk.MaxDailyLossQuote.IsPositive() {
-		fmt.Printf("，单日亏损上限 %s", c.Risk.MaxDailyLossQuote)
+		fmt.Printf(", max daily loss %s", c.Risk.MaxDailyLossQuote)
 	}
 	if c.Risk.StopLossPct > 0 {
-		fmt.Printf("，止损 %.2f%%", c.Risk.StopLossPct*100)
+		fmt.Printf(", stop loss %.2f%%", c.Risk.StopLossPct*100)
 	}
 	if c.Risk.MaxHoldingPeriod > 0 {
-		fmt.Printf("，最长持仓 %s", c.Risk.MaxHoldingPeriod)
+		fmt.Printf(", max holding period %s", c.Risk.MaxHoldingPeriod)
 	}
 	fmt.Println()
 }

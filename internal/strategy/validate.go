@@ -1,8 +1,11 @@
-// Package strategy 提供 StrategyConfig 的校验。
+// Package strategy provides validation for StrategyConfig.
 //
-// 校验单独成包，是为了让组合引擎和 Agent 翻译层共用同一套规则：
-// Agent 生成配置后过的校验，必须和引擎执行前过的校验一字不差，
-// 否则就会出现"Agent 说没问题、引擎跑起来才报错"的错位。
+// Validation lives in its own package so the composition engine and the
+// Agent translation layer can share exactly the same rule set: the
+// validation the Agent runs after generating a config must match, byte for
+// byte, the validation the engine runs before execution — otherwise you get
+// the mismatch where "the Agent said it was fine, but the engine only
+// errored out once it actually ran."
 package strategy
 
 import (
@@ -14,14 +17,17 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// MaxModulesPerStrategy 限制单个策略的模块数量。
-// 上限的意义不在性能，而在可解释性：模块过多时用户已无法理解一笔交易为何触发。
+// MaxModulesPerStrategy caps how many modules a single strategy can have.
+// The cap isn't about performance — it's about explainability: past a
+// certain number of modules, the user can no longer understand why a given
+// trade fired.
 const MaxModulesPerStrategy = 8
 
-// ValidationError 汇总一次校验中发现的全部问题。
+// ValidationError collects every problem found during one validation pass.
 //
-// 刻意收集全部错误而不是遇到第一个就返回：Agent 需要一次性把所有问题
-// 告诉用户，而不是让用户改一个、再被告知还有一个。
+// Collecting everything instead of returning on the first failure is
+// deliberate: the Agent needs to tell the user every problem at once,
+// instead of making them fix one, resubmit, and get told about the next.
 type ValidationError struct {
 	Issues []string
 }
@@ -34,10 +40,12 @@ func (e *ValidationError) Error() string {
 		len(e.Issues), strings.Join(e.Issues, "\n  - "))
 }
 
-// Validate 校验策略配置，并返回各模块规范化后的参数（键为模块名）。
+// Validate validates a strategy config and returns each module's normalized
+// parameters (keyed by module name).
 //
-// 规范化后的参数已填好默认值、完成类型转换与范围检查，引擎可直接使用，
-// 不必在每根 K 线上重复解析。
+// The normalized parameters already have defaults filled in and have been
+// type-converted and range-checked, so the engine can use them directly
+// without re-parsing on every candle.
 func Validate(cfg types.StrategyConfig, reg *modules.Registry) (map[string]map[string]any, error) {
 	v := &ValidationError{}
 	add := func(format string, args ...any) {
@@ -89,9 +97,12 @@ func Validate(cfg types.StrategyConfig, reg *modules.Registry) (map[string]map[s
 		}
 		resolved[mc.Module] = params
 
-		// 模块周期留空表示跟随策略的触发周期，天然合法；填了就必须是合法周期，
-		// 且不能比触发周期更快——决策只在触发周期收盘时算一次，更快的模块更新永远
-		// 来不及被看到，这种配置本身就是矛盾的。
+		// An empty module timeframe means "follow the strategy's trigger
+		// timeframe," which is always valid; if it's set, it must be a valid
+		// timeframe and must not be faster than the trigger timeframe —
+		// decisions are only made once, at the close of the trigger
+		// timeframe, so a faster module update would never be seen in time;
+		// such a config is inherently self-contradictory.
 		if mc.Timeframe != "" {
 			if !mc.Timeframe.Valid() {
 				add("modules[%d]（%s）：周期 %q 不受支持，可选值为 %v",
@@ -103,8 +114,9 @@ func Validate(cfg types.StrategyConfig, reg *modules.Registry) (map[string]map[s
 			}
 		}
 
-		// 权重只在 WEIGHTED 下有意义，但填了非法值仍要报出来，
-		// 免得用户以为自己设置的权重生效了。
+		// Weight only matters under WEIGHTED, but an invalid value is still
+		// reported here, so the user doesn't end up thinking their weight
+		// took effect when it didn't.
 		if mc.Weight < 0 || mc.Weight > 1 {
 			add("modules[%d]（%s）：权重 %v 超出 (0, 1] 范围", i, mc.Module, mc.Weight)
 		}
@@ -130,9 +142,11 @@ func Validate(cfg types.StrategyConfig, reg *modules.Registry) (map[string]map[s
 }
 
 func validateRisk(r types.RiskConfig, modules []types.ModuleConfig, add func(string, ...any)) error {
-	// 单笔最大仓位必须为正：没有它就等于没有仓位上限，这是执行层唯一强制要求的
-	// 风控项——不管 PositionSizingMode 是哪种都必须填：fixed_quote 模式下它就是
-	// 仓位金额本身，risk_pct 模式下它是算出来的仓位的硬上限。
+	// Max position size per trade must be positive: without it there's no
+	// position cap at all, and it's the one risk control the execution layer
+	// strictly requires regardless of PositionSizingMode — under
+	// fixed_quote it's the position size itself, under risk_pct it's the
+	// hard ceiling on the computed position size.
 	if !r.MaxPositionSizeQuote.IsPositive() {
 		add("风控：单笔最大仓位（max_position_size_quote）必须大于 0")
 	}
@@ -162,11 +176,14 @@ func validateRisk(r types.RiskConfig, modules []types.ModuleConfig, add func(str
 	return nil
 }
 
-// validatePositionSizingMode 校验仓位模式：取值合法；risk_pct 模式下必须有正的账户
-// 权益、落在 (0,1) 的风险比例，且必须已经配置了一个真的会生效的止损（否则算不出
-// 止损距离，等真正开仓那一刻才发现算不出来就太晚了）；fixed_quote 模式下这些字段
-// 不该被填——跟 validateLevelMode 是同一个态度：两个模式的字段不能混填，宁可拒绝
-// 也不要含糊地择一使用。
+// validatePositionSizingMode validates the position sizing mode: the value
+// must be valid; under risk_pct there must be a positive account equity and
+// a risk percentage within (0,1), and a stop loss that will actually take
+// effect must already be configured (otherwise the stop distance can't be
+// computed, and finding that out only at the moment of opening a position is
+// too late); under fixed_quote, those fields must not be set — same stance
+// as validateLevelMode: fields from the two modes must never be mixed;
+// reject rather than pick one ambiguously.
 func validatePositionSizingMode(r types.RiskConfig, add func(string, ...any)) {
 	if !r.PositionSizingMode.Valid() {
 		add("风控：仓位模式（position_sizing_mode）取值 %q 不受支持，可选 \"%s\" / \"%s\"",
@@ -187,8 +204,10 @@ func validatePositionSizingMode(r types.RiskConfig, add func(string, ...any)) {
 		if r.RiskPerTradePct <= 0 || r.RiskPerTradePct >= 1 {
 			add("风控：单笔风险比例（risk_per_trade_pct）必须落在 (0, 1)，当前为 %v", r.RiskPerTradePct)
 		}
-		// risk_pct 模式依赖止损距离才能算出仓位；pct 模式下 StopLossPct=0 等于没设
-		// 止损，此时算不出距离，必须在配置阶段就拦住。
+		// risk_pct depends on the stop-loss distance to compute the position
+		// size; under pct mode, StopLossPct=0 means no stop loss is set, so
+		// the distance can't be computed — this must be caught at config
+		// time.
 		if r.StopLossMode.EffectiveOrPct() == types.RiskLevelModePct && r.StopLossPct <= 0 {
 			add("风控：仓位模式为 risk_pct 时必须同时设置止损" +
 				"（stop_loss_pct 大于 0，或 stop_loss_mode 用 support_resistance / poc），" +
@@ -197,10 +216,13 @@ func validatePositionSizingMode(r types.RiskConfig, add func(string, ...any)) {
 	}
 }
 
-// validateLevelMode 校验止损/止盈的模式字段本身：取值必须合法；非 pct 模式下必须同时把
-// 该模式依赖的模块（RiskLevelMode.RequiredModule，比如 support_resistance 或 poc）加入
-// Modules（不然没有对应的价位数据可用），且对应的百分比字段必须留空——两个字段同时
-// 设置会产生"到底哪个生效"的歧义，宁可拒绝也不要含糊地择一使用。
+// validateLevelMode validates the stop-loss/take-profit mode field itself:
+// the value must be valid; under a non-pct mode, the module that mode
+// depends on (RiskLevelMode.RequiredModule, e.g. support_resistance or poc)
+// must also be present in Modules (otherwise there's no corresponding price
+// level data available), and the matching percentage field must be left
+// unset — setting both at once creates ambiguity over which one actually
+// takes effect; reject rather than pick one ambiguously.
 func validateLevelMode(
 	mode types.RiskLevelMode, label, field string, pct float64, moduleNames map[string]bool,
 	add func(string, ...any),
@@ -223,7 +245,7 @@ func validateLevelMode(
 	}
 }
 
-// AsValidationError 从错误链中取出 *ValidationError。
+// AsValidationError extracts a *ValidationError from an error chain.
 func AsValidationError(err error) (*ValidationError, bool) {
 	var ve *ValidationError
 	ok := errors.As(err, &ve)

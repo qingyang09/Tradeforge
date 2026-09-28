@@ -11,13 +11,14 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// RecordOrder 实现 execution.OrderRecorder：把订单写入审计表。
+// RecordOrder implements execution.OrderRecorder: writes an order to the audit table.
 //
-// provenance 是强制字段：每笔订单都必须能回答"是哪个模块的哪个信号触发的"。
+// provenance is a mandatory field: every order must be able to answer "which
+// module's which signal triggered this."
 func (s *Store) RecordOrder(ctx context.Context, o types.Order) error {
 	prov, err := json.Marshal(o.Provenance)
 	if err != nil {
-		return fmt.Errorf("序列化订单溯源信息失败：%w", err)
+		return fmt.Errorf("marshal order provenance: %w", err)
 	}
 
 	const q = `
@@ -41,29 +42,31 @@ func (s *Store) RecordOrder(ctx context.Context, o types.Order) error {
 		nullableString(o.RejectReason), prov, o.CreatedAt, filledAt,
 	)
 	if err != nil {
-		return fmt.Errorf("写入订单 %s 失败：%w", o.ID, err)
+		return fmt.Errorf("write order %s: %w", o.ID, err)
 	}
 	return nil
 }
 
-// RecordRiskEvent 实现 execution.RiskEventRecorder。
+// RecordRiskEvent implements execution.RiskEventRecorder.
 func (s *Store) RecordRiskEvent(ctx context.Context, ev execution.RiskEvent) error {
 	detail, err := json.Marshal(ev.Detail)
 	if err != nil {
-		return fmt.Errorf("序列化风控事件详情失败：%w", err)
+		return fmt.Errorf("marshal risk event detail: %w", err)
 	}
 	const q = `
 		INSERT INTO risk_events (strategy_id, symbol, rule, detail, action, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6)`
 	if _, err := s.pool.Exec(ctx, q,
 		ev.StrategyID, ev.Symbol, ev.Rule, detail, ev.Action, ev.CreatedAt); err != nil {
-		return fmt.Errorf("写入风控事件失败：%w", err)
+		return fmt.Errorf("write risk event: %w", err)
 	}
 	return nil
 }
 
-// ListOrders 按时间倒序读取某策略的订单。userID 通过 JOIN strategies 传递校验归属——
-// orders 表本身没有 user_id 列，见 postgres.go 的 ListDecisions 注释，同一个原则。
+// ListOrders reads a strategy's orders in reverse chronological order.
+// userID is validated by JOINing strategies -- the orders table itself has
+// no user_id column, see the comment on ListDecisions in postgres.go, same
+// principle.
 func (s *Store) ListOrders(ctx context.Context, userID, strategyID string, limit int) ([]types.Order, error) {
 	if limit <= 0 {
 		limit = 100
@@ -76,7 +79,7 @@ func (s *Store) ListOrders(ctx context.Context, userID, strategyID string, limit
 
 	rows, err := s.pool.Query(ctx, q, strategyID, userID, limit)
 	if err != nil {
-		return nil, fmt.Errorf("查询订单失败：%w", err)
+		return nil, fmt.Errorf("query orders: %w", err)
 	}
 	defer rows.Close()
 
@@ -97,23 +100,23 @@ func (s *Store) ListOrders(ctx context.Context, userID, strategyID string, limit
 		o.Side, o.Type = types.OrderSide(side), types.OrderType(typ)
 		o.Mode, o.Status = types.TradingMode(mode), types.OrderStatus(status)
 		if o.Quantity, err = decimal.NewFromString(qty); err != nil {
-			return nil, fmt.Errorf("解析订单数量 %q 失败：%w", qty, err)
+			return nil, fmt.Errorf("parse order quantity %q: %w", qty, err)
 		}
 		if filledPrice != nil {
 			if o.FilledPrice, err = decimal.NewFromString(*filledPrice); err != nil {
-				return nil, fmt.Errorf("解析成交价失败：%w", err)
+				return nil, fmt.Errorf("parse filled price: %w", err)
 			}
 		}
 		if fee != nil {
 			if o.Fee, err = decimal.NewFromString(*fee); err != nil {
-				return nil, fmt.Errorf("解析手续费失败：%w", err)
+				return nil, fmt.Errorf("parse fee: %w", err)
 			}
 		}
 		if exchangeID != nil {
 			o.ExchangeOrderID = *exchangeID
 		}
 		if err := json.Unmarshal(prov, &o.Provenance); err != nil {
-			return nil, fmt.Errorf("反序列化订单溯源信息失败：%w", err)
+			return nil, fmt.Errorf("unmarshal order provenance: %w", err)
 		}
 		out = append(out, o)
 	}

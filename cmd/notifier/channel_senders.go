@@ -12,9 +12,11 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// channelSenders 把 internal/notify 的四个渠道接口按 kind 收拢成一个分发点，
-// 并负责用主密钥解密每个渠道自己的 encrypted_config——解密就近发生在发送前，
-// 不在别处提前解出明文缓存，缩小明文凭据的生命周期。
+// channelSenders gathers internal/notify's four channel interfaces into one
+// dispatch point keyed by kind, and is responsible for decrypting each
+// channel's own encrypted_config with the master key — decryption happens
+// right before sending, with no plaintext cached ahead of time elsewhere,
+// keeping plaintext credentials' lifetime as short as possible.
 type channelSenders struct {
 	masterKey string
 	dryRun    bool
@@ -29,11 +31,11 @@ type channelSenders struct {
 func (cs channelSenders) send(ctx context.Context, ch storage.NotificationChannel, msg notify.Message, d types.Decision, mode notify.Mode) error {
 	plaintext, err := secretcrypto.Decrypt(cs.masterKey, ch.EncryptedConfig, ch.KeySalt, ch.KeyNonce)
 	if err != nil {
-		return fmt.Errorf("解密渠道配置失败（TF_MASTER_KEY 是否跟保存时一致）：%w", err)
+		return fmt.Errorf("failed to decrypt channel config (does TF_MASTER_KEY match what it was saved with?): %w", err)
 	}
 
 	if cs.dryRun {
-		cs.logger.Info("（dry-run）本应发送提醒", "channel_kind", ch.Kind, "channel_id", ch.ID, "title", msg.Title)
+		cs.logger.Info("(dry-run) would have sent an alert", "channel_kind", ch.Kind, "channel_id", ch.ID, "title", msg.Title)
 		return nil
 	}
 
@@ -41,28 +43,28 @@ func (cs channelSenders) send(ctx context.Context, ch storage.NotificationChanne
 	case "email":
 		var c notify.EmailConfig
 		if err := json.Unmarshal([]byte(plaintext), &c); err != nil {
-			return fmt.Errorf("解析邮件渠道配置失败：%w", err)
+			return fmt.Errorf("failed to parse email channel config: %w", err)
 		}
 		return cs.email.SendEmail(ctx, c.Address, msg.Subject, msg.Body)
 	case "telegram":
 		var c notify.TelegramConfig
 		if err := json.Unmarshal([]byte(plaintext), &c); err != nil {
-			return fmt.Errorf("解析 Telegram 渠道配置失败：%w", err)
+			return fmt.Errorf("failed to parse Telegram channel config: %w", err)
 		}
 		return cs.telegram.SendMessage(ctx, c.ChatID, msg.PlainText())
 	case "webhook":
 		var c notify.WebhookConfig
 		if err := json.Unmarshal([]byte(plaintext), &c); err != nil {
-			return fmt.Errorf("解析 webhook 渠道配置失败：%w", err)
+			return fmt.Errorf("failed to parse webhook channel config: %w", err)
 		}
 		return cs.webhook.SendWebhook(ctx, c.URL, c.Secret, msg.ToWebhookPayload(d, mode))
 	case "webpush":
 		var sub notify.PushSubscription
 		if err := json.Unmarshal([]byte(plaintext), &sub); err != nil {
-			return fmt.Errorf("解析 web push 订阅失败：%w", err)
+			return fmt.Errorf("failed to parse web push subscription: %w", err)
 		}
 		return cs.webpush.SendPush(ctx, sub, msg.Title, msg.PlainText())
 	default:
-		return fmt.Errorf("未知的提醒渠道类型 %q", ch.Kind)
+		return fmt.Errorf("unknown alert channel kind %q", ch.Kind)
 	}
 }

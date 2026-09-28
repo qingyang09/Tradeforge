@@ -11,24 +11,24 @@ import (
 func TestMentionedTimeframesDetectsMultiple(t *testing.T) {
 	got := mentionedTimeframes("1小时判断盘整假突破，15分钟判断放量下跌")
 	if !got[types.TF1h] || !got[types.TF15m] {
-		t.Errorf("应识别出 1h 和 15m，实际 %v", got)
+		t.Errorf("should detect 1h and 15m, got %v", got)
 	}
 	if len(got) != 2 {
-		t.Errorf("不应识别出多余的周期，实际 %v", got)
+		t.Errorf("should not detect any extra timeframes, got %v", got)
 	}
 }
 
 func TestMentionedTimeframesSingleMention(t *testing.T) {
 	got := mentionedTimeframes("BTC 一小时线，放量做多")
 	if len(got) != 1 || !got[types.TF1h] {
-		t.Errorf("应只识别出 1h，实际 %v", got)
+		t.Errorf("should only detect 1h, got %v", got)
 	}
 }
 
 func TestCheckTimeframeCoverageSingleMentionAlwaysPasses(t *testing.T) {
 	cfg := types.StrategyConfig{Timeframe: types.TF1h}
 	if err := checkTimeframeCoverage(cfg, "BTC 一小时线放量做多"); err != nil {
-		t.Errorf("只提到一个周期时不应该拒绝：%v", err)
+		t.Errorf("should not reject when only one timeframe is mentioned: %v", err)
 	}
 }
 
@@ -39,28 +39,31 @@ func TestCheckTimeframeCoverageFullyCoveredPasses(t *testing.T) {
 	}
 	err := checkTimeframeCoverage(cfg, "1小时判断盘整假突破，15分钟判断放量下跌")
 	if err != nil {
-		t.Errorf("提到的周期都用到了，不应该拒绝：%v", err)
+		t.Errorf("should not reject when every mentioned timeframe is used: %v", err)
 	}
 }
 
 func TestCheckTimeframeCoverageDetectsDroppedTimeframe(t *testing.T) {
-	// 用户提到了 1h 和 15m，但配置里所有模块都跟着触发周期 15m 走——1h 被漏翻了。
+	// The user mentioned 1h and 15m, but every module in the config follows
+	// the 15m trigger timeframe — 1h got dropped in translation.
 	cfg := types.StrategyConfig{
 		Timeframe: types.TF15m,
 		Modules:   []types.ModuleConfig{{Module: "fakeout"}, {Module: "volume_breakout"}},
 	}
 	err := checkTimeframeCoverage(cfg, "1小时判断盘整假突破，15分钟判断放量下跌")
 	if err == nil {
-		t.Fatal("1h 被漏翻应该被拒绝")
+		t.Fatal("dropping 1h in translation should be rejected")
 	}
 	if !strings.Contains(err.Error(), "1h") {
-		t.Errorf("错误信息应点名漏掉的周期，实际：%v", err)
+		t.Errorf("error message should name the missing timeframe, got: %v", err)
 	}
 }
 
-// 端到端：模型第一次输出把 1h 判断漏翻成跟随 15m 触发周期，Translate 应该自动
-// 拿着具体的错误信息重试，第二次模型才把 1h 正确填上——验证的是重试循环真的会
-// 因为这道检查而重新生成，不只是单元测试孤立的检查函数本身。
+// End-to-end: the model's first output drops the 1h judgment by having it
+// follow the 15m trigger timeframe; Translate should automatically retry
+// with the specific error message, and the second model call correctly fills
+// in 1h — this verifies the retry loop actually regenerates because of this
+// check, not just the isolated check function in a unit test.
 func TestTranslateRetriesWhenModuleTimeframeIsDropped(t *testing.T) {
 	utterance := "BTC，1小时级别判断盘整区假突破，15分钟级别判断放量下跌就入场做空"
 
@@ -84,13 +87,13 @@ func TestTranslateRetriesWhenModuleTimeframeIsDropped(t *testing.T) {
 	a, stub := newAgent(firstBad, secondGood)
 	p, err := a.Translate(context.Background(), utterance, nil)
 	if err != nil {
-		t.Fatalf("翻译失败：%v", err)
+		t.Fatalf("translate failed: %v", err)
 	}
 	if len(stub.Calls) != 2 {
-		t.Fatalf("应该重试一次（共调用 2 次），实际调用 %d 次", len(stub.Calls))
+		t.Fatalf("should retry once (2 calls total), got %d calls", len(stub.Calls))
 	}
 	if p.Attempts != 2 {
-		t.Errorf("Attempts = %d，期望 2", p.Attempts)
+		t.Errorf("Attempts = %d, want 2", p.Attempts)
 	}
 	var fakeoutTF types.Timeframe
 	for _, m := range p.Config.Modules {
@@ -99,6 +102,6 @@ func TestTranslateRetriesWhenModuleTimeframeIsDropped(t *testing.T) {
 		}
 	}
 	if fakeoutTF != types.TF1h {
-		t.Errorf("重试后 fakeout.timeframe = %q，期望 1h", fakeoutTF)
+		t.Errorf("fakeout.timeframe after retry = %q, want 1h", fakeoutTF)
 	}
 }

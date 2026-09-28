@@ -10,17 +10,20 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// Ticker 是某个现货标的的最新行情快照，只保留用于按流动性排序的字段——不是完整的
-// OKX ticker 响应，调用方（批量扫描）只关心"这个标的活跃不活跃"，不需要买一卖一价、
-// 涨跌幅这些字段。
+// Ticker is a latest-price snapshot for a spot symbol, keeping only the
+// fields used for liquidity ranking — not the full OKX ticker response.
+// Callers (batch scanning) only care about "how active is this symbol", not
+// best bid/ask, price change percentage, etc.
 type Ticker struct {
-	Symbol string // 内部写法，如 "ETHUSDT"
-	// Vol24hQuote 是过去 24 小时的累计成交额（以计价货币计，对 USDT 交易对就是
-	// 大致的美元成交额），用来给标的按"有多少人在真实交易"排序。
+	Symbol string // internal notation, e.g. "ETHUSDT"
+	// Vol24hQuote is cumulative 24h trading volume (denominated in quote
+	// currency — roughly USD volume for USDT pairs), used to rank symbols by
+	// how much real trading activity they have.
 	Vol24hQuote decimal.Decimal
 }
 
-// tickersResponse 是 /api/v5/market/tickers 的响应外壳，只解析用得到的字段。
+// tickersResponse is the response envelope for /api/v5/market/tickers; only
+// the fields we use are parsed.
 type tickersResponse struct {
 	Code string `json:"code"`
 	Msg  string `json:"msg"`
@@ -30,36 +33,40 @@ type tickersResponse struct {
 	} `json:"data"`
 }
 
-// ListTickers 拉取 OKX 现货全部标的的最新行情快照，公开只读接口，不需要 API key，
-// 跟 FetchCandles/ListInstruments 同源。只负责"拉取"，排序/截断由调用方决定——
-// Client 不该知道"批量扫描取前 N 个"这种上层业务概念。
+// ListTickers fetches the latest price snapshot for all OKX spot symbols.
+// Public read-only endpoint, no API key required, same origin as
+// FetchCandles/ListInstruments. Only responsible for "fetching" — sorting
+// and truncation are left to the caller, since Client shouldn't know about
+// higher-level concepts like "batch-scan takes the top N".
 func (c *Client) ListTickers(ctx context.Context) ([]Ticker, error) {
 	reqURL := c.restBaseURL + "/api/v5/market/tickers?instType=SPOT"
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("构造请求失败：%w", err)
+		return nil, fmt.Errorf("failed to build request: %w", err)
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("请求 OKX 行情快照失败：%w", err)
+		return nil, fmt.Errorf("failed to request OKX ticker snapshot: %w", err)
 	}
 	defer resp.Body.Close()
 
 	var body tickersResponse
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return nil, fmt.Errorf("解析 OKX 响应失败：%w", err)
+		return nil, fmt.Errorf("failed to parse OKX response: %w", err)
 	}
 	if body.Code != "0" {
-		return nil, fmt.Errorf("OKX 返回错误（code=%s）：%s", body.Code, body.Msg)
+		return nil, fmt.Errorf("OKX returned an error (code=%s): %s", body.Code, body.Msg)
 	}
 
 	tickers := make([]Ticker, 0, len(body.Data))
 	for _, row := range body.Data {
 		vol, err := decimal.NewFromString(row.VolCcy24h)
 		if err != nil {
-			// 单个标的的成交额解析失败不该让整批行情快照都拿不到——跳过它，
-			// 不影响其它标的（跟项目里"一个标的的异常不能影响其它标的"是同一个原则）。
+			// A single symbol's volume failing to parse shouldn't make the
+			// whole batch of snapshots unavailable — skip it without
+			// affecting other symbols (the same principle as the project's
+			// "one symbol's failure shouldn't affect others").
 			continue
 		}
 		tickers = append(tickers, Ticker{

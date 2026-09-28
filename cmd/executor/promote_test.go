@@ -13,8 +13,8 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// fakePromotionStore 是 promotionStore 的内存实现，让 checkPromotions 的核心逻辑
-// 不需要真实 Postgres 就能测试。
+// fakePromotionStore is an in-memory implementation of promotionStore that
+// lets checkPromotions's core logic be tested without a real Postgres.
 type fakePromotionStore struct {
 	strategies []types.StrategyConfig
 	stats      map[string]strategy.PaperStats
@@ -25,9 +25,10 @@ type fakePromotionStore struct {
 
 	updated []storage.Transition
 
-	// paperStatsUserIDs/updateStateUserIDs 记录每次调用实际收到的 userID，按
-	// strategyID 索引——用来验证多用户模式下 checkPromotions 传的是每条策略自己的
-	// sc.UserID，而不是某个写死的值。
+	// paperStatsUserIDs/updateStateUserIDs record the userID actually
+	// received on each call, indexed by strategyID — used to verify that in
+	// multi-tenant mode checkPromotions passes each strategy's own
+	// sc.UserID, not some hardcoded value.
 	paperStatsUserIDs  map[string]string
 	updateStateUserIDs map[string]string
 }
@@ -88,7 +89,7 @@ func quietLogger() *slog.Logger {
 var paperStart = time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 
 func paperStrategy(id string) types.StrategyConfig {
-	return types.StrategyConfig{ID: id, UserID: testOwnerUserID, Name: "测试策略", Symbol: "BTCUSDT", State: types.StatePaperTrading}
+	return types.StrategyConfig{ID: id, UserID: testOwnerUserID, Name: "Test Strategy", Symbol: "BTCUSDT", State: types.StatePaperTrading}
 }
 
 func TestCheckPromotionsAdvancesQualifyingStrategy(t *testing.T) {
@@ -103,14 +104,14 @@ func TestCheckPromotionsAdvancesQualifyingStrategy(t *testing.T) {
 	checkPromotions(context.Background(), store, testOwnerUserID, gate, quietLogger())
 
 	if len(store.updated) != 1 {
-		t.Fatalf("推进次数 = %d，期望 1", len(store.updated))
+		t.Fatalf("promotion count = %d, want 1", len(store.updated))
 	}
 	got := store.updated[0]
 	if got.StrategyID != "s1" || got.From != types.StatePaperTrading || got.To != types.StateLiveEligible {
-		t.Errorf("推进记录不符预期：%+v", got)
+		t.Errorf("promotion record doesn't match expectations: %+v", got)
 	}
 	if got.Evidence["paper_trade_count"] != 20 {
-		t.Errorf("推进依据缺少笔数快照：%+v", got.Evidence)
+		t.Errorf("promotion evidence is missing the trade count snapshot: %+v", got.Evidence)
 	}
 }
 
@@ -119,7 +120,7 @@ func TestCheckPromotionsSkipsUnqualifiedStrategy(t *testing.T) {
 	store := &fakePromotionStore{
 		strategies: []types.StrategyConfig{paperStrategy("s1")},
 		stats: map[string]strategy.PaperStats{
-			// 时长够了但笔数不够。
+			// Duration is enough but trade count isn't.
 			"s1": {StartedAt: paperStart, Now: paperStart.Add(10 * 24 * time.Hour), TradeCount: 2},
 		},
 	}
@@ -127,11 +128,13 @@ func TestCheckPromotionsSkipsUnqualifiedStrategy(t *testing.T) {
 	checkPromotions(context.Background(), store, testOwnerUserID, gate, quietLogger())
 
 	if len(store.updated) != 0 {
-		t.Fatalf("未达标的策略不应被推进，实际推进了 %d 次", len(store.updated))
+		t.Fatalf("an unqualified strategy should not be promoted, but it was promoted %d time(s)", len(store.updated))
 	}
 }
 
-// 一个策略的统计读取失败不能拖累其它已经达标的策略——执行层的隔离原则同样适用于这里。
+// A stats-read failure for one strategy must not drag down other strategies
+// that already qualify — the execution layer's isolation principle applies
+// here too.
 func TestCheckPromotionsIsolatesPerStrategyFailures(t *testing.T) {
 	gate := strategy.DefaultGate()
 	store := &fakePromotionStore{
@@ -145,7 +148,7 @@ func TestCheckPromotionsIsolatesPerStrategyFailures(t *testing.T) {
 	checkPromotions(context.Background(), store, testOwnerUserID, gate, quietLogger())
 
 	if len(store.updated) != 1 || store.updated[0].StrategyID != "good" {
-		t.Fatalf("期望只有 good 被推进，实际：%+v", store.updated)
+		t.Fatalf("expected only good to be promoted, got: %+v", store.updated)
 	}
 }
 
@@ -163,7 +166,7 @@ func TestCheckPromotionsIsolatesUpdateFailures(t *testing.T) {
 	checkPromotions(context.Background(), store, testOwnerUserID, gate, quietLogger())
 
 	if len(store.updated) != 1 || store.updated[0].StrategyID != "s2" {
-		t.Fatalf("期望 s1 推进失败但 s2 成功，实际：%+v", store.updated)
+		t.Fatalf("expected s1's promotion to fail but s2's to succeed, got: %+v", store.updated)
 	}
 }
 
@@ -171,11 +174,12 @@ func TestCheckPromotionsHandlesListFailureWithoutPanicking(t *testing.T) {
 	store := &fakePromotionStore{listErr: errors.New("db down")}
 	checkPromotions(context.Background(), store, testOwnerUserID, strategy.DefaultGate(), quietLogger())
 	if len(store.updated) != 0 {
-		t.Fatalf("扫描失败时不应有任何推进")
+		t.Fatalf("no promotions should happen when the scan fails")
 	}
 }
 
-// 只扫描 PAPER_TRADING 状态：其它状态的策略不该被这个检查碰到。
+// Only PAPER_TRADING strategies should be scanned: strategies in other
+// states should never be touched by this check.
 func TestCheckPromotionsIgnoresOtherStates(t *testing.T) {
 	store := &fakePromotionStore{
 		strategies: []types.StrategyConfig{
@@ -185,24 +189,29 @@ func TestCheckPromotionsIgnoresOtherStates(t *testing.T) {
 	}
 	checkPromotions(context.Background(), store, testOwnerUserID, strategy.DefaultGate(), quietLogger())
 	if len(store.updated) != 0 {
-		t.Fatalf("非 PAPER_TRADING 状态的策略不该被推进")
+		t.Fatalf("strategies not in PAPER_TRADING state should not be promoted")
 	}
 }
 
-// TestCheckPromotionsMultiTenantIsolatesFailuresAcrossUsers 是这一轮改造新增的关键
-// 属性测试：多用户模式（ownerUserID=""）下，A 用户的策略统计读取失败，不能拖累 B
-// 用户本该被推进的策略——这是"单个策略失败不拖累其它策略"这条既有隔离原则，第一次
-// 在跨用户场景下被验证（此前的 TestCheckPromotionsIsolatesPerStrategyFailures 只验证过
-// 同一用户内的隔离）。同时验证 PaperStats/UpdateStrategyState 收到的 userID 确实是
-// 每条策略自己的 sc.UserID，不是任何写死的值。
+// TestCheckPromotionsMultiTenantIsolatesFailuresAcrossUsers is a key new
+// property test added by this refactor: in multi-tenant mode
+// (ownerUserID=""), a stats-read failure for user A's strategy must not
+// drag down a promotion user B's strategy otherwise qualifies for — this is
+// the pre-existing "a single strategy's failure doesn't drag down other
+// strategies" isolation principle, verified for the first time across a
+// cross-user scenario (the earlier
+// TestCheckPromotionsIsolatesPerStrategyFailures only verified isolation
+// within a single user). It also verifies that the userID PaperStats/
+// UpdateStrategyState receive really is each strategy's own sc.UserID, not
+// any hardcoded value.
 func TestCheckPromotionsMultiTenantIsolatesFailuresAcrossUsers(t *testing.T) {
 	const userA = "00000000-0000-4000-8000-0000000000aa"
 	const userB = "00000000-0000-4000-8000-0000000000bb"
 	gate := strategy.DefaultGate()
 	store := &fakePromotionStore{
 		strategies: []types.StrategyConfig{
-			{ID: "bad", UserID: userA, Name: "A 的策略", Symbol: "BTCUSDT", State: types.StatePaperTrading},
-			{ID: "good", UserID: userB, Name: "B 的策略", Symbol: "BTCUSDT", State: types.StatePaperTrading},
+			{ID: "bad", UserID: userA, Name: "A's strategy", Symbol: "BTCUSDT", State: types.StatePaperTrading},
+			{ID: "good", UserID: userB, Name: "B's strategy", Symbol: "BTCUSDT", State: types.StatePaperTrading},
 		},
 		stats: map[string]strategy.PaperStats{
 			"good": {StartedAt: paperStart, Now: paperStart.Add(10 * 24 * time.Hour), TradeCount: 20},
@@ -210,24 +219,24 @@ func TestCheckPromotionsMultiTenantIsolatesFailuresAcrossUsers(t *testing.T) {
 		statsErr: map[string]error{"bad": errors.New("boom")},
 	}
 
-	// ownerUserID 传空字符串 = 多用户模式，走 ListStrategiesByStateAllUsers。
+	// Passing an empty ownerUserID = multi-tenant mode, taking the ListStrategiesByStateAllUsers path.
 	checkPromotions(context.Background(), store, "", gate, quietLogger())
 
 	if len(store.updated) != 1 || store.updated[0].StrategyID != "good" {
-		t.Fatalf("A 的统计读取失败不应拖累 B 的策略推进，实际：%+v", store.updated)
+		t.Fatalf("A's stats-read failure should not drag down B's promotion, got: %+v", store.updated)
 	}
 	if store.paperStatsUserIDs["bad"] != userA {
-		t.Errorf("A 的策略应该用 A 自己的 userID 查统计，实际用了 %q", store.paperStatsUserIDs["bad"])
+		t.Errorf("A's strategy should query stats with A's own userID, got %q", store.paperStatsUserIDs["bad"])
 	}
 	if store.paperStatsUserIDs["good"] != userB {
-		t.Errorf("B 的策略应该用 B 自己的 userID 查统计，实际用了 %q", store.paperStatsUserIDs["good"])
+		t.Errorf("B's strategy should query stats with B's own userID, got %q", store.paperStatsUserIDs["good"])
 	}
 	if store.updateStateUserIDs["good"] != userB {
-		t.Errorf("推进 B 的策略应该用 B 自己的 userID，实际用了 %q", store.updateStateUserIDs["good"])
+		t.Errorf("promoting B's strategy should use B's own userID, got %q", store.updateStateUserIDs["good"])
 	}
 }
 
-// runPromotionLoop 必须在 ctx 取消后退出，不能泄漏 goroutine。
+// runPromotionLoop must exit after ctx is canceled, without leaking a goroutine.
 func TestRunPromotionLoopStopsOnContextCancel(t *testing.T) {
 	store := &fakePromotionStore{}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -242,6 +251,6 @@ func TestRunPromotionLoopStopsOnContextCancel(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("ctx 取消后 runPromotionLoop 应当退出，但超时未退出")
+		t.Fatal("runPromotionLoop should exit after ctx is canceled, but timed out instead")
 	}
 }

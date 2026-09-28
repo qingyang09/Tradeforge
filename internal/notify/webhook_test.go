@@ -30,17 +30,17 @@ func TestHTTPWebhookSenderPostsCorrectPayload(t *testing.T) {
 	}
 
 	if err := sender.SendWebhook(t.Context(), srv.URL, "", payload); err != nil {
-		t.Fatalf("意外错误：%v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if gotContentType != "application/json" {
-		t.Errorf("Content-Type = %q，期望 application/json", gotContentType)
+		t.Errorf("Content-Type = %q, want application/json", gotContentType)
 	}
 	var got WebhookPayload
 	if err := json.Unmarshal(gotBody, &got); err != nil {
-		t.Fatalf("解析收到的请求体失败：%v", err)
+		t.Fatalf("failed to parse received request body: %v", err)
 	}
 	if got.StrategyID != "s1" || got.Title != "测试标题" || got.Mode != ModeLive {
-		t.Errorf("请求体不符：%+v", got)
+		t.Errorf("request body mismatch: %+v", got)
 	}
 }
 
@@ -58,14 +58,14 @@ func TestHTTPWebhookSenderSignsWithSecret(t *testing.T) {
 	sender := NewHTTPWebhookSender(nil)
 	payload := WebhookPayload{Title: "t", StrategyID: "s1"}
 	if err := sender.SendWebhook(t.Context(), srv.URL, secret, payload); err != nil {
-		t.Fatalf("意外错误：%v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(gotBody)
 	want := hex.EncodeToString(mac.Sum(nil))
 	if gotSig != want {
-		t.Errorf("签名 = %q，期望 %q", gotSig, want)
+		t.Errorf("signature = %q, want %q", gotSig, want)
 	}
 }
 
@@ -80,10 +80,10 @@ func TestHTTPWebhookSenderOmitsSignatureWithoutSecret(t *testing.T) {
 
 	sender := NewHTTPWebhookSender(nil)
 	if err := sender.SendWebhook(t.Context(), srv.URL, "", WebhookPayload{StrategyID: "s1"}); err != nil {
-		t.Fatalf("意外错误：%v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if sawHeader {
-		t.Errorf("没配签名密钥时不应该带签名头，实际：%q", gotSig)
+		t.Errorf("should not include a signature header when no secret is configured, got: %q", gotSig)
 	}
 }
 
@@ -95,6 +95,6 @@ func TestHTTPWebhookSenderErrorsOnNonSuccessStatus(t *testing.T) {
 
 	sender := NewHTTPWebhookSender(nil)
 	if err := sender.SendWebhook(t.Context(), srv.URL, "", WebhookPayload{}); err == nil {
-		t.Fatal("非 2xx 状态码应该报错")
+		t.Fatal("should error on a non-2xx status code")
 	}
 }

@@ -1,6 +1,6 @@
 //go:build integration
 
-// 需要 docker-compose 起的 Postgres，且已经跑过 migrations/002_agent_profiles.sql：
+// Requires a Postgres started via docker-compose, with migrations/002_agent_profiles.sql already applied:
 //
 //	docker compose up -d
 //	go test -tags=integration ./internal/storage/... -run AgentProfile -v
@@ -16,9 +16,11 @@ import (
 	"tradeforge/pkg/idgen"
 )
 
-// createTestUserForStorage 插入一个专用于本次测试的用户行——agent_profiles/
-// broker_profiles 的 user_id 外键要求真的存在一行 users，不能直接塞一个随便编的
-// UUID。邮箱按测试名加随机 ID 拼，避免并发跑多个集成测试时撞上唯一索引。
+// createTestUserForStorage inserts a user row dedicated to this test --
+// agent_profiles/broker_profiles' user_id foreign key requires an actual
+// row in users, we can't just make up a random UUID. The email is built
+// from the test name plus a random ID, to avoid colliding with the unique
+// index when multiple integration tests run concurrently.
 func createTestUserForStorage(ctx context.Context, t *testing.T, store *Store, label string) User {
 	t.Helper()
 	u := User{
@@ -26,7 +28,7 @@ func createTestUserForStorage(ctx context.Context, t *testing.T, store *Store, l
 		PasswordHash: []byte("x"),
 	}
 	if err := store.CreateUser(ctx, u); err != nil {
-		t.Fatalf("创建测试用户失败：%v", err)
+		t.Fatalf("create test user: %v", err)
 	}
 	return u
 }
@@ -48,74 +50,78 @@ func TestAgentProfilesRoundTripAndActivationSwitches(t *testing.T) {
 
 	store, err := Open(ctx, cfg.Postgres)
 	if err != nil {
-		t.Fatalf("连接 Postgres 失败（是否已 docker compose up -d 并跑过 002 迁移？）：%v", err)
+		t.Fatalf("connect to Postgres (did you run docker compose up -d and apply migration 002?): %v", err)
 	}
 	defer store.Close()
 
 	u := createTestUserForStorage(ctx, t, store, "agent-profiles-roundtrip")
-	a := newProfileForTest(u.ID, "集成测试 A")
-	b := newProfileForTest(u.ID, "集成测试 B")
-	// 用 defer 而不是 t.Cleanup：t.Cleanup 注册的回调在测试函数体返回之后才跑，
-	// 晚于函数体里已经登记的 defer store.Close()——那样这里再用 store.pool 会
-	// 拿到"pool 已关闭"的错误，清理直接失败，垃圾数据就留在了共享的开发数据库里
-	// （真的发生过一次：一条留下来的假密文行让 LoadActiveAgentProfile 在真实进程
-	// 启动时 panic）。defer 是 LIFO，写在 defer store.Close() 之后就会先于它执行。
+	a := newProfileForTest(u.ID, "integration test A")
+	b := newProfileForTest(u.ID, "integration test B")
+	// defer instead of t.Cleanup: callbacks registered with t.Cleanup run
+	// after the test function body returns, which is after the
+	// defer store.Close() already registered earlier in the body -- using
+	// store.pool here at that point would get a "pool already closed"
+	// error, cleanup would fail outright, and the garbage data would be
+	// left behind in the shared dev database (this actually happened once:
+	// a leftover fake-ciphertext row caused LoadActiveAgentProfile to panic
+	// on a real process's startup). defer is LIFO, so registering this
+	// after defer store.Close() makes it run before that close.
 	defer func() {
 		if _, err := store.pool.Exec(context.Background(),
 			`DELETE FROM users WHERE id = $1`, u.ID); err != nil {
-			t.Errorf("清理测试数据失败，请手动检查 users/agent_profiles 表：%v", err)
+			t.Errorf("clean up test data, please manually check the users/agent_profiles tables: %v", err)
 		}
 	}()
 
 	if err := store.SaveAgentProfile(ctx, a, true); err != nil {
-		t.Fatalf("保存配置 A 失败：%v", err)
+		t.Fatalf("save config A: %v", err)
 	}
 	if err := store.SaveAgentProfile(ctx, b, true); err != nil {
-		t.Fatalf("保存配置 B 失败：%v", err)
+		t.Fatalf("save config B: %v", err)
 	}
 
-	// B 是最后保存并激活的，应该是当前生效的那份；A 应该被自动置为不生效。
+	// B was saved and activated last, so it should be the currently active one; A should be automatically deactivated.
 	active, err := store.ActiveAgentProfile(ctx, u.ID)
 	if err != nil {
-		t.Fatalf("读取当前生效配置失败：%v", err)
+		t.Fatalf("read active config: %v", err)
 	}
 	if active.ID != b.ID {
-		t.Errorf("当前生效的应该是 B，实际：%+v", active)
+		t.Errorf("active config should be B, got: %+v", active)
 	}
 
 	gotA, err := store.GetAgentProfile(ctx, u.ID, a.ID)
 	if err != nil {
-		t.Fatalf("读取配置 A 失败：%v", err)
+		t.Fatalf("read config A: %v", err)
 	}
 	if gotA.IsActive {
-		t.Error("保存 B 并激活后，A 应该被切换成不生效")
+		t.Error("after saving and activating B, A should have been switched to inactive")
 	}
 	if string(gotA.EncryptedAPIKey) != string(a.EncryptedAPIKey) {
-		t.Errorf("密文往返不一致：got=%v want=%v", gotA.EncryptedAPIKey, a.EncryptedAPIKey)
+		t.Errorf("ciphertext did not round-trip: got=%v want=%v", gotA.EncryptedAPIKey, a.EncryptedAPIKey)
 	}
 
-	// 切回 A。
+	// Switch back to A.
 	if err := store.ActivateAgentProfile(ctx, u.ID, a.ID); err != nil {
-		t.Fatalf("激活配置 A 失败：%v", err)
+		t.Fatalf("activate config A: %v", err)
 	}
 	active, err = store.ActiveAgentProfile(ctx, u.ID)
 	if err != nil || active.ID != a.ID {
-		t.Errorf("激活 A 后当前生效的应该是 A，实际：%+v err=%v", active, err)
+		t.Errorf("after activating A, active config should be A, got: %+v err=%v", active, err)
 	}
 
 	all, err := store.ListAgentProfiles(ctx, u.ID)
 	if err != nil {
-		t.Fatalf("列出全部配置失败：%v", err)
+		t.Fatalf("list all configs: %v", err)
 	}
 	if len(all) < 2 {
-		t.Errorf("至少应包含刚保存的两份配置，实际 %d 份", len(all))
+		t.Errorf("should include at least the two configs just saved, got %d", len(all))
 	}
 
 	if err := store.DeleteAgentProfile(ctx, u.ID, b.ID); err != nil {
-		t.Fatalf("删除配置 B 失败：%v", err)
+		t.Fatalf("delete config B: %v", err)
 	}
 	if _, err := store.GetAgentProfile(ctx, u.ID, b.ID); err == nil {
-		t.Error("删除后应查不到配置 B")
+		t.Error("config B should not be found after deletion")
 	}
 }
 
@@ -126,25 +132,27 @@ func TestActivateAgentProfileRejectsUnknownID(t *testing.T) {
 
 	store, err := Open(ctx, cfg.Postgres)
 	if err != nil {
-		t.Fatalf("连接 Postgres 失败：%v", err)
+		t.Fatalf("connect to Postgres: %v", err)
 	}
 	defer store.Close()
 
 	u := createTestUserForStorage(ctx, t, store, "agent-profiles-unknown-id")
 	defer func() {
 		if _, err := store.pool.Exec(context.Background(), `DELETE FROM users WHERE id = $1`, u.ID); err != nil {
-			t.Errorf("清理测试数据失败：%v", err)
+			t.Errorf("clean up test data: %v", err)
 		}
 	}()
 
 	if err := store.ActivateAgentProfile(ctx, u.ID, idgen.NewUUID()); err == nil {
-		t.Fatal("激活一个不存在的配置 ID 应该报错")
+		t.Fatal("activating a nonexistent config ID should return an error")
 	}
 }
 
-// TestAgentProfileGetActivateDeleteRejectOtherUsersRow 是多用户隔离的核心属性：
-// B 用户 Get/Activate/Delete A 用户的行，得到的错误必须跟"这行根本不存在"完全一样——
-// 不能让请求方通过错误类型探测出"这行存在，只是不是你的"。
+// TestAgentProfileGetActivateDeleteRejectOtherUsersRow tests the core
+// property of multi-user isolation: when user B calls Get/Activate/Delete
+// on user A's row, the resulting error must be exactly the same as "this
+// row doesn't exist at all" -- the requester must not be able to probe,
+// via the error type, that "this row exists, it's just not yours".
 func TestAgentProfileGetActivateDeleteRejectOtherUsersRow(t *testing.T) {
 	cfg := config.Load()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -152,7 +160,7 @@ func TestAgentProfileGetActivateDeleteRejectOtherUsersRow(t *testing.T) {
 
 	store, err := Open(ctx, cfg.Postgres)
 	if err != nil {
-		t.Fatalf("连接 Postgres 失败：%v", err)
+		t.Fatalf("connect to Postgres: %v", err)
 	}
 	defer store.Close()
 
@@ -161,28 +169,29 @@ func TestAgentProfileGetActivateDeleteRejectOtherUsersRow(t *testing.T) {
 	defer func() {
 		if _, err := store.pool.Exec(context.Background(),
 			`DELETE FROM users WHERE id = ANY($1)`, []string{userA.ID, userB.ID}); err != nil {
-			t.Errorf("清理测试数据失败：%v", err)
+			t.Errorf("clean up test data: %v", err)
 		}
 	}()
 
-	a := newProfileForTest(userA.ID, "A 的配置")
+	a := newProfileForTest(userA.ID, "A's profile")
 	if err := store.SaveAgentProfile(ctx, a, true); err != nil {
-		t.Fatalf("保存配置 A 失败：%v", err)
+		t.Fatalf("save profile A: %v", err)
 	}
 
 	if _, err := store.GetAgentProfile(ctx, userB.ID, a.ID); !errors.Is(err, ErrNotFound) {
-		t.Errorf("B 读取 A 的配置应该跟读一个不存在的 ID 一样返回 ErrNotFound，实际：%v", err)
+		t.Errorf("B reading A's profile should return ErrNotFound just like reading a nonexistent ID, got: %v", err)
 	}
 	if err := store.ActivateAgentProfile(ctx, userB.ID, a.ID); err == nil {
-		t.Error("B 不应该能激活 A 的配置")
+		t.Error("B should not be able to activate A's profile")
 	}
 	if err := store.DeleteAgentProfile(ctx, userB.ID, a.ID); err == nil {
-		t.Error("B 不应该能删除 A 的配置")
+		t.Error("B should not be able to delete A's profile")
 	}
 
-	// 确认 A 的配置真的还在、没有被 B 的失败操作意外改动。
+	// Confirm A's profile is really still there and wasn't accidentally
+	// modified by B's failed operations.
 	gotA, err := store.GetAgentProfile(ctx, userA.ID, a.ID)
 	if err != nil || !gotA.IsActive {
-		t.Errorf("A 的配置应该完好无损地保持生效，实际：%+v err=%v", gotA, err)
+		t.Errorf("A's profile should remain intact and active, got: %+v err=%v", gotA, err)
 	}
 }

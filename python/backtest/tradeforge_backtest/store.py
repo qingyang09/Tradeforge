@@ -1,4 +1,4 @@
-"""把回测结果写入 Postgres，供状态机与界面消费。"""
+"""Write backtest results to Postgres, for the state machine and UI to consume."""
 
 from __future__ import annotations
 
@@ -12,22 +12,25 @@ from .model import BacktestResult, Trade
 
 
 def _iso(dt: datetime) -> str:
-    """把引擎内部用的裸时间（没有 tzinfo，按约定就是 UTC）序列化成带时区后缀的
-    RFC3339 字符串。
+    """Serialize the engine's internal naive datetime (no tzinfo, UTC by
+    convention) into an RFC3339 string with an explicit timezone suffix.
 
-    这个项目里所有时间戳全程用 naive datetime（Go 侧输出的 RFC3339 "...Z" 由
-    engine.py 的 _parse_time() 特意去掉 tzinfo 后再存），naive datetime 的
-    .isoformat() 从不带时区后缀（如 "2026-09-09T11:00:00"），而 Go 的
-    time.Time.UnmarshalJSON 要求 RFC3339 必须带时区——这份数据一旦嵌进 JSONB
-    字段（segments/trades/equity_curve）被 Go 那边反序列化，就会直接报错。
-    data_start/data_end 这类直接绑定到 TIMESTAMPTZ 列的时间戳不受影响（psycopg
-    原生处理），只有嵌在 JSON 字符串里的时间戳需要这一步。
+    Every timestamp in this project is a naive datetime throughout (the
+    RFC3339 "...Z" Go emits gets its tzinfo deliberately stripped by
+    engine.py's _parse_time() before being stored). A naive datetime's
+    .isoformat() never carries a timezone suffix (e.g.
+    "2026-09-09T11:00:00"), but Go's time.Time.UnmarshalJSON requires
+    RFC3339 to include one — so the moment this data is embedded in a JSONB
+    field (segments/trades/equity_curve) and deserialized on the Go side, it
+    fails outright. Timestamps bound directly to TIMESTAMPTZ columns like
+    data_start/data_end aren't affected (psycopg handles those natively) —
+    only timestamps embedded in JSON strings need this step.
     """
     return dt.isoformat() + "Z"
 
 
 def dsn_from_env() -> str:
-    """按环境变量拼出连接串，默认值对应 docker-compose 起的本地服务。"""
+    """Build the connection string from environment variables; defaults match the local docker-compose services."""
     host = os.getenv("TF_PG_HOST", "localhost")
     port = os.getenv("TF_PG_PORT", "55432")
     user = os.getenv("TF_PG_USER", "tradeforge")
@@ -37,9 +40,10 @@ def dsn_from_env() -> str:
 
 
 def result_to_row(result: BacktestResult) -> dict[str, Any]:
-    """把结果对象转成与 backtest_results 表对应的字段字典。
+    """Convert a result object into the field dict matching the backtest_results table.
 
-    单独抽出来是为了让"序列化"能被独立测试，不必真的连数据库。
+    Kept as a separate function so "serialization" can be tested on its own,
+    without an actual database connection.
     """
     return {
         "id": str(uuid.uuid4()),
@@ -92,7 +96,8 @@ def _trade_to_dict(t: Trade) -> dict[str, Any]:
         "fees": str(t.fees),
         "exit_reason": t.exit_reason,
         "segment": t.segment.value,
-        # 只保留触发时各模块的关键信息，避免整段 raw 把审计表撑爆。
+        # Keep only each module's key fields at trigger time — including the
+        # full raw payload would bloat the audit table.
         "trigger_signals": [
             {
                 "module": s.get("module"),
@@ -106,17 +111,18 @@ def _trade_to_dict(t: Trade) -> dict[str, Any]:
 
 
 def save_result(result: BacktestResult, dsn: str | None = None) -> str:
-    """把回测结果写库，返回记录 ID。
+    """Write the backtest result to the database, returning the record ID.
 
-    psycopg 是可选依赖：没装时给出明确提示，而不是让 ImportError
-    在调用栈深处炸出来。
+    psycopg is an optional dependency: when it's not installed, raise a
+    clear message instead of letting an ImportError surface from deep in the
+    call stack.
     """
     try:
         import psycopg  # type: ignore[import-not-found]
-    except ImportError as exc:  # pragma: no cover — 取决于环境
+    except ImportError as exc:  # pragma: no cover -- depends on the environment
         raise RuntimeError(
-            "写库需要 psycopg：pip install 'psycopg[binary]'。"
-            "只想看结果可以加 --no-save 跳过。"
+            "Writing results requires psycopg: pip install 'psycopg[binary]'. "
+            "Pass --no-save if you just want to see the results."
         ) from exc
 
     row = result_to_row(result)

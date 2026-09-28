@@ -25,12 +25,13 @@ func quietLogger() *slog.Logger {
 
 const testMasterKey = "dispatch-test-master-key-32-bytes-plus!"
 
-// fakeNotifierStore 是 notifierStore 的内存实现，让 handleDecision/dispatchToChannel
-// 的核心逻辑不需要真实 Postgres 就能测试。
+// fakeNotifierStore is an in-memory implementation of notifierStore, so
+// handleDecision/dispatchToChannel's core logic can be tested without a
+// real Postgres.
 type fakeNotifierStore struct {
 	mu sync.Mutex
 
-	strategies map[string]types.StrategyConfig // strategyID -> config
+	strategies map[string]types.StrategyConfig          // strategyID -> config
 	channels   map[string][]storage.NotificationChannel // userID -> channels
 	delivered  map[string]bool                          // decisionID+"|"+channelID -> sent
 
@@ -55,7 +56,7 @@ func (f *fakeNotifierStore) GetStrategyAllUsers(_ context.Context, id string) (t
 	defer f.mu.Unlock()
 	sc, ok := f.strategies[id]
 	if !ok {
-		return types.StrategyConfig{}, fmt.Errorf("策略 %s：%w", id, storage.ErrNotFound)
+		return types.StrategyConfig{}, fmt.Errorf("strategy %s: %w", id, storage.ErrNotFound)
 	}
 	return sc, nil
 }
@@ -89,12 +90,12 @@ func (f *fakeNotifierStore) DeleteNotificationChannel(_ context.Context, _ strin
 	return nil
 }
 
-// ---- 假渠道发送器 ----
+// ---- fake channel senders ----
 
 type fakeEmailSender struct {
-	mu    sync.Mutex
-	sent  []string // to
-	err   error
+	mu   sync.Mutex
+	sent []string // to
+	err  error
 }
 
 func (f *fakeEmailSender) SendEmail(_ context.Context, to, _, _ string) error {
@@ -173,12 +174,12 @@ func (f *fakeWebPushSender) SendPush(_ context.Context, _ notify.PushSubscriptio
 	return nil
 }
 
-// encryptedChannel 构造一条测试用的、真实加密过的渠道配置。
+// encryptedChannel builds a test channel config that's actually encrypted.
 func encryptedChannel(t *testing.T, userID, kind, label, plaintext string) storage.NotificationChannel {
 	t.Helper()
 	ciphertext, salt, nonce, err := secretcrypto.Encrypt(testMasterKey, plaintext)
 	if err != nil {
-		t.Fatalf("加密测试数据失败：%v", err)
+		t.Fatalf("failed to encrypt test data: %v", err)
 	}
 	return storage.NotificationChannel{
 		ID: idgen.NewUUID(), UserID: userID, Kind: kind, Label: label, KeyHint: "hint",
@@ -197,12 +198,12 @@ func testDecision(strategyID string, triggered bool) types.Decision {
 	return types.Decision{
 		ID: idgen.NewUUID(), StrategyID: strategyID, Symbol: "BTCUSDT",
 		Direction: types.DirectionLong, Score: 0.8, Triggered: triggered,
-		Reason: "测试原因", Price: decimal.NewFromInt(50000), Timestamp: time.Now(),
+		Reason: "test reason", Price: decimal.NewFromInt(50000), Timestamp: time.Now(),
 	}
 }
 
 func testStrategyConfig(id, userID string, state types.StrategyState) types.StrategyConfig {
-	return types.StrategyConfig{ID: id, UserID: userID, Name: "测试策略", Symbol: "BTCUSDT", State: state}
+	return types.StrategyConfig{ID: id, UserID: userID, Name: "test strategy", Symbol: "BTCUSDT", State: state}
 }
 
 func TestHandleDecisionSkipsUntriggered(t *testing.T) {
@@ -212,12 +213,12 @@ func TestHandleDecisionSkipsUntriggered(t *testing.T) {
 
 	sc := testStrategyConfig("s1", "u1", types.StateLive)
 	store.strategies["s1"] = sc
-	store.channels["u1"] = []storage.NotificationChannel{encryptedChannel(t, "u1", "email", "我的邮箱", `{"address":"a@test.com"}`)}
+	store.channels["u1"] = []storage.NotificationChannel{encryptedChannel(t, "u1", "email", "my email", `{"address":"a@test.com"}`)}
 
 	handleDecision(context.Background(), store, senders, "", testDecision("s1", false), quietLogger())
 
 	if email.count() != 0 {
-		t.Errorf("未触发的决策不应该发送任何提醒，实际发送了 %d 次", email.count())
+		t.Errorf("a non-triggered decision should not send any alert, but sent %d times", email.count())
 	}
 }
 
@@ -229,7 +230,7 @@ func TestHandleDecisionSkipsUnknownStrategy(t *testing.T) {
 	handleDecision(context.Background(), store, senders, "", testDecision("does-not-exist", true), quietLogger())
 
 	if email.count() != 0 {
-		t.Errorf("查不到策略时不应该发送任何提醒，实际发送了 %d 次", email.count())
+		t.Errorf("should not send any alert when the strategy can't be found, but sent %d times", email.count())
 	}
 }
 
@@ -250,14 +251,14 @@ func TestHandleDecisionSkipsNonAlertingStates(t *testing.T) {
 			senders := testSenders(email, &fakeTelegramSender{}, &fakeWebhookSender{}, &fakeWebPushSender{})
 
 			store.strategies["s1"] = testStrategyConfig("s1", "u1", state)
-			store.channels["u1"] = []storage.NotificationChannel{encryptedChannel(t, "u1", "email", "邮箱", `{"address":"a@test.com"}`)}
+			store.channels["u1"] = []storage.NotificationChannel{encryptedChannel(t, "u1", "email", "email", `{"address":"a@test.com"}`)}
 
 			handleDecision(context.Background(), store, senders, "", testDecision("s1", true), quietLogger())
 
 			wantSent := alertingStates[state]
 			gotSent := email.count() > 0
 			if gotSent != wantSent {
-				t.Errorf("状态 %s：应该提醒=%v，实际发送了=%v", state, wantSent, gotSent)
+				t.Errorf("state %s: want alert=%v, got sent=%v", state, wantSent, gotSent)
 			}
 		})
 	}
@@ -271,10 +272,10 @@ func TestHandleDecisionSendsToAllEnabledChannels(t *testing.T) {
 	senders := testSenders(email, telegram, webhook, &fakeWebPushSender{})
 
 	store.strategies["s1"] = testStrategyConfig("s1", "u1", types.StateLive)
-	disabled := encryptedChannel(t, "u1", "telegram", "已停用", `{"chat_id":"123"}`)
+	disabled := encryptedChannel(t, "u1", "telegram", "disabled", `{"chat_id":"123"}`)
 	disabled.IsEnabled = false
 	store.channels["u1"] = []storage.NotificationChannel{
-		encryptedChannel(t, "u1", "email", "邮箱", `{"address":"a@test.com"}`),
+		encryptedChannel(t, "u1", "email", "email", `{"address":"a@test.com"}`),
 		encryptedChannel(t, "u1", "webhook", "webhook", `{"url":"https://example.com/hook"}`),
 		disabled,
 	}
@@ -282,13 +283,13 @@ func TestHandleDecisionSendsToAllEnabledChannels(t *testing.T) {
 	handleDecision(context.Background(), store, senders, "", testDecision("s1", true), quietLogger())
 
 	if email.count() != 1 {
-		t.Errorf("邮件应该发送 1 次，实际 %d 次", email.count())
+		t.Errorf("email should be sent once, got %d", email.count())
 	}
 	if webhook.count() != 1 {
-		t.Errorf("webhook 应该发送 1 次，实际 %d 次", webhook.count())
+		t.Errorf("webhook should be sent once, got %d", webhook.count())
 	}
 	if telegram.count() != 0 {
-		t.Errorf("已停用的渠道不应该发送，实际发送了 %d 次", telegram.count())
+		t.Errorf("a disabled channel should not send, but sent %d times", telegram.count())
 	}
 }
 
@@ -301,7 +302,7 @@ func TestHandleDecisionIsolatesChannelFailures(t *testing.T) {
 
 	store.strategies["s1"] = testStrategyConfig("s1", "u1", types.StateLive)
 	store.channels["u1"] = []storage.NotificationChannel{
-		encryptedChannel(t, "u1", "email", "邮箱", `{"address":"a@test.com"}`),
+		encryptedChannel(t, "u1", "email", "email", `{"address":"a@test.com"}`),
 		encryptedChannel(t, "u1", "telegram", "telegram", `{"chat_id":"123"}`),
 		encryptedChannel(t, "u1", "webhook", "webhook", `{"url":"https://example.com/hook"}`),
 	}
@@ -309,7 +310,7 @@ func TestHandleDecisionIsolatesChannelFailures(t *testing.T) {
 	handleDecision(context.Background(), store, senders, "", testDecision("s1", true), quietLogger())
 
 	if email.count() != 1 || webhook.count() != 1 {
-		t.Errorf("Telegram 发送失败不应该影响邮件/webhook，实际 email=%d webhook=%d", email.count(), webhook.count())
+		t.Errorf("a Telegram send failure should not affect email/webhook, got email=%d webhook=%d", email.count(), webhook.count())
 	}
 
 	sentCount, failedCount := 0, 0
@@ -322,7 +323,7 @@ func TestHandleDecisionIsolatesChannelFailures(t *testing.T) {
 		}
 	}
 	if sentCount != 2 || failedCount != 1 {
-		t.Errorf("投递审计应该是 2 条成功 1 条失败，实际 sent=%d failed=%d", sentCount, failedCount)
+		t.Errorf("delivery audit should show 2 sent and 1 failed, got sent=%d failed=%d", sentCount, failedCount)
 	}
 }
 
@@ -332,7 +333,7 @@ func TestHandleDecisionSkipsAlreadyDelivered(t *testing.T) {
 	senders := testSenders(email, &fakeTelegramSender{}, &fakeWebhookSender{}, &fakeWebPushSender{})
 
 	store.strategies["s1"] = testStrategyConfig("s1", "u1", types.StateLive)
-	ch := encryptedChannel(t, "u1", "email", "邮箱", `{"address":"a@test.com"}`)
+	ch := encryptedChannel(t, "u1", "email", "email", `{"address":"a@test.com"}`)
 	store.channels["u1"] = []storage.NotificationChannel{ch}
 
 	d := testDecision("s1", true)
@@ -341,7 +342,7 @@ func TestHandleDecisionSkipsAlreadyDelivered(t *testing.T) {
 	handleDecision(context.Background(), store, senders, "", d, quietLogger())
 
 	if email.count() != 0 {
-		t.Errorf("已经投递过的决策+渠道组合不应该重新发送，实际发送了 %d 次", email.count())
+		t.Errorf("an already-delivered decision+channel pair should not resend, but sent %d times", email.count())
 	}
 }
 
@@ -351,13 +352,13 @@ func TestDispatchCleansUpGoneSubscription(t *testing.T) {
 	senders := testSenders(&fakeEmailSender{}, &fakeTelegramSender{}, &fakeWebhookSender{}, webpush)
 
 	store.strategies["s1"] = testStrategyConfig("s1", "u1", types.StateLive)
-	ch := encryptedChannel(t, "u1", "webpush", "此设备", `{"endpoint":"https://push.example.com/x","p256dh":"k","auth":"a"}`)
+	ch := encryptedChannel(t, "u1", "webpush", "this device", `{"endpoint":"https://push.example.com/x","p256dh":"k","auth":"a"}`)
 	store.channels["u1"] = []storage.NotificationChannel{ch}
 
 	handleDecision(context.Background(), store, senders, "", testDecision("s1", true), quietLogger())
 
 	if len(store.deletedChannels) != 1 || store.deletedChannels[0] != ch.ID {
-		t.Errorf("订阅失效应该触发删除这条渠道，实际删除记录：%v", store.deletedChannels)
+		t.Errorf("a dead subscription should trigger deletion of this channel, got deleted: %v", store.deletedChannels)
 	}
 }
 
@@ -367,18 +368,22 @@ func TestHandleDecisionSingleOwnerModeFiltersOtherUsers(t *testing.T) {
 	senders := testSenders(email, &fakeTelegramSender{}, &fakeWebhookSender{}, &fakeWebPushSender{})
 
 	store.strategies["s1"] = testStrategyConfig("s1", "userB", types.StateLive)
-	store.channels["userB"] = []storage.NotificationChannel{encryptedChannel(t, "userB", "email", "邮箱", `{"address":"b@test.com"}`)}
+	store.channels["userB"] = []storage.NotificationChannel{encryptedChannel(t, "userB", "email", "email", `{"address":"b@test.com"}`)}
 
-	// 单用户模式：只服务 userA，但这条决策属于 userB。
+	// Single-tenant mode: only serves userA, but this decision belongs to userB.
 	handleDecision(context.Background(), store, senders, "userA", testDecision("s1", true), quietLogger())
 
 	if email.count() != 0 {
-		t.Errorf("单用户模式下不该给别的用户发提醒，实际发送了 %d 次", email.count())
+		t.Errorf("single-tenant mode should not alert another user, but sent %d times", email.count())
 	}
 }
 
-// consume() 本身没有单测——它的签名直接依赖具体类型 *messaging.DecisionReader
-// （不是接口），跟 cmd/executor/main.go 里同名同结构的 consume() 是同一个情况，
-// 那边同样没有单测：要测的话需要一个真实 Kafka 连接或者把 DecisionReader 改成接口，
-// 后者是个不小的改动，为了测这个直接照抄过来、逻辑本身极简单（读-判断-退避-分发）
-// 的循环不值得。handleDecision 本身的行为已经被上面这些测试充分覆盖。
+// consume() itself has no unit test — its signature directly depends on the
+// concrete type *messaging.DecisionReader (not an interface), the same
+// situation as the identically-named, identically-structured consume() in
+// cmd/executor/main.go, which also has no unit test: testing it would need
+// either a real Kafka connection or turning DecisionReader into an
+// interface, and the latter is a non-trivial change not worth making just to
+// test a loop this simple (read-check-backoff-dispatch), copied verbatim
+// from there. handleDecision's own behavior is already thoroughly covered
+// by the tests above.

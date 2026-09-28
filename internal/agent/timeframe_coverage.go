@@ -8,11 +8,14 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// timeframePhrases 把常见的中文/英文周期说法映射到 types.Timeframe，用于检测用户
-// 原话里明确提到过哪些周期。这是一道兜底检查用的启发式匹配，不是精确的自然语言
-// 理解——它的作用只是发现"用户明明说了两个不同的周期各管一段判断逻辑，模型翻译出
-// 的配置却把其中一个悄悄弄丢了、让对应模块的判断跟着触发周期走"这种落差，而不是
-// 追求完美召回。
+// timeframePhrases maps common Chinese/English ways of naming a timeframe to
+// types.Timeframe, used to detect which timeframes the user's own words
+// explicitly mentioned. This is heuristic matching for a backstop check, not
+// precise natural-language understanding — its job is only to catch the gap
+// where "the user clearly named two different timeframes, each governing a
+// separate piece of logic, but the model's translated config silently
+// dropped one of them, letting that module's logic quietly follow the
+// trigger timeframe instead" — it isn't trying for perfect recall.
 var timeframePhrases = map[types.Timeframe][]string{
 	types.TF1m:  {"1分钟", "一分钟", "1m"},
 	types.TF5m:  {"5分钟", "五分钟", "5m"},
@@ -22,12 +25,16 @@ var timeframePhrases = map[types.Timeframe][]string{
 	types.TF1d:  {"1天", "一天", "日线", "1d"},
 }
 
-// mentionedTimeframes 返回文本里明确提到的周期集合。
+// mentionedTimeframes returns the set of timeframes explicitly mentioned in
+// the text.
 //
-// 短语按长度从长到短依次匹配，命中后把对应的文本区间"挖空"再继续——像
-// "15分钟" 天生就包含 "5分钟" 这个子串，不先处理长的会把 15 分钟误判成
-// 也提到了 5 分钟。挖空是最简单能同时处理阿拉伯数字和中文数字写法的办法，
-// 不需要为两套数字系统分别写正则。
+// Phrases are matched longest-first, and once a match hits, that span of text
+// is "blanked out" before continuing — since "15分钟" (15 minutes) naturally
+// contains "5分钟" (5 minutes) as a substring, matching the longer phrase
+// first is required, otherwise 15 minutes would be misread as also
+// mentioning 5 minutes. Blanking out matched spans is the simplest way to
+// handle both Arabic numerals and Chinese numeral writing at once, without
+// writing separate regexes for the two numbering systems.
 func mentionedTimeframes(text string) map[types.Timeframe]bool {
 	type candidate struct {
 		tf     types.Timeframe
@@ -65,14 +72,19 @@ func mentionedTimeframes(text string) map[types.Timeframe]bool {
 	return out
 }
 
-// checkTimeframeCoverage 核对：如果用户原话里明确提到了不止一个周期（说明这是一条
-// 多周期协同的规则），最终配置实际用到的周期集合（cfg.RequiredTimeframes）必须把
-// 提到的周期都覆盖到——不能出现"用户说了 1 小时判断背景、15 分钟判断触发，配置里
-// 却完全没有任何模块用 1 小时"这种整段判断逻辑的周期被悄悄弄丢的情况。
+// checkTimeframeCoverage verifies: if the user's own words explicitly
+// mentioned more than one timeframe (implying this is a rule coordinating
+// across multiple timeframes), the set of timeframes actually used by the
+// final config (cfg.RequiredTimeframes) must cover every one mentioned — it
+// must not happen that "the user said 1h for the background condition and
+// 15m for the trigger, but the config has no module using 1h at all", i.e.
+// an entire piece of logic's timeframe silently dropped.
 //
-// 只在"用户明确提到的周期数 > 1"且确实有遗漏时才拒绝：用户只说了一个周期，或者
-// 提到的周期本来就都在配置里用到了，都直接放过，不为了这道兜底检查制造额外的
-// 误判和无谓重试。
+// Only rejects when "the user explicitly mentioned more than 1 timeframe"
+// AND something is actually missing: if the user only mentioned one
+// timeframe, or every mentioned timeframe is already used somewhere in the
+// config, this passes through — no point manufacturing extra false positives
+// and pointless retries for the sake of this backstop check.
 func checkTimeframeCoverage(cfg types.StrategyConfig, allUserText string) error {
 	mentioned := mentionedTimeframes(allUserText)
 	if len(mentioned) < 2 {
@@ -95,8 +107,10 @@ func checkTimeframeCoverage(cfg types.StrategyConfig, allUserText string) error 
 	}
 	sort.Strings(missing)
 	return fmt.Errorf(
-		"用户的描述里明确提到了不止一个周期，但配置里完全没有任何模块使用 %s——"+
-			"这条（或这些）判断逻辑的周期被漏翻了，不能让它悄悄跟着触发周期走，"+
-			"必须回到用户原话，把对应模块的 timeframe 字段显式填成用户实际说的那个周期",
-		strings.Join(missing, "、"))
+		"the user's description explicitly named more than one timeframe, but no module "+
+			"in the config uses %s at all -- that piece (or pieces) of logic's timeframe got "+
+			"dropped in translation, and it must not be allowed to silently follow the trigger "+
+			"timeframe instead; go back to the user's own words and explicitly set the "+
+			"corresponding module's timeframe field to the timeframe they actually named",
+		strings.Join(missing, ", "))
 }
