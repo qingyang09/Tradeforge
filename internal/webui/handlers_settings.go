@@ -8,6 +8,7 @@ import (
 	"tradeforge/internal/agent"
 	"tradeforge/internal/config"
 	"tradeforge/internal/execution"
+	"tradeforge/internal/i18n"
 	"tradeforge/internal/modules"
 	"tradeforge/internal/storage"
 	"tradeforge/pkg/idgen"
@@ -112,7 +113,10 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if label == "" {
-		label = provider.Label()
+		// i18n.DefaultLang (Chinese) for now, matching this app's current
+		// Chinese-only behavior exactly -- see render.go's msg template func
+		// doc comment for why, and the plan's Phase 4 for the per-request fix.
+		label = i18n.Render(i18n.DefaultLang, provider.Label())
 	}
 
 	// Timeout/MaxRetries 沿用环境变量里的基准配置（TF_AGENT_TIMEOUT、

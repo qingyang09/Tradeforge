@@ -1,6 +1,9 @@
 package execution
 
-import "fmt"
+import (
+	"tradeforge/internal/i18n"
+	"tradeforge/pkg/types"
+)
 
 // BrokerKind identifies an order channel the execution layer can connect to.
 //
@@ -39,16 +42,34 @@ var CredentialedKinds = []BrokerKind{
 }
 
 type brokerSpec struct {
-	label              string
+	// labelKey is the internal/i18n catalog key for this channel's display
+	// name (see catalog_execution.go).
+	labelKey           string
 	requiresPassphrase bool
 }
 
 var brokerSpecs = map[BrokerKind]brokerSpec{
-	BrokerKindPaper:          {label: "纯内存模拟盘（不接任何交易所）"},
-	BrokerKindBinanceTestnet: {label: "Binance 测试网"},
-	BrokerKindOKXDemo:        {label: "OKX 模拟盘", requiresPassphrase: true},
-	BrokerKindBybitTestnet:   {label: "Bybit 测试网"},
-	BrokerKindBitgetDemo:     {label: "Bitget 模拟盘", requiresPassphrase: true},
+	BrokerKindPaper:          {labelKey: "execution.broker.paper"},
+	BrokerKindBinanceTestnet: {labelKey: "execution.broker.binance_testnet"},
+	BrokerKindOKXDemo:        {labelKey: "execution.broker.okx_demo", requiresPassphrase: true},
+	BrokerKindBybitTestnet:   {labelKey: "execution.broker.bybit_testnet"},
+	BrokerKindBitgetDemo:     {labelKey: "execution.broker.bitget_demo", requiresPassphrase: true},
+}
+
+// BrokerConfigError means a broker channel couldn't be constructed from the
+// credentials/config supplied (a missing key, a non-testnet address, an
+// unsupported kind). This is the error a user sees immediately after saving
+// exchange credentials on the settings page, so -- like the rest of this
+// session's Class A conversions -- it carries a translatable Reason instead
+// of a pre-rendered Chinese sentence. Error() renders it in English by
+// default, for logs and Go error-handling code; webui should read Reason
+// directly for a real bilingual render.
+type BrokerConfigError struct {
+	Reason types.Message
+}
+
+func (e *BrokerConfigError) Error() string {
+	return i18n.Render(i18n.LangEN, e.Reason)
 }
 
 // Valid reports whether this is a supported order channel.
@@ -58,11 +79,11 @@ func (k BrokerKind) Valid() bool {
 }
 
 // Label returns the human-readable name, for display in the UI.
-func (k BrokerKind) Label() string {
+func (k BrokerKind) Label() types.Message {
 	if s, ok := brokerSpecs[k]; ok {
-		return s.label
+		return types.Msg(s.labelKey)
 	}
-	return string(k)
+	return types.Message{Literal: string(k)}
 }
 
 // RequiresPassphrase reports whether this order channel needs a passphrase in
@@ -88,6 +109,6 @@ func NewBroker(kind BrokerKind, apiKey, apiSecret, passphrase string) (Broker, e
 	case BrokerKindBitgetDemo:
 		return NewBitgetDemoBroker(BitgetConfig{APIKey: apiKey, APISecret: apiSecret, Passphrase: passphrase})
 	default:
-		return nil, fmt.Errorf("不支持的下单通道 %q", kind)
+		return nil, &BrokerConfigError{types.Msg("execution.broker.unsupported_kind", "kind", string(kind))}
 	}
 }

@@ -55,7 +55,7 @@ type BybitConfig struct {
 // NewBybitTestnetBroker creates a Bybit testnet order channel.
 func NewBybitTestnetBroker(cfg BybitConfig) (*BybitBroker, error) {
 	if cfg.APIKey == "" || cfg.APISecret == "" {
-		return nil, fmt.Errorf("缺少 Bybit 测试网 API 密钥（TF_BYBIT_API_KEY / TF_BYBIT_API_SECRET）")
+		return nil, &BrokerConfigError{types.Msg("execution.broker.bybit.missing_keys")}
 	}
 	base := cfg.BaseURL
 	if base == "" {
@@ -63,7 +63,7 @@ func NewBybitTestnetBroker(cfg BybitConfig) (*BybitBroker, error) {
 	}
 	if !strings.Contains(base, "testnet") {
 		// Explicitly reject anything pointing at production — the same safety rule as BinanceBroker.
-		return nil, fmt.Errorf("BaseURL %q 不是测试网地址；当前版本只允许对接测试网", base)
+		return nil, &BrokerConfigError{types.Msg("execution.broker.not_testnet", "base_url", base)}
 	}
 	timeout := cfg.Timeout
 	if timeout <= 0 {

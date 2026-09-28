@@ -75,7 +75,7 @@ type BitgetConfig struct {
 // action that needs its own separate review, not a config toggle.
 func NewBitgetDemoBroker(cfg BitgetConfig) (*BitgetBroker, error) {
 	if cfg.APIKey == "" || cfg.APISecret == "" || cfg.Passphrase == "" {
-		return nil, fmt.Errorf("缺少 Bitget 模拟盘 API 密钥（TF_BITGET_API_KEY / TF_BITGET_API_SECRET / TF_BITGET_PASSPHRASE）")
+		return nil, &BrokerConfigError{types.Msg("execution.broker.bitget.missing_keys")}
 	}
 	base := cfg.BaseURL
 	if base == "" {

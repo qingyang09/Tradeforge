@@ -2,11 +2,13 @@ package webui
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 
 	"tradeforge/internal/execution"
+	"tradeforge/internal/i18n"
 	"tradeforge/internal/secretcrypto"
 	"tradeforge/internal/storage"
 	"tradeforge/pkg/idgen"
@@ -45,11 +47,19 @@ func (s *Server) handleSettingsSaveBroker(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if label == "" {
-		label = kind.Label()
+		// i18n.DefaultLang (Chinese) for now, matching this app's current
+		// Chinese-only behavior exactly -- see render.go's msg template func
+		// doc comment for why, and the plan's Phase 4 for the per-request fix.
+		label = i18n.Render(i18n.DefaultLang, kind.Label())
 	}
 
 	if _, err := execution.NewBroker(kind, apiKey, apiSecret, passphrase); err != nil {
-		s.renderSettings(w, r, "", "保存失败："+err.Error())
+		reason := err.Error()
+		var cfgErr *execution.BrokerConfigError
+		if errors.As(err, &cfgErr) {
+			reason = i18n.Render(i18n.DefaultLang, cfgErr.Reason)
+		}
+		s.renderSettings(w, r, "", "保存失败："+reason)
 		return
 	}
 

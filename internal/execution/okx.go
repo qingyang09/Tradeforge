@@ -61,7 +61,7 @@ type OKXConfig struct {
 // review, not a config toggle.
 func NewOKXDemoBroker(cfg OKXConfig) (*OKXBroker, error) {
 	if cfg.APIKey == "" || cfg.APISecret == "" || cfg.Passphrase == "" {
-		return nil, fmt.Errorf("缺少 OKX 模拟盘 API 密钥（TF_OKX_API_KEY / TF_OKX_API_SECRET / TF_OKX_PASSPHRASE）")
+		return nil, &BrokerConfigError{types.Msg("execution.broker.okx.missing_keys")}
 	}
 	base := cfg.BaseURL
 	if base == "" {

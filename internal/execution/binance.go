@@ -53,7 +53,7 @@ type BinanceConfig struct {
 // NewBinanceTestnetBroker creates a Binance testnet order channel.
 func NewBinanceTestnetBroker(cfg BinanceConfig) (*BinanceBroker, error) {
 	if cfg.APIKey == "" || cfg.APISecret == "" {
-		return nil, fmt.Errorf("缺少币安测试网 API 密钥（TF_BINANCE_API_KEY / TF_BINANCE_API_SECRET）")
+		return nil, &BrokerConfigError{types.Msg("execution.broker.binance.missing_keys")}
 	}
 	base := cfg.BaseURL
 	if base == "" {
@@ -63,7 +63,7 @@ func NewBinanceTestnetBroker(cfg BinanceConfig) (*BinanceBroker, error) {
 		// Explicitly reject anything pointing at production. Actually going
 		// live should be a deliberate code change plus a review round, not
 		// something a config edit can trigger.
-		return nil, fmt.Errorf("BaseURL %q 不是测试网地址；当前版本只允许对接测试网", base)
+		return nil, &BrokerConfigError{types.Msg("execution.broker.not_testnet", "base_url", base)}
 	}
 	timeout := cfg.Timeout
 	if timeout <= 0 {

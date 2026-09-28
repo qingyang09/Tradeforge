@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"tradeforge/internal/agent"
+	"tradeforge/internal/i18n"
 )
 
 func TestHandleSettingsShowWhenUnconfigured(t *testing.T) {
@@ -34,7 +35,7 @@ func TestHandleSettingsSaveConfiguresAgentAndEnablesWizard(t *testing.T) {
 	if !strings.Contains(body, "已保存") {
 		t.Errorf("保存成功应提示已保存，实际：%s", body)
 	}
-	if !strings.Contains(body, agent.ProviderOpenAI.Label()) {
+	if !strings.Contains(body, i18n.Render(i18n.DefaultLang, agent.ProviderOpenAI.Label())) {
 		t.Errorf("应展示当前生效的供应商，实际：%s", body)
 	}
 	if !strings.Contains(body, agent.DefaultOpenAIModel) {

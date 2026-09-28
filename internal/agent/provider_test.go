@@ -39,7 +39,7 @@ func TestProviderValid(t *testing.T) {
 func TestEveryProviderHasLabelAndDefaultModelExceptCustom(t *testing.T) {
 	for _, p := range Providers {
 		t.Run(string(p), func(t *testing.T) {
-			if p.Label() == "" || p.Label() == string(p) {
+			if p.Label().Key == "" {
 				t.Errorf("Provider(%q) missing display name", p)
 			}
 			if p == ProviderCustom {

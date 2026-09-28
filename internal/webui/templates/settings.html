@@ -11,7 +11,7 @@
   <h2>当前状态</h2>
   {{if .Status.Configured}}
     <p>
-      已配置：{{if .Status.Provider}}{{.Status.Provider.Label}}{{else}}通过环境变量配置，具体供应商未知{{end}}
+      已配置：{{if .Status.Provider}}{{msg .Status.Provider.Label}}{{else}}通过环境变量配置，具体供应商未知{{end}}
       {{if .Status.Model}} · 模型 {{.Status.Model}}{{end}}
       · key {{.Status.KeyHint}}
       {{if .Status.ProfileID}} · 来自已保存的配置{{else}} · 仅本次进程内存生效{{end}}
@@ -60,7 +60,7 @@
     <input id="label" name="label" placeholder="如「我的 Claude」">
     <label for="provider">供应商</label>
     <select id="provider" name="provider">
-      {{range .Providers}}<option value="{{.}}">{{.Label}}</option>{{end}}
+      {{range .Providers}}<option value="{{.}}">{{msg .Label}}</option>{{end}}
     </select>
     <label for="api_key">API key</label>
     <input type="password" id="api_key" name="api_key" autocomplete="off" required>
@@ -124,7 +124,7 @@
     <input id="broker-label" name="label" placeholder="如「我的 OKX 模拟盘」">
     <label for="broker-kind">下单通道</label>
     <select id="broker-kind" name="broker">
-      {{range .BrokerKinds}}<option value="{{.}}">{{.Label}}</option>{{end}}
+      {{range .BrokerKinds}}<option value="{{.}}">{{msg .Label}}</option>{{end}}
     </select>
     <label for="broker-api-key">API key</label>
     <input type="password" id="broker-api-key" name="api_key" autocomplete="off" required>

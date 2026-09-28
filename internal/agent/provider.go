@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"tradeforge/internal/config"
+	"tradeforge/pkg/types"
 )
 
 // Provider identifies a large language model vendor the translation layer can
@@ -58,45 +59,51 @@ var Providers = []Provider{
 // vendor's latest docs, especially the BaseURL and model name, since these
 // vendors update fairly often.
 type providerSpec struct {
-	label        string
+	// labelKey is the internal/i18n catalog key for this provider's display
+	// name (see catalog_agent_provider.go) -- most of these are brand names
+	// that don't really "translate," but several of the non-US vendors are
+	// commonly known in Chinese by a different name than their English one
+	// (DeepSeek/深度求索, Alibaba Cloud/阿里云, Zhipu/智谱, Moonshot AI/月之暗面),
+	// so the label is still per-language, not a hardcoded string.
+	labelKey     string
 	baseURL      string
 	defaultModel string
 }
 
 var providerSpecs = map[Provider]providerSpec{
 	ProviderAnthropic: {
-		label: "Anthropic（Claude）", defaultModel: DefaultModel,
+		labelKey: "agent.provider.anthropic", defaultModel: DefaultModel,
 	},
 	ProviderOpenAI: {
-		label: "OpenAI（GPT）", baseURL: DefaultOpenAIBaseURL, defaultModel: DefaultOpenAIModel,
+		labelKey: "agent.provider.openai", baseURL: DefaultOpenAIBaseURL, defaultModel: DefaultOpenAIModel,
 	},
 	ProviderGemini: {
-		label:        "Google（Gemini）",
+		labelKey:     "agent.provider.gemini",
 		baseURL:      "https://generativelanguage.googleapis.com/v1beta/openai/",
 		defaultModel: "gemini-2.5-flash",
 	},
 	ProviderGrok: {
-		label: "xAI（Grok）", baseURL: "https://api.x.ai/v1", defaultModel: "grok-4",
+		labelKey: "agent.provider.grok", baseURL: "https://api.x.ai/v1", defaultModel: "grok-4",
 	},
 	ProviderDeepSeek: {
-		label: "DeepSeek（深度求索）", baseURL: "https://api.deepseek.com/v1", defaultModel: "deepseek-chat",
+		labelKey: "agent.provider.deepseek", baseURL: "https://api.deepseek.com/v1", defaultModel: "deepseek-chat",
 	},
 	ProviderMistral: {
-		label: "Mistral AI", baseURL: "https://api.mistral.ai/v1", defaultModel: "mistral-large-latest",
+		labelKey: "agent.provider.mistral", baseURL: "https://api.mistral.ai/v1", defaultModel: "mistral-large-latest",
 	},
 	ProviderQwen: {
-		label:        "阿里云（通义千问）",
+		labelKey:     "agent.provider.qwen",
 		baseURL:      "https://dashscope.aliyuncs.com/compatible-mode/v1",
 		defaultModel: "qwen-plus",
 	},
 	ProviderGLM: {
-		label: "智谱（GLM）", baseURL: "https://open.bigmodel.cn/api/paas/v4", defaultModel: "glm-4.6",
+		labelKey: "agent.provider.glm", baseURL: "https://open.bigmodel.cn/api/paas/v4", defaultModel: "glm-4.6",
 	},
 	ProviderKimi: {
-		label: "月之暗面（Kimi）", baseURL: "https://api.moonshot.cn/v1", defaultModel: "kimi-k2-0905-preview",
+		labelKey: "agent.provider.kimi", baseURL: "https://api.moonshot.cn/v1", defaultModel: "kimi-k2-0905-preview",
 	},
 	ProviderCustom: {
-		label: "自定义（OpenAI 兼容接口）",
+		labelKey: "agent.provider.custom",
 	},
 }
 
@@ -107,11 +114,11 @@ func (p Provider) Valid() bool {
 }
 
 // Label returns the provider's human-readable name, for display in the UI.
-func (p Provider) Label() string {
+func (p Provider) Label() types.Message {
 	if s, ok := providerSpecs[p]; ok {
-		return s.label
+		return types.Msg(s.labelKey)
 	}
-	return string(p)
+	return types.Message{Literal: string(p)}
 }
 
 // DefaultModel returns the model this provider uses when none is explicitly
