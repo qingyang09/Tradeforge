@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"tradeforge/internal/agent"
+	"tradeforge/internal/i18n"
 	"tradeforge/internal/storage"
 	"tradeforge/internal/strategy"
 	"tradeforge/pkg/types"
@@ -215,14 +216,18 @@ func (s *Server) handleBuilderTranslate(w http.ResponseWriter, r *http.Request) 
 // describeConfig 优先用 Agent 生成复述；Agent 未就绪（没配 LLM key）时退回确定性
 // 兜底复述——可视化建策的配置本来就没有需要模型理解的歧义，兜底版本一样能用。
 func (s *Server) describeConfig(ctx context.Context, userID string, cfg types.StrategyConfig) string {
+	// i18n.DefaultLang (Chinese) for now, matching this app's current
+	// Chinese-only behavior exactly -- see render.go's msg template func doc
+	// comment for why, and the plan's Phase 4 for the per-request fix.
+	lang := i18n.DefaultLang
 	ag, _ := s.userAgent(ctx, userID)
 	if ag == nil {
-		return describePlain(cfg)
+		return describePlain(lang, cfg)
 	}
 	text, err := ag.Describe(ctx, cfg)
 	if err != nil {
 		s.logger.Warn("Agent 复述失败，改用确定性兜底复述", "err", err)
-		return describePlain(cfg)
+		return describePlain(lang, cfg)
 	}
 	return text
 }

@@ -5,46 +5,55 @@ import (
 	"sort"
 	"strings"
 
+	"tradeforge/internal/i18n"
 	"tradeforge/pkg/types"
 )
 
-// describePlain 是没有配置 LLM key 时的复述兜底：纯 Go 拼句子，不调用任何模型。
+// describePlain is the restatement fallback used when no LLM key is
+// configured: it composes plain sentences in Go, no model call.
 //
-// 可视化建策的配置本来就是用户在画板上亲手摆出来的结构化数据，没有需要"翻译"的
-// 歧义——一份确定性的复述在这里不比 LLM 版本差，还顺带让这条建策路径不再依赖
-// 是否配置了 LLM key（文字向导那条路径没有这个选项，因为自然语言本身就需要模型
-// 来理解）。语气跟 Agent 版复述对齐：只陈述事实，不加任何评价性词汇。
-func describePlain(cfg types.StrategyConfig) string {
+// Visually-built configs from the canvas builder are already structured
+// data the user assembled by hand — there's no ambiguity to "translate," so
+// a deterministic restatement here is no worse than the LLM version, and it
+// means this path doesn't depend on whether an LLM key happens to be
+// configured (the text wizard path doesn't have this option, since natural
+// language genuinely needs a model to interpret). The tone matches the
+// Agent's own restatement: state facts only, no evaluative language.
+//
+// lang selects which language each fragment renders in via internal/i18n --
+// see render.go's msg template func doc comment for why callers currently
+// always pass i18n.DefaultLang (Chinese) rather than a real per-request
+// value; this function itself is already fully ready for that once Phase 4
+// wires up the real language resolution.
+func describePlain(lang i18n.Lang, cfg types.StrategyConfig) string {
 	var b strings.Builder
 
-	fmt.Fprintf(&b, "标的 %s，%s 周期。", cfg.Symbol, cfg.Timeframe)
+	b.WriteString(i18n.T(lang, "webui.describe.symbol_timeframe", "symbol", cfg.Symbol, "timeframe", cfg.Timeframe))
 
 	switch cfg.Combine {
 	case types.CombineWeighted:
-		fmt.Fprintf(&b, "组合方式为 WEIGHTED（按权重加权置信度，超过阈值 %.2f 才触发）。", cfg.Threshold)
+		b.WriteString(i18n.T(lang, "webui.describe.combine_weighted", "threshold", fmt.Sprintf("%.2f", cfg.Threshold)))
 	default:
-		b.WriteString("组合方式为 ALL（所有模块同方向才触发）。")
+		b.WriteString(i18n.T(lang, "webui.describe.combine_all"))
 	}
 
-	b.WriteString("包含以下模块：")
 	names := make([]string, len(cfg.Modules))
 	for i, m := range cfg.Modules {
 		names[i] = m.Module
 	}
-	b.WriteString(strings.Join(names, "、"))
-	b.WriteString("。")
+	b.WriteString(i18n.T(lang, "webui.describe.modules_included", "names", strings.Join(names, i18n.T(lang, "webui.describe.list_sep"))))
 
 	for _, m := range cfg.Modules {
-		fmt.Fprintf(&b, " %s 的参数：%s。", m.Module, formatParams(m.Params))
+		b.WriteString(i18n.T(lang, "webui.describe.module_params", "module", m.Module, "params", formatParams(lang, m.Params)))
 	}
 
-	b.WriteString(describeRisk(cfg.Risk))
+	b.WriteString(describeRisk(lang, cfg.Risk))
 	return b.String()
 }
 
-func formatParams(params map[string]any) string {
+func formatParams(lang i18n.Lang, params map[string]any) string {
 	if len(params) == 0 {
-		return "全部使用系统默认值"
+		return i18n.T(lang, "webui.describe.default_params")
 	}
 	keys := make([]string, 0, len(params))
 	for k := range params {
@@ -55,43 +64,42 @@ func formatParams(params map[string]any) string {
 	for i, k := range keys {
 		parts[i] = fmt.Sprintf("%s=%v", k, params[k])
 	}
-	return strings.Join(parts, "，")
+	return strings.Join(parts, i18n.T(lang, "webui.describe.param_sep"))
 }
 
-func describeRisk(risk types.RiskConfig) string {
+func describeRisk(lang i18n.Lang, risk types.RiskConfig) string {
 	var b strings.Builder
 	if risk.PositionSizingMode.EffectiveOrFixed() == types.PositionSizingModeRiskPct {
-		fmt.Fprintf(&b, " 风控：按风险百分比开仓——账户权益 %s，单笔风险 %.2f%%，"+
-			"仓位硬上限 %s（算出来的仓位超过它会被直接拒绝，不会自动缩小）。",
-			risk.AccountEquityQuote, risk.RiskPerTradePct*100, risk.MaxPositionSizeQuote)
+		b.WriteString(i18n.T(lang, "webui.describe.risk.sizing_risk_pct",
+			"equity", risk.AccountEquityQuote, "pct", fmt.Sprintf("%.2f", risk.RiskPerTradePct*100), "cap", risk.MaxPositionSizeQuote))
 	} else {
-		fmt.Fprintf(&b, " 风控：单笔最大仓位 %s。", risk.MaxPositionSizeQuote)
+		b.WriteString(i18n.T(lang, "webui.describe.risk.sizing_fixed", "cap", risk.MaxPositionSizeQuote))
 	}
 	if risk.MaxDailyLossQuote.IsPositive() {
-		fmt.Fprintf(&b, "单日最大亏损 %s。", risk.MaxDailyLossQuote)
+		b.WriteString(i18n.T(lang, "webui.describe.risk.max_daily_loss", "value", risk.MaxDailyLossQuote))
 	}
 	switch risk.StopLossMode.EffectiveOrPct() {
 	case types.RiskLevelModeSupportResistance:
-		b.WriteString("止损：跌破开仓时最近的支撑位。")
+		b.WriteString(i18n.T(lang, "webui.describe.risk.stop_loss_support_resistance"))
 	case types.RiskLevelModePOC:
-		b.WriteString("止损：收回开仓时的成交量分布重心（POC）。")
+		b.WriteString(i18n.T(lang, "webui.describe.risk.stop_loss_poc"))
 	default:
 		if risk.StopLossPct > 0 {
-			fmt.Fprintf(&b, "止损 %.2f%%。", risk.StopLossPct*100)
+			b.WriteString(i18n.T(lang, "webui.describe.risk.stop_loss_pct", "pct", fmt.Sprintf("%.2f", risk.StopLossPct*100)))
 		}
 	}
 	switch risk.TakeProfitMode.EffectiveOrPct() {
 	case types.RiskLevelModeSupportResistance:
-		b.WriteString("止盈：触及开仓时最近的阻力位。")
+		b.WriteString(i18n.T(lang, "webui.describe.risk.take_profit_support_resistance"))
 	case types.RiskLevelModePOC:
-		b.WriteString("止盈：触及开仓时的成交量分布重心（POC）。")
+		b.WriteString(i18n.T(lang, "webui.describe.risk.take_profit_poc"))
 	default:
 		if risk.TakeProfitPct > 0 {
-			fmt.Fprintf(&b, "止盈 %.2f%%。", risk.TakeProfitPct*100)
+			b.WriteString(i18n.T(lang, "webui.describe.risk.take_profit_pct", "pct", fmt.Sprintf("%.2f", risk.TakeProfitPct*100)))
 		}
 	}
 	if risk.MaxHoldingPeriod.Std() > 0 {
-		fmt.Fprintf(&b, "最长持仓 %s。", risk.MaxHoldingPeriod)
+		b.WriteString(i18n.T(lang, "webui.describe.risk.max_holding", "value", risk.MaxHoldingPeriod))
 	}
 	return b.String()
 }
