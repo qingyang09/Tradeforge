@@ -1,8 +1,9 @@
 name: tradeforge
 
-# 宿主机端口刻意避开默认值（5432 / 6379 / 9092）：
-# 这台机器上已有本机安装的 Postgres 以及另一套 trading-* 容器占用着默认端口。
-# 容器内部仍用标准端口，只有宿主机映射做了偏移。
+# Host ports are deliberately offset from the defaults (5432 / 6379 / 9092): this machine
+# already has a locally-installed Postgres plus another trading-* container stack
+# occupying the default ports. Containers still use the standard ports internally --
+# only the host-side mapping is shifted.
 services:
   postgres:
     image: postgres:16-alpine
@@ -36,7 +37,7 @@ services:
       timeout: 5s
       retries: 20
 
-  # Kafka 单节点 KRaft 模式，无需 ZooKeeper。仅用于本地开发。
+  # Single-node Kafka in KRaft mode, no ZooKeeper needed. Local development only.
   kafka:
     image: confluentinc/cp-kafka:7.5.0
     container_name: tradeforge-kafka
@@ -47,9 +48,10 @@ services:
       KAFKA_PROCESS_ROLES: "broker,controller"
       KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
       KAFKA_LISTENERS: "INTERNAL://:9092,CONTROLLER://:9093,EXTERNAL://:59200"
-      # EXTERNAL 必须广播成宿主机看得到的地址与端口，否则客户端拿到元数据后会连错。
-      # 59092 曾撞上 Windows 动态端口排除区间（netsh interface ipv4 show excludedportrange），
-      # 换成 59200 避开。
+      # EXTERNAL must advertise an address/port the host can actually see, or clients will
+      # connect to the wrong place after fetching metadata. 59092 used to collide with
+      # Windows's dynamic port exclusion range (netsh interface ipv4 show
+      # excludedportrange) -- switched to 59200 to avoid it.
       KAFKA_ADVERTISED_LISTENERS: "INTERNAL://kafka:9092,EXTERNAL://localhost:59200"
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT"
       KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
@@ -59,7 +61,8 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-      # cp-kafka 要求 CLUSTER_ID 是合法的 base64 编码 UUID，不能填任意字符串。
+      # cp-kafka requires CLUSTER_ID to be a valid base64-encoded UUID -- can't be an
+      # arbitrary string.
       CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
     volumes:
       - kafkadata:/var/lib/kafka/data

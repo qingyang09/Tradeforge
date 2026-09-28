@@ -1,29 +1,41 @@
-# 跟根目录的 docker-compose.yml 是两份独立的文件，不是覆盖关系——那份文件的宿主机端口
-# 偏移（55432/56379/59200）是为了避开"这台开发机上已经装了别的东西"，这个理由在一台全新
-# 服务器上不成立，直接照抄反而会让人迷惑这些奇怪端口号是不是有什么特殊含义。这份文件另外
-# 加了三个跑在容器里的应用服务（webui/executor/signal-engine），互相之间走 compose 内部
-# 网络的服务名（postgres:5432、redis:6379、kafka:9092），不走宿主机端口转发那一层。
+# This is an independent file from the root docker-compose.yml, not an override of it --
+# that file's host-port offsets (55432/56379/59200) exist to avoid "this dev machine
+# already has other stuff installed," a reason that doesn't apply on a fresh server, and
+# copying it verbatim here would just leave people wondering whether those odd port
+# numbers mean something special. This file additionally adds three application services
+# that run in containers (webui/executor/signal-engine), talking to each other over
+# compose's internal network by service name (postgres:5432, redis:6379, kafka:9092)
+# rather than through host port forwarding.
 #
-# 部署前必读：
-#   1. 先在这台服务器上直接验证 IP 真的没被交易所拦：
+# Read before deploying:
+#   1. Verify directly on this server that its IP genuinely isn't blocked by the exchange:
 #        curl -sS -o /dev/null -w '%{http_code}\n' https://testnet.binance.vision/api/v3/ping
-#      Binance/Bybit 除了地区封锁，还会大范围拦截知名云服务商的 IP 段，不管机房在哪个国家，
-#      只看服务商地理位置不够，必须实测。
-#   2. 复制 .env.prod.example 成 .env，把 TF_MASTER_KEY / TF_PG_PASSWORD 换成真实强
-#      密码——不要用本地开发时的默认值。TF_MASTER_KEY 丢了等于永久锁死全部用户已存的
-#      交易所/LLM 凭据，务必单独备份一份，不要只存在这个 .env 文件里。
-#   3. webui 的 8080 端口这里只在文档层面提醒：生产环境应该放在反向代理（nginx/caddy）+
-#      HTTPS 后面，不要把这个端口直接暴露给公网；这份 compose 文件本身不包含反向代理配置。
-#   4. 交易所凭据不要用环境变量传：启动后打开 /signup 注册一个账号、登录，在 /settings
-#      页面的"交易所下单通道"区块去配置，加密存在 Postgres 里，重新部署不用再传一次密钥。
-#   5. 多用户 SaaS 改造后，executor/signal-engine 这两个服务仍然是"一个进程只服务一个
-#      用户"（见 cmd/executor/main.go 的文档注释）——TF_OWNER_EMAIL 必须填一个已经在
-#      /signup 注册过的真实账号邮箱，这两个容器才能正常连上数据库找到该用户的策略和凭据。
-#      要同时让多个用户的策略自动跑起来，目前需要为每个用户各起一组 executor/
-#      signal-engine 容器（把这两个服务名复制一份、换一个 TF_OWNER_EMAIL），这是当前
-#      阶段的已知限制，不是这份文件遗漏了什么。
+#      Beyond regional blocks, Binance/Bybit also broadly block well-known cloud
+#      providers' IP ranges regardless of which country the datacenter is in -- provider
+#      geography alone isn't enough, you have to actually test it.
+#   2. Copy .env.prod.example to .env and replace TF_MASTER_KEY / TF_PG_PASSWORD with real
+#      strong passwords -- don't use the local-dev defaults. Losing TF_MASTER_KEY
+#      permanently locks every user out of their stored exchange/LLM credentials, so back
+#      it up separately -- don't let it live only in this .env file.
+#   3. webui's port 8080 is only flagged here at the documentation level: production
+#      should sit behind a reverse proxy (nginx/caddy) + HTTPS, not expose this port
+#      directly to the public internet -- this compose file itself doesn't include a
+#      reverse-proxy configuration.
+#   4. Don't pass exchange credentials via environment variables: after starting up, open
+#      /signup to register an account, log in, and configure them in the "exchange
+#      order-placement channel" section of the /settings page -- they're encrypted at rest
+#      in Postgres, so redeploying doesn't require passing the key again.
+#   5. After the multi-tenant SaaS rework, the executor/signal-engine services still each
+#      serve exactly one user per process (see the doc comment in cmd/executor/main.go) --
+#      TF_OWNER_EMAIL must be the email of a real account already registered via /signup,
+#      or these two containers won't be able to connect to the database and find that
+#      user's strategies and credentials. Getting multiple users' strategies to run
+#      automatically at the same time currently requires starting a separate
+#      executor/signal-engine container pair per user (duplicate these two service
+#      definitions with a different TF_OWNER_EMAIL each) -- this is a known limitation of
+#      the current stage, not something missing from this file.
 #
-# 用法：
+# Usage:
 #   docker build -f Dockerfile.webui -t tradeforge-webui .
 #   docker build -f go.Dockerfile --build-arg CMD=executor -t tradeforge-executor .
 #   docker build -f go.Dockerfile --build-arg CMD=signal-engine -t tradeforge-signal-engine .
@@ -38,9 +50,10 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: tradeforge
-      POSTGRES_PASSWORD: ${TF_PG_PASSWORD:?必须在 .env 里设置 TF_PG_PASSWORD}
+      POSTGRES_PASSWORD: ${TF_PG_PASSWORD:?TF_PG_PASSWORD must be set in .env}
       POSTGRES_DB: tradeforge
-    # 只绑定回环地址：数据库不该对公网暴露，宿主机上想用 psql 连的话用 127.0.0.1 就够了。
+    # Bind to loopback only: the database shouldn't be exposed to the public internet --
+    # 127.0.0.1 is enough for connecting with psql from the host itself.
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
@@ -78,9 +91,10 @@ services:
       KAFKA_PROCESS_ROLES: "broker,controller"
       KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
       KAFKA_LISTENERS: "INTERNAL://:9092,CONTROLLER://:9093"
-      # 生产环境里连 Kafka 的都是同一个 compose 网络里的容器，不再需要额外的 EXTERNAL
-      # 监听器对外广播宿主机地址——这是它跟根目录 docker-compose.yml 最大的差异点
-      # （那份文件的 webui/executor 跑在宿主机上，必须靠 EXTERNAL 才能连进去）。
+      # In production every Kafka client is a container on the same compose network, so
+      # there's no need for an extra EXTERNAL listener advertising a host address -- this
+      # is the biggest difference from the root docker-compose.yml (in that file, webui/
+      # executor run on the host, so they need EXTERNAL to connect in).
       KAFKA_ADVERTISED_LISTENERS: "INTERNAL://kafka:9092"
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT"
       KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
@@ -120,13 +134,16 @@ services:
       TF_REDIS_ADDR: "redis:6379"
       TF_KAFKA_BROKERS: "kafka:9092"
       TF_HTTP_ADDR: ":8080"
-      TF_MASTER_KEY: ${TF_MASTER_KEY:?必须在 .env 里设置 TF_MASTER_KEY（32 位以上强随机字符串）}
-      # 可选：不填的话 LLM 翻译层不可用，向导/批量扫描页面会提示"未就绪"，其余功能
-      # （看板、回测、手动建策）不受影响；配好后也可以在 /settings 页面另存一份、
-      # 覆盖/切换供应商，不需要重新部署容器。
+      TF_MASTER_KEY: ${TF_MASTER_KEY:?TF_MASTER_KEY must be set in .env (a strong random string, 32+ characters)}
+      # Optional: leave unset and the LLM translation layer is unavailable, the
+      # wizard/batch-scan pages will show "not ready," everything else (status board,
+      # backtest, manual strategy building) is unaffected. Even once it's set, you can
+      # still save a separate one / override / switch providers on the /settings page
+      # without redeploying the container.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     ports:
-      # 只监听回环地址——真正对外的入口应该是反向代理，不是这个端口直接见公网。
+      # Loopback only -- the real public-facing entry point should be a reverse proxy,
+      # not this port exposed directly.
       - "127.0.0.1:8080:8080"
 
   executor:
@@ -148,12 +165,14 @@ services:
       TF_PG_PASSWORD: ${TF_PG_PASSWORD:?}
       TF_KAFKA_BROKERS: "kafka:9092"
       TF_MASTER_KEY: ${TF_MASTER_KEY:?}
-    # 默认 paper（纯内存模拟盘），不会意外打到任何真实交易所。真要接某个交易所，把
-    # EXECUTOR_BROKER 和 EXECUTOR_STATE 写进 .env（如 EXECUTOR_BROKER=okx-demo），
-    # 交易所凭据继续走 /settings 页面配置，不要在这里用环境变量传。
-    # -owner-email 必填：这个进程只服务 TF_OWNER_EMAIL 指定的这一个已注册用户，见上面
-    # 部署前必读的第 5 条。
-    command: ["-owner-email", "${TF_OWNER_EMAIL:?必须在 .env 里设置 TF_OWNER_EMAIL}",
+    # Defaults to paper (a pure in-memory simulator) -- won't accidentally hit any real
+    # exchange. To actually connect to an exchange, set EXECUTOR_BROKER and
+    # EXECUTOR_STATE in .env (e.g. EXECUTOR_BROKER=okx-demo); exchange credentials
+    # themselves still go through the /settings page -- don't pass them here as
+    # environment variables.
+    # -owner-email is required: this process only serves the one registered user
+    # specified by TF_OWNER_EMAIL, see item 5 in "Read before deploying" above.
+    command: ["-owner-email", "${TF_OWNER_EMAIL:?TF_OWNER_EMAIL must be set in .env}",
               "-broker", "${EXECUTOR_BROKER:-paper}", "-state", "${EXECUTOR_STATE:-PAPER_TRADING}"]
 
   signal-engine:
@@ -174,16 +193,21 @@ services:
       TF_PG_PORT: "5432"
       TF_PG_PASSWORD: ${TF_PG_PASSWORD:?}
       TF_KAFKA_BROKERS: "kafka:9092"
-    # -source okx：接真实行情（本地开发默认是 csv 重放，容器里没有本地 CSV 文件）。
-    # -owner-email 必填，跟 executor 服务是同一个用户——见上面部署前必读的第 5 条。
-    command: ["-owner-email", "${TF_OWNER_EMAIL:?必须在 .env 里设置 TF_OWNER_EMAIL}",
+    # -source okx: connects to real market data (local dev defaults to CSV replay, but
+    # there's no local CSV file inside the container).
+    # -owner-email is required, same user as the executor service -- see item 5 in "Read
+    # before deploying" above.
+    command: ["-owner-email", "${TF_OWNER_EMAIL:?TF_OWNER_EMAIL must be set in .env}",
               "-source", "okx", "-state", "${EXECUTOR_STATE:-PAPER_TRADING}"]
-    # 真机验证过的一个正常现象，不是这份 compose 文件写错了：signal-engine 在"一个策略
-    # 都不处于目标状态"时会直接 os.Exit(1)（cmd/signal-engine/main.go 的既有行为，它是
-    # 设计成"策略已经存在才跑"的工具，不是"空转等策略出现"），配合 restart: unless-stopped
-    # 会一直重启——全新部署、数据库还没有任何 PAPER_TRADING 策略之前，这个容器会持续重启
-    # 循环，这是预期内的、无害的（Docker 的退避重试不消耗什么资源），一旦有策略被推进到
-    # 这个状态，下一次重启就会正常跑起来，不需要手动干预。
+    # A behavior confirmed normal through real deployment, not a bug in this compose file:
+    # signal-engine calls os.Exit(1) outright when zero strategies are in the target state
+    # (existing behavior in cmd/signal-engine/main.go -- it's designed as a tool that
+    # "runs once a strategy already exists," not one that "idles waiting for a strategy to
+    # appear"). Combined with restart: unless-stopped, this means on a brand-new
+    # deployment, before the database has any PAPER_TRADING strategy yet, this container
+    # will keep restarting in a loop -- this is expected and harmless (Docker's backoff
+    # retry doesn't consume meaningful resources). Once a strategy is promoted into that
+    # state, the next restart picks it up normally with no manual intervention needed.
 
 volumes:
   pgdata:

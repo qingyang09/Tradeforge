@@ -1,220 +1,278 @@
 
 
-## 项目总纲
+## Project Charter
 
 ```
-你正在帮我构建一个模块化加密货币交易策略平台的原型（MVP），核心理念：
+You are helping me build a prototype (MVP) of a modular cryptocurrency trading strategy
+platform. Core principles:
 
-1. 平台内置若干独立的、参数化的"交易信号模块"（支撑阻力、成交量突破、CVD/订单流、
-   MACD/RSI、新闻情绪），这些模块本身互不耦合，各自输出标准化信号。
-2. 用户用自然语言描述交易策略，AI Agent 把这句话翻译成"选择哪些模块 + 怎么组合 +
-   参数是什么"的结构化配置（JSON），并且必须先把"我理解的策略"复述给用户确认，
-   绝不能未经确认直接执行。
-3. 任何新策略配置生成后，必须先过回测（历史数据 + 手续费滑点建模）→ 模拟盘（paper
-   trading）跑一段时间 → 用户手动解锁才能进入实盘，这是强制流程，不可跳过。
-4. 不同交易标的（如 BTC、ETH）可以有完全不同的模块组合，是一等公民功能，不是后加的。
-5. 系统只负责"把用户的规则忠实执行"，绝不生成"建议买什么/怎么组合更好"这类投资建议
-   文案——这是合规红线，翻译层的 prompt 设计和所有面向用户的文案都要守住这条边界。
+1. The platform ships several independent, parameterized "trading signal modules"
+   (support/resistance, volume breakout, CVD/order flow, MACD/RSI, news sentiment). These
+   modules are decoupled from each other and each emits a standardized signal.
+2. Users describe trading strategies in natural language; an AI Agent translates that
+   sentence into a structured configuration (JSON) describing "which modules, how they're
+   combined, and what the parameters are." The Agent must first restate "here's my
+   understanding of your strategy" back to the user for confirmation — it must never
+   execute anything without that confirmation.
+3. Any newly generated strategy configuration must pass through backtesting (historical
+   data + fee/slippage modeling) -> paper trading (run for a period of time) -> the user
+   manually unlocking it before it can go live. This is a mandatory pipeline that cannot be
+   skipped.
+4. Different trading symbols (e.g. BTC, ETH) can have completely different module
+   combinations — this is a first-class capability from day one, not bolted on later.
+5. The system's only job is to "faithfully execute the user's rules." It must never
+   generate copy like "you should buy this" or "this combination would work better" — this
+   is a compliance red line. Both the translation layer's prompt design and every
+   user-facing piece of copy must hold this boundary.
 
-技术栈：
-- 后端：Go（模块引擎、执行层、gRPC 服务），Python（回测引擎，用 vectorbt 或自建）
-- 消息队列：Kafka（模块间信号传递解耦）
-- AI Agent 层：调用 LLM API，用严格 JSON Schema 约束输出，绝不允许自由文本直接进入执行链路
-- 数据源：先用交易所公开 REST/WebSocket API（如 Binance），CVD 数据可后续接 Coinglass
-- 存储：PostgreSQL（策略配置、回测结果、交易记录），Redis（实时信号缓存）
+Tech stack:
+- Backend: Go (module engine, execution layer, gRPC services), Python (backtest engine,
+  using vectorbt or a custom implementation)
+- Message queue: Kafka (decouples signal propagation between modules)
+- AI Agent layer: calls an LLM API, constrains output with a strict JSON Schema, never
+  allows free-form text to enter the execution chain directly
+- Data sources: start with exchanges' public REST/WebSocket APIs (e.g. Binance); CVD data
+  can later be sourced from Coinglass
+- Storage: PostgreSQL (strategy configs, backtest results, trade records), Redis
+  (real-time signal cache)
 
-代码风格要求：
-- Go 代码遵循标准项目布局（cmd/ internal/ pkg/），每个模块单独包
-- 所有金额/价格用 decimal 类型，禁止用 float64 做金融计算
-- 每个阶段结束都要有可跑的单元测试，不要写"看起来能跑"的代码
-```
-
----
-
-## 阶段 0：项目脚手架
-
-```
-初始化一个 Go 项目，模块名为 tradeforge（可自定义）。要求：
-
-1. 按标准 Go 项目布局搭建目录结构：
-   - cmd/ （各个可执行程序入口：signal-engine, agent-service, backtest-runner, executor）
-   - internal/modules/ （各交易信号模块）
-   - internal/engine/ （组合引擎/DAG 执行器）
-   - internal/agent/ （AI Agent 翻译层）
-   - internal/backtest/ （回测引擎，可先留 Python 子目录 python/backtest/）
-   - internal/execution/ （执行层）
-   - internal/storage/ （数据库访问层）
-   - pkg/types/ （跨模块共享的信号、策略配置、订单等数据结构）
-   - configs/ （配置文件模板）
-   - docker-compose.yml（本地起 Postgres + Redis + Kafka）
-
-2. 定义 pkg/types 里的核心数据结构（先只写结构体，不写逻辑）：
-   - Signal（模块输出：方向、置信度、时间戳、来源模块、原始数据）
-   - ModuleConfig（模块名 + 参数 map）
-   - StrategyConfig（标的 + 模块组合 + 组合逻辑 + 风控参数）
-   - BacktestResult（收益、夏普、最大回撤、胜率等）
-
-3. 写一个最小可运行的 docker-compose，能起 Postgres/Redis/Kafka，并写一个健康检查脚本
-   确认三个服务都能连上。
-
-先完成这一步，跑通 docker-compose 和目录结构后再继续，不要提前写业务逻辑。
+Code style requirements:
+- Go code follows the standard project layout (cmd/ internal/ pkg/), one package per module
+- All monetary amounts/prices use a decimal type — float64 is forbidden for financial math
+- Every stage must end with runnable unit tests; don't write code that merely "looks like
+  it works"
 ```
 
 ---
 
-## 阶段 1：交易信号模块库
+## Stage 0: Project scaffolding
 
 ```
-在 internal/modules/ 下实现前 3 个信号模块，每个模块必须实现统一接口：
+Initialize a Go project with module name tradeforge (can be customized). Requirements:
+
+1. Set up the directory structure following the standard Go project layout:
+   - cmd/ (entry points for each executable: signal-engine, agent-service,
+     backtest-runner, executor)
+   - internal/modules/ (trading signal modules)
+   - internal/engine/ (composition engine / DAG executor)
+   - internal/agent/ (AI Agent translation layer)
+   - internal/backtest/ (backtest engine; can leave a Python subdirectory
+     python/backtest/ for now)
+   - internal/execution/ (execution layer)
+   - internal/storage/ (database access layer)
+   - pkg/types/ (data structures shared across modules: signals, strategy configs,
+     orders, etc.)
+   - configs/ (config file templates)
+   - docker-compose.yml (spins up Postgres + Redis + Kafka locally)
+
+2. Define the core data structures in pkg/types (structs only for now, no logic):
+   - Signal (module output: direction, confidence, timestamp, source module, raw data)
+   - ModuleConfig (module name + parameter map)
+   - StrategyConfig (symbol + module combination + combination logic + risk parameters)
+   - BacktestResult (return, Sharpe ratio, max drawdown, win rate, etc.)
+
+3. Write a minimal working docker-compose that brings up Postgres/Redis/Kafka, and a
+   health-check script confirming all three services are reachable.
+
+Finish this step first — get docker-compose and the directory structure working before
+moving on. Don't write business logic ahead of time.
+```
+
+---
+
+## Stage 1: Trading signal module library
+
+```
+Implement the first 3 signal modules under internal/modules/. Every module must implement
+a unified interface:
 
   type SignalModule interface {
       Name() string
-      RequiredParams() []ParamSpec  // 参数名、类型、默认值、取值范围
+      RequiredParams() []ParamSpec  // param name, type, default value, valid range
       Evaluate(ctx context.Context, marketData MarketData, params map[string]any) (Signal, error)
   }
 
-按顺序实现：
+Implement in this order:
 
-1. support_resistance 模块：基于近 N 根 K 线的高低点聚类计算支撑/阻力位，参数包括
-   周期（timeframe）、回看窗口（lookback）、聚类容差（tolerance）。价格触及/突破关键位
-   时输出信号。
+1. support_resistance module: clusters recent N candles' highs/lows to compute
+   support/resistance levels. Parameters include timeframe, lookback window, and
+   clustering tolerance. Emits a signal when price touches/breaks a key level.
 
-2. volume_breakout 模块：计算成交量相对近期均值的倍数，超过阈值时输出信号，参数包括
-   均值窗口、倍数阈值。
+2. volume_breakout module: computes volume as a multiple of its recent average, emitting a
+   signal when the multiple exceeds a threshold. Parameters include the averaging window
+   and the multiple threshold.
 
-3. cvd_orderflow 模块：计算累计成交量差（CVD），检测背离或失衡，参数包括计算窗口、
-   失衡阈值。先用模拟/占位数据源实现，接口层留好后续接 Coinglass 真实数据的扩展点。
+3. cvd_orderflow module: computes cumulative volume delta (CVD) and detects divergence or
+   imbalance. Parameters include the computation window and the imbalance threshold. Start
+   with a simulated/placeholder data source; leave an extension point at the interface
+   layer for wiring in real Coinglass data later.
 
-每个模块：
-- 用真实或模拟历史数据写单元测试，覆盖正常情况、边界情况（数据不足）、异常输入
-- 用假数据跑一遍 Evaluate，打印输出的 Signal 结构，人工确认逻辑合理
+For each module:
+- Write unit tests against real or simulated historical data, covering the normal case,
+  edge cases (insufficient data), and invalid input
+- Run Evaluate once against fake data and print the resulting Signal struct to manually
+  confirm the logic is sound
 
-不要一次实现全部模块，先做这 3 个并跑通测试，我确认逻辑没问题后再加 MACD/RSI 和
-新闻情绪模块。
+Don't implement all the modules at once — build these 3 first and get the tests passing;
+I'll confirm the logic is sound before we add MACD/RSI and news sentiment.
 ```
 
 ---
 
-## 阶段 2：组合引擎
+## Stage 2: Composition engine
 
 ```
-在 internal/engine/ 实现模块组合引擎，职责：
+Implement the module composition engine under internal/engine/. Responsibilities:
 
-1. 读取 StrategyConfig（标的 + 一组 ModuleConfig + 组合逻辑）
-2. 并发调用对应的 SignalModule.Evaluate，收集所有 Signal
-3. 按组合逻辑聚合成最终决策，先支持两种最简单的聚合方式：
-   - ALL：所有模块都发出同方向信号才触发
-   - WEIGHTED：每个模块配权重，加权置信度超过阈值才触发
-4. 聚合结果写入 Kafka topic（供执行层/回测引擎消费），同时落库到 Postgres 做审计留痕
+1. Read a StrategyConfig (symbol + a set of ModuleConfigs + combination logic)
+2. Concurrently call each corresponding SignalModule.Evaluate and collect all Signals
+3. Aggregate them into a final decision per the combination logic. Support the two
+   simplest aggregation modes first:
+   - ALL: triggers only if every module emits a signal in the same direction
+   - WEIGHTED: each module has a weight; triggers once the weighted confidence exceeds a
+     threshold
+4. Write the aggregated result to a Kafka topic (for the execution layer/backtest engine
+   to consume) and persist it to Postgres for audit purposes
 
-要求：
-- 单个模块出错或超时不能拖垮整个引擎，要有超时和降级处理（该模块信号记为中性/跳过，
-  并记录日志）
-- 写集成测试：构造一个包含 3 个模块的 StrategyConfig，用假数据跑通整条链路，验证
-  聚合逻辑正确
-```
-
----
-
-## 阶段 3：AI Agent 翻译层
-
-```
-在 internal/agent/ 实现自然语言到 StrategyConfig 的翻译层，这是全项目最关键、最需要
-谨慎设计的部分。
-
-1. 设计一个严格的 JSON Schema，约束 LLM 输出必须是合法的 StrategyConfig（标的、
-   模块列表、每个模块的参数、组合逻辑、风控参数），任何不符合 schema 的输出直接拒绝，
-   不做"尽力修复"。
-
-2. System prompt 设计要点：
-   - 只允许从已注册的模块列表（阶段1实现的那些）中选择，禁止 LLM 发明不存在的模块
-   - 每个模块的参数必须在 RequiredParams 定义的取值范围内，超出范围要拒绝或裁剪并
-     明确告知用户
-   - 绝对不能在输出或对用户的话术中包含"建议""推荐""这样更好"等投资建议措辞，
-     Agent 的角色定位必须是"翻译用户的规则"，不是"给用户出主意"
-
-3. 实现"确认循环"：Agent 生成配置后，先用大白话把"我理解你的策略是这样"复述给
-   用户看，用户确认或要求修改后才把配置正式写入系统，不能生成后直接执行。
-
-4. 写测试用例：至少 10 组"自然语言输入 → 期望的 StrategyConfig 结构"的测试对，
-   包括几个故意模糊/有歧义的输入，验证 Agent 在歧义情况下是提出澄清问题而不是
-   自己瞎猜参数。
-
-先只对接阶段 1 已实现的 3 个模块，跑通"一句话 → 确认 → 配置" 的完整闭环，再考虑
-接入更多模块。
+Requirements:
+- A single module erroring out or timing out must not take down the whole engine — there
+  must be timeout and degradation handling (that module's signal is recorded as
+  neutral/skipped, with a log entry)
+- Write an integration test: construct a StrategyConfig with 3 modules, run the full
+  chain against fake data, and verify the aggregation logic is correct
 ```
 
 ---
 
-## 阶段 4：回测引擎
+## Stage 3: AI Agent translation layer
 
 ```
-在 python/backtest/（或你评估后认为更合适的语言）实现回测引擎：
+Implement the natural-language-to-StrategyConfig translation layer under internal/agent/.
+This is the most critical, most carefully-designed part of the entire project.
 
-1. 输入：StrategyConfig + 历史行情数据（先支持从本地 CSV / 交易所历史 K 线接口拉取）
-2. 严格建模手续费和滑点，不能是"裸价格"回测
-3. 输出 BacktestResult：总收益、年化收益、夏普比率、索提诺比率、最大回撤、胜率、
-   盈亏比、交易次数
-4. 实现"样本外测试"：把历史数据切成训练段和测试段，明确标注策略参数是否是在测试段
-   上单独验证过的，防止过拟合的结果被误当成"真实表现"展示给用户
-5. 结果落库到 Postgres，供后续展示和"解锁模拟盘"流程使用
+1. Design a strict JSON Schema constraining the LLM's output to a valid StrategyConfig
+   (symbol, module list, each module's parameters, combination logic, risk parameters).
+   Any output that doesn't conform to the schema is rejected outright — no "best-effort
+   repair."
 
-写一个端到端测试：用阶段3生成的一个真实策略配置，跑一次完整回测，人工核对几个
-关键交易点位的信号触发是否符合预期（不要只看汇总指标，要抽查具体交易）。
-```
+2. System prompt design points:
+   - Only allow selecting from the registered module list (the ones implemented in Stage
+     1); the LLM must never invent modules that don't exist
+   - Every module's parameters must fall within the range defined by RequiredParams —
+     out-of-range values must be rejected or clamped, with the user explicitly informed
+   - The output and any copy shown to the user must never contain investment-advice
+     language like "I suggest," "I recommend," or "this would work better" — the Agent's
+     role must always be "translating the user's rules," never "giving the user advice"
 
----
+3. Implement a "confirmation loop": after the Agent generates a config, it must first
+   restate "here's my understanding of your strategy" in plain language for the user to
+   see. Only after the user confirms or requests changes does the config get formally
+   written into the system — it must never be generated and then executed directly.
 
-## 阶段 5：验证闭环（模拟盘门槛）
+4. Write test cases: at least 10 "natural language input -> expected StrategyConfig"
+   contract pairs, including a few deliberately vague/ambiguous inputs, verifying that the
+   Agent asks a clarifying question rather than guessing parameters on its own when faced
+   with ambiguity.
 
-```
-实现策略状态机，管理一个策略从"草稿"到"实盘"的强制流程：
-
-  DRAFT → BACKTESTED → PAPER_TRADING → LIVE_ELIGIBLE → LIVE
-
-规则：
-1. 新策略必须先过阶段4的回测，且回测结果达到一个可配置的最低门槛（如样本外夏普 > 0）
-   才能进入 PAPER_TRADING
-2. PAPER_TRADING 阶段用实时行情跑模拟交易（不下真实单），至少运行一个可配置的最短
-   时长（如 7 天）或最少交易笔数后，才允许状态推进到 LIVE_ELIGIBLE
-3. LIVE_ELIGIBLE → LIVE 必须是用户的显式手动操作，系统不能自动推进
-4. 每次状态变更都要记录审计日志（谁、什么时候、基于什么数据推进的）
-
-写测试覆盖状态机的所有非法跳转（比如试图从 DRAFT 直接跳到 LIVE）都应该被拒绝。
+Wire this up against only the 3 modules implemented in Stage 1 first, and get the full
+"one sentence -> confirm -> config" loop working end to end before considering hooking up
+more modules.
 ```
 
 ---
 
-## 阶段 6：多标的执行层
+## Stage 4: Backtest engine
 
 ```
-在 internal/execution/ 实现执行层，核心要求：不同标的可以有完全独立的模块组合和
-风控参数，互不影响。
+Implement the backtest engine in python/backtest/ (or another language if you judge it
+more suitable after evaluation):
 
-1. 每个进入 LIVE 状态的 StrategyConfig 绑定一个独立的执行实例（goroutine 或独立
-   worker），标的之间的执行互相隔离，一个标的的异常不能影响其他标的
-2. 风控参数在标的级别独立配置：单笔最大仓位、单日最大亏损、最大持仓时间等，触发
-   风控立即平仓并暂停该标的的策略（不影响其他标的）
-3. 先对接一个交易所的测试网/模拟账户 API（如 Binance Testnet），不要一开始就接真实
-   资金账户
-4. 每笔订单执行都要记录"是哪个模块的哪个信号、什么参数触发的"，做到阶段2提到的
-   可解释性要求，这个记录要能在后续界面上展示给用户看
+1. Input: StrategyConfig + historical market data (first support pulling from local CSV /
+   an exchange's historical candle API)
+2. Strictly model fees and slippage — this must not be a "bare price" backtest
+3. Output a BacktestResult: total return, annualized return, Sharpe ratio, Sortino ratio,
+   max drawdown, win rate, profit factor, trade count
+4. Implement "out-of-sample testing": split historical data into a training segment and a
+   test segment, and explicitly label whether the strategy's parameters were validated
+   separately on the test segment — this prevents an overfit result from being mistaken
+   for "real performance" when shown to the user
+5. Persist results to Postgres, for later display and for the "unlock paper trading" flow
+   to use
 
-写集成测试：模拟两个标的（BTC 用 A 组合，ETH 用 B 组合）同时运行，验证互相隔离、
-风控独立生效。
+Write an end-to-end test: run a full backtest against one real strategy config generated
+in Stage 3, and manually verify a handful of key trade points' signal triggers match
+expectations (don't just look at the summary metrics — spot-check actual trades).
 ```
 
 ---
 
-## 阶段 7（可选，视精力再做）：最小可用界面
+## Stage 5: Verification loop (paper-trading gate)
 
 ```
-用一个简单的 Web 界面（可以先用 Go + HTMX 或者一个轻量前端框架）展示：
-1. 策略配置向导：输入自然语言 → 展示 Agent 复述的理解 → 确认/修改
-2. 策略状态看板：所有策略当前处于状态机的哪个阶段
-3. 单个策略详情：回测结果图表、模拟盘/实盘交易记录、每笔交易触发的模块和参数
+Implement a strategy state machine that governs the mandatory pipeline a strategy follows
+from "draft" to "live":
 
-这一阶段优先级低于阶段0-6，先把后端闭环跑通，界面可以用最简陋的方式先能看数据即可。
+  DRAFT -> BACKTESTED -> PAPER_TRADING -> LIVE_ELIGIBLE -> LIVE
+
+Rules:
+1. A new strategy must first pass the Stage 4 backtest, and the backtest result must clear
+   a configurable minimum bar (e.g. out-of-sample Sharpe > 0) before it can enter
+   PAPER_TRADING
+2. During PAPER_TRADING, the strategy trades against real-time market data in simulation
+   (no real orders are placed). It must run for at least a configurable minimum duration
+   (e.g. 7 days) or a minimum number of trades before the state is allowed to advance to
+   LIVE_ELIGIBLE
+3. LIVE_ELIGIBLE -> LIVE must be an explicit, manual action by the user — the system must
+   never advance this automatically
+4. Every state transition must be recorded in an audit log (who, when, and based on what
+   data the transition was made)
+
+Write tests covering every illegal transition in the state machine (e.g. attempting to
+jump straight from DRAFT to LIVE) — all of them must be rejected.
+```
+
+---
+
+## Stage 6: Multi-symbol execution layer
+
+```
+Implement the execution layer under internal/execution/. The core requirement: different
+symbols can have completely independent module combinations and risk parameters, with zero
+cross-impact.
+
+1. Every StrategyConfig that enters the LIVE state is bound to its own independent
+   execution instance (a goroutine or a dedicated worker); execution across symbols is
+   fully isolated — an exception on one symbol must not affect any other symbol
+2. Risk parameters are configured independently per symbol: max position size per trade,
+   max daily loss, max holding time, etc. Tripping a risk control immediately closes the
+   position and pauses that symbol's strategy (without affecting other symbols)
+3. First integrate against one exchange's testnet/paper account API (e.g. Binance
+   Testnet) — don't connect to a real funded account from the start
+4. Every order execution must record "which module's which signal, with what parameters,
+   triggered this" to satisfy the explainability requirement mentioned in Stage 2 — this
+   record must be displayable to the user in the UI later on
+
+Write an integration test: simulate two symbols running simultaneously (BTC using
+combination A, ETH using combination B), and verify they're fully isolated from each other
+and that risk controls take effect independently.
+```
+
+---
+
+## Stage 7 (optional, revisit based on remaining effort): Minimal usable interface
+
+```
+Use a simple web interface (can start with Go + HTMX, or a lightweight frontend framework)
+to display:
+1. A strategy configuration wizard: natural-language input -> show the Agent's restated
+   understanding -> confirm/revise
+2. A strategy status board: which stage of the state machine every strategy currently sits
+   in
+3. A single strategy's detail view: backtest result charts, paper/live trade records, and
+   which module + parameters triggered each trade
+
+This stage has lower priority than Stages 0-6 — get the backend loop working end to end
+first; the UI can start out as bare-bones as long as it can show real data.
 ```
 
 ---

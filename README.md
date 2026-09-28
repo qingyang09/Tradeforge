@@ -1,157 +1,190 @@
-# TradeForge
-
-模块化加密货币交易策略平台（MVP）。用户用自然语言描述交易规则，AI Agent 把它翻译成
-结构化配置；配置必须走完「回测 → 模拟盘 → 用户手动解锁」才能进入实盘。
-
-**平台只负责忠实执行用户的规则，不提供任何投资建议。** 这条合规红线体现在代码里：
-Agent 的 prompt 明确禁止建议措辞，`internal/agent/compliance.go` 会硬拦截命中的输出。
+*中文说明: [README.zh-CN.md](README.zh-CN.md)*
 
 ---
 
-## 快速开始
+# TradeForge
+
+A modular cryptocurrency trading strategy platform (MVP). Users describe trading rules in
+natural language; an AI Agent translates that into a structured configuration. Every
+configuration must pass through **backtest -> paper trading -> manual user unlock** before
+it's allowed to go live.
+
+**The platform's only job is to faithfully execute the user's own rules — it never offers
+investment advice.** This compliance boundary is enforced in code: the Agent's prompt
+explicitly forbids advice-like language, and `internal/agent/compliance.go` hard-blocks any
+output that trips it.
+
+---
+
+## Quick start
 
 ```bash
-# 1. 起依赖（Postgres / Redis / Kafka）
+# 1. Bring up dependencies (Postgres / Redis / Kafka)
 docker compose up -d
 
-# 2. 确认三个服务都能连上
+# 2. Confirm all three services are reachable
 go run ./cmd/healthcheck
 
-# 3. 跑全部测试
+# 3. Run the full test suite
 go test ./...
 cd python/backtest && python -m pytest -q
 ```
 
-宿主机端口刻意避开默认值（Postgres `55432`、Redis `56379`、Kafka `59200`），
-以免和机器上已有的服务冲突。全部配置项见 `.env.example`。
+Host ports are deliberately offset from the defaults (Postgres `55432`, Redis `56379`,
+Kafka `59200`) to avoid clashing with services that might already be running on your
+machine. See `.env.example` for every configuration option.
 
 ---
 
-## 架构
+## Architecture
 
 ```
-自然语言
+Natural language
    │
    ▼
-┌──────────────────┐   严格 JSON Schema + 复述确认
-│  Agent 翻译层     │   internal/agent
+┌──────────────────┐   Strict JSON Schema + restatement confirmation
+│  Agent layer      │   internal/agent
 └────────┬─────────┘
-         │ StrategyConfig（DRAFT）
+         │ StrategyConfig (DRAFT)
          ▼
-┌──────────────────┐   强制流程，逐级推进不可跳级
-│  策略状态机       │   internal/strategy/statemachine.go
+┌──────────────────┐   Mandatory pipeline, no skipping stages
+│  Strategy state   │   internal/strategy/statemachine.go
+│  machine          │
 │  DRAFT → BACKTESTED → PAPER_TRADING → LIVE_ELIGIBLE → LIVE
 └────────┬─────────┘
          │
          ▼
-┌──────────────────┐   并发调用模块 + 聚合 + 降级隔离
-│  组合引擎         │   internal/engine
+┌──────────────────┐   Concurrent module calls + aggregation + isolated degradation
+│  Composition      │   internal/engine
+│  engine           │
 └────────┬─────────┘
-         │ Decision → Postgres（审计）+ Kafka
+         │ Decision → Postgres (audit) + Kafka
          ├──────────────────────┬───────────────────────┐
          ▼                      ▼                       ▼
 ┌────────────────┐   ┌──────────────────┐   ┌────────────────────┐
-│  信号模块库     │   │   回测引擎        │   │   多标的执行层      │
-│ internal/modules│   │ Go 重放 + Python  │   │ internal/execution │
-└────────────────┘   │ 撮合与绩效统计     │   │ 每标的一个 worker   │
-                     └──────────────────┘   └────────────────────┘
+│  Signal module  │   │  Backtest engine  │   │  Multi-symbol       │
+│  library        │   │  Go replay +       │   │  execution layer    │
+│ internal/modules│   │  Python fills &    │   │ internal/execution  │
+│                 │   │  performance stats │   │  one worker/symbol  │
+└────────────────┘   └──────────────────┘   └────────────────────┘
 ```
 
-### 目录
+### Layout
 
-| 路径 | 职责 |
+| Path | Responsibility |
 |---|---|
-| `pkg/types/` | 跨模块共享的数据结构（Signal、StrategyConfig、Order…） |
-| `internal/modules/` | 信号模块库，每个模块一个独立包 |
-| `internal/engine/` | 组合引擎：并发评估、聚合、审计、发布 |
-| `internal/agent/` | 自然语言 → StrategyConfig 的翻译层 |
-| `internal/strategy/` | 策略配置校验 + 状态机 |
-| `internal/execution/` | 多标的执行层、风控、下单通道 |
-| `internal/storage/` | Postgres 数据访问 |
-| `internal/messaging/` | Kafka 读写 |
-| `internal/marketdata/` | 行情加载（CSV）、合成数据生成、`okx/` 实时行情接入 |
-| `internal/webui/` | 最小可用界面：向导、状态看板、策略详情 |
-| `python/backtest/` | 回测的撮合模拟、成本建模与绩效统计 |
-| `cmd/` | 各可执行程序入口（含 `cmd/webui`、`cmd/signal-engine`） |
+| `pkg/types/` | Data structures shared across modules (Signal, StrategyConfig, Order…) |
+| `internal/modules/` | Signal module library, one independent package per module |
+| `internal/engine/` | Composition engine: concurrent evaluation, aggregation, audit, publish |
+| `internal/agent/` | Natural language → StrategyConfig translation layer |
+| `internal/strategy/` | Strategy config validation + state machine |
+| `internal/execution/` | Multi-symbol execution layer, risk controls, order-placement channels |
+| `internal/storage/` | Postgres data access |
+| `internal/messaging/` | Kafka read/write |
+| `internal/marketdata/` | Market data loading (CSV), synthetic data generation, `okx/` live feed |
+| `internal/webui/` | Minimal usable interface: wizard, status board, strategy detail |
+| `python/backtest/` | Backtest fill simulation, cost modeling, and performance statistics |
+| `cmd/` | Entry points for each executable (including `cmd/webui`, `cmd/signal-engine`) |
 
 ---
 
-## 关键设计决策
+## Key design decisions
 
-### 1. 信号逻辑只有一份实现
+### 1. Signal logic has exactly one implementation
 
-回测里的信号计算**复用实盘的 `internal/engine`**（`cmd/backtest-runner` 逐根重放，
-输出决策 JSONL），Python 侧只做撮合模拟与绩效统计。
+Backtest signal computation **reuses the live `internal/engine`** (`cmd/backtest-runner`
+replays candle-by-candle and emits decision JSONL); the Python side only does fill
+simulation and performance statistics.
 
-若在 Python 里把支撑阻力、CVD 等模块重写一遍，两份实现迟早漂移——那时回测评估的
-就是另一个策略了，比没有回测更危险。
+If support/resistance, CVD, and the rest of the modules were reimplemented a second time in
+Python, the two implementations would inevitably drift — at that point the backtest would
+be evaluating a *different* strategy, which is more dangerous than having no backtest at
+all.
 
-### 2. 模块注册表是唯一事实来源
+### 2. The module registry is the single source of truth
 
-「平台有哪些模块、每个模块有哪些参数、取值范围是什么」只在 `RequiredParams()` 里定义一次。
-Agent 的 JSON Schema、提示词里的模块清单、引擎的参数校验，全部由它现场生成。
-新增模块时这些地方自动跟上，LLM 也就没有发明模块的空间。
+"Which modules the platform has, what parameters each one takes, and what their valid
+ranges are" is defined exactly once, in `RequiredParams()`. The Agent's JSON Schema, the
+module list baked into its prompt, and the engine's parameter validation are all generated
+from it on the fly. Adding a new module automatically keeps every one of those in sync, and
+the LLM has no room to invent a module that doesn't exist.
 
-### 3. 金额一律用 decimal
+### 3. Monetary values always use decimal
 
-所有价格、数量、金额字段都是 `decimal.Decimal`（Python 侧是 `decimal.Decimal`），
-读 CSV 时用 `NewFromString` 而非 `ParseFloat`。置信度、夏普这类无量纲统计量才用 float。
+Every price, quantity, and monetary field is `decimal.Decimal` (Python side:
+`decimal.Decimal` as well) — CSVs are parsed with `NewFromString`, never `ParseFloat`.
+Dimensionless statistics like confidence or Sharpe ratio are the only place `float` is
+used.
 
-### 4. 拒绝而不是修复
+### 4. Reject, don't repair
 
-LLM 输出不符合 schema、参数越界、引用了不存在的模块——一律整体拒绝并要求重新生成，
-绝不做「尽力修复」。静默修正会让用户以为系统理解了他的规则，实际执行的却是别的东西。
+If the LLM's output doesn't conform to the schema, a parameter is out of range, or it
+references a module that doesn't exist — the whole output is rejected outright and
+regeneration is requested. There is never any "best-effort repair." Silently correcting a
+bad output would make the user believe the system understood their rule, when in fact
+something else entirely is about to run.
 
-### 5. 隔离贯穿始终
+### 5. Isolation runs all the way through
 
-- 模块级：单个模块超时/报错/panic → 降级为中性信号，不影响其它模块
-- 标的级：每个策略一个 worker、一条队列、一套风控计数，互不共享状态
-- 风控级：BTC 打满日亏额度不影响 ETH 继续交易
+- Module level: a single module timing out / erroring / panicking degrades to a neutral
+  signal without affecting any other module
+- Symbol level: each strategy gets its own worker, its own queue, and its own risk-control
+  counters — nothing is shared
+- Risk-control level: BTC hitting its daily loss cap doesn't stop ETH from continuing to
+  trade
 
 ---
 
-## 各阶段验收
+## Stage-by-stage verification
 
-### 阶段 1：信号模块
+### Stage 1: Signal modules
 
 ```bash
 go test ./internal/modules/...
-go run ./cmd/module-demo      # 打印各模块在构造行情上的完整 Signal 输出
+go run ./cmd/module-demo      # prints each module's full Signal output against synthetic market data
 ```
 
-已实现 `support_resistance`、`volume_breakout`、`cvd_orderflow`、`macd_rsi`、`news_sentiment`。
-CVD 的订单流数据源通过 `FlowProvider` 接口注入，后续接 Coinglass 只需实现该接口。
-`macd_rsi` 提供三种模式：`macd_cross`（只看金叉死叉）、`rsi_reversal`（只看超买超卖反转）、
-`confluence`（默认，金叉死叉发生时若 RSI 已处于同向极值区间则过滤掉——避免在动能透支的
-位置追单）。指标计算内部用 decimal 保证精度，RSI/置信度等无量纲值对外仍以 float64 表示。
-`news_sentiment` 对回看窗口内与标的相关的新闻标题打分、按新近程度加权，情绪打分数据源
-通过 `SentimentProvider` 接口注入；默认实现 `KeywordSentimentProvider` 只是一份关键词表
-（命中正负面词计数，无法理解否定/讽刺/上下文），信号里标注 `is_heuristic: true`，
-下游据此拒绝其进入实盘，后续接真实 NLP/LLM 情绪服务只需实现该接口。
+Implemented: `support_resistance`, `volume_breakout`, `cvd_orderflow`, `macd_rsi`,
+`news_sentiment`. CVD's order-flow data source is injected via the `FlowProvider`
+interface — wiring in real Coinglass data later just means implementing that interface.
+`macd_rsi` ships three modes: `macd_cross` (golden/death cross only), `rsi_reversal`
+(overbought/oversold reversal only), and `confluence` (the default — filters out a
+golden/death cross when RSI is already in the same-direction extreme zone, to avoid
+chasing a move where momentum is already exhausted). Indicator math uses decimal
+internally for precision; dimensionless outputs like RSI/confidence are still exposed as
+float64. `news_sentiment` scores headlines related to the symbol within the lookback
+window, weighted by recency; its sentiment-scoring data source is injected via the
+`SentimentProvider` interface. The default implementation, `KeywordSentimentProvider`, is
+just a keyword table (counts positive/negative word hits, can't understand negation,
+sarcasm, or context) — signals from it are tagged `is_heuristic: true`, and downstream
+consumers reject it from going live on that basis. Wiring in a real NLP/LLM sentiment
+service later just means implementing that interface.
 
-### 阶段 2：组合引擎
+### Stage 2: Composition engine
 
 ```bash
 go test ./internal/engine/...
-# 真链路（需要 docker compose up -d）
+# Real end-to-end path (requires docker compose up -d)
 go test -tags=integration ./internal/engine/... -run Live -v
 ```
 
-支持 `ALL` 与 `WEIGHTED` 两种聚合。降级信号在 `WEIGHTED` 下计入分母——
-一半模块沉默时分数会如实被稀释，而不是让少数模块独自顶到阈值。
+Supports the two aggregation modes `ALL` and `WEIGHTED`. Degraded signals count toward the
+denominator under `WEIGHTED` — if half the modules go silent, the score is honestly diluted
+rather than letting a handful of modules push the score over the threshold on their own.
 
-### 阶段 3：Agent 翻译层
+### Stage 3: Agent translation layer
 
 ```bash
 go test ./internal/agent/...
-go run ./cmd/agent-service -schema        # 查看 JSON Schema 与 system prompt
-ANTHROPIC_API_KEY=... go run ./cmd/agent-service   # 交互式闭环
+go run ./cmd/agent-service -schema        # view the JSON Schema and system prompt
+ANTHROPIC_API_KEY=... go run ./cmd/agent-service   # interactive loop
 ```
 
-测试覆盖 10 组「自然语言 → 期望配置」的契约对、5 组歧义输入（必须提问而非猜测）、
-11 类非法输出的拒绝，以及合规措辞拦截。
+Tests cover 10 "natural language input → expected config" contract pairs, 5 ambiguous
+inputs (must ask a clarifying question rather than guess), 11 categories of invalid output
+being rejected, and compliance-wording interception.
 
-### 阶段 4：回测引擎
+### Stage 4: Backtest engine
 
 ```bash
 go run ./cmd/gen-testdata -dir testdata
@@ -163,169 +196,213 @@ cd python/backtest && python -m tradeforge_backtest.cli \
     --decisions ../../testdata/decisions.jsonl --no-save
 ```
 
-成交假设刻意保守：信号在第 i 根收盘产生，成交在第 i+1 根**开盘价**，
-再加不利方向的滑点与吃单手续费。`TestReplayHasNoLookAheadBias` 用「替换未来数据、
-比对历史决策」的方式验证无前视偏差。
+Fill assumptions are deliberately conservative: a signal generated on candle *i*'s close
+fills at candle *i+1*'s **open**, plus adverse-direction slippage and taker fees.
+`TestReplayHasNoLookAheadBias` verifies there's no look-ahead bias by substituting future
+data and comparing the resulting historical decisions.
 
-样本内外分开统计，交易按**开仓所在的段**归属。样本外没有交易时，
-结果会明确标注为「未经验证」而不是显示为「表现平平」。
+In-sample and out-of-sample results are tracked separately, and trades are attributed to
+**whichever segment they were opened in**. When the out-of-sample segment has no trades at
+all, the result is explicitly labeled "unverified" rather than shown as "flat performance."
 
-### 阶段 5：状态机
+### Stage 5: State machine
 
 ```bash
 go test ./internal/strategy/...
 ```
 
-全部非法跳转（含 `DRAFT → LIVE`）都有测试守着。回测门槛只看样本外指标；
-`LIVE_ELIGIBLE → LIVE` 只接受 `ActorUser` 且必须记录操作者身份。
+Every illegal transition (including `DRAFT → LIVE`) is guarded by a test. The backtest gate
+only looks at out-of-sample metrics; `LIVE_ELIGIBLE → LIVE` only accepts `ActorUser` and
+must record who performed it.
 
-`PaperStats`（模拟盘运行时长与成交笔数）不额外维护计数器，而是由
-`Store.PaperStats` 从已有的 `strategy_state_transitions` + `orders` 表现算：
-起点取该策略**最近一次**进入 `PAPER_TRADING` 的流转记录（被风控暂停后重新进入
-模拟盘会重新计时），笔数只认这之后的 `PAPER` 模式 `FILLED` 订单。
-`cmd/executor` 内置一个后台循环（`-promotion-interval`，默认 5 分钟）定期扫描
-所有 `PAPER_TRADING` 策略并按门槛自动推进到 `LIVE_ELIGIBLE`——这一步系统可以自动做，
-`LIVE_ELIGIBLE → LIVE` 仍然必须用户手动操作。
+`PaperStats` (paper-trading run duration and trade count) doesn't maintain a separate
+counter — `Store.PaperStats` derives it live from the existing `strategy_state_transitions`
++ `orders` tables: the starting point is the strategy's **most recent** transition into
+`PAPER_TRADING` (re-entering paper trading after a risk-control pause restarts the clock),
+and the trade count only counts `PAPER`-mode `FILLED` orders after that point.
+`cmd/executor` has a built-in background loop (`-promotion-interval`, defaulting to 5
+minutes) that periodically scans every `PAPER_TRADING` strategy and auto-advances it to
+`LIVE_ELIGIBLE` once it clears the gate — the system is allowed to do this step on its own;
+`LIVE_ELIGIBLE → LIVE` still always requires a manual user action.
 
 ```bash
-go test ./cmd/executor/...                                      # 推进逻辑的单元测试（内存假 store）
-go test -tags=integration ./internal/storage/... -run PaperStats -v   # 真库往返（需要 docker compose up -d）
+go test ./cmd/executor/...                                      # unit tests for the promotion logic (in-memory fake store)
+go test -tags=integration ./internal/storage/... -run PaperStats -v   # real DB round-trip (requires docker compose up -d)
 ```
 
-### 阶段 6：执行层
+### Stage 6: Execution layer
 
 ```bash
 go test ./internal/execution/...
 go run ./cmd/executor -state PAPER_TRADING
 ```
 
-`TestIntegrationTwoSymbolsRunIndependently` 是阶段 6 要求的集成测试：
-BTC 与 ETH 用完全不同的模块组合和风控参数同时运行，BTC 触发日亏上限被暂停时，
-ETH 的持仓与交易完全不受影响。
+`TestIntegrationTwoSymbolsRunIndependently` is the integration test Stage 6 requires: BTC
+and ETH run simultaneously with completely different module combinations and risk
+parameters — when BTC trips its daily loss cap and gets paused, ETH's positions and trading
+are completely unaffected.
 
-### 阶段 7：最小可用界面
+### Stage 7: Minimal usable interface
 
 ```bash
-go run ./cmd/webui                 # 监听 TF_HTTP_ADDR（默认 :8080）
+go run ./cmd/webui                 # listens on TF_HTTP_ADDR (default :8080)
 go test ./internal/webui/...
 ```
 
-Go 标准库 `net/http`（1.22+ pattern ServeMux）+ `html/template` + htmx（CDN 引入，
-不引构建步骤/前端框架），跟其余服务一样不额外拉依赖。三块能力：
+Go standard library `net/http` (1.22+ pattern ServeMux) + `html/template` + htmx (pulled
+from a CDN, no build step / frontend framework) — no extra dependencies, same as every
+other service in this project. Three capabilities:
 
-- **策略配置向导**（`/wizard`）：自然语言 → Agent 复述确认 → 存为 `DRAFT`。
-  流程逐字镜像 `cmd/agent-service` 的 CLI 闭环，只是把多轮对话状态（`agent.Proposal` +
-  历史 `Turn`）编码进隐藏表单字段在请求间传递，不维护服务端 session——这是本地
-  单操作者工具，且每次确认前 `agent.Confirm` 都会用真实模块注册表重新校验，
-  篡改隐藏字段最多导致校验被拒绝，不会绕过 schema 或合规检查。
-- **策略状态看板**（`/`）：全部策略按 `DRAFT/BACKTESTED/PAPER_TRADING/LIVE_ELIGIBLE/LIVE/SUSPENDED`
-  分组展示。
-- **策略详情**（`/strategies/{id}`）：回测结果（样本外单独用醒目边框区隔、
-  零交易时明确提示"不代表已验证"）、按逐笔交易重建的累计盈亏 SVG 曲线
-  （`backtest_results` 没有持久化逐根权益曲线，只能从已有的 `Trades` 重建）、
-  模拟盘统计、订单/决策/状态流转历史。
-- **K 线图**（`/chart/{symbol}`）：嵌入 TradingView 官方免费的 Advanced Chart 组件
-  （数据源指到 OKX），均线/RSI/MACD 这些常见技术指标是组件自带的，不是平台自己算的——
-  纯粹是给人看盘用的参考图，跟 `support_resistance`/`volume_breakout` 等模块实际算出的
-  信号没有关系，也不参与任何决策。看板/策略详情页都能跳过去，标的周期会自动换算成
-  TradingView 的 interval 参数。
+- **Strategy configuration wizard** (`/wizard`): natural language → Agent restates its
+  understanding for confirmation → saved as `DRAFT`. The flow mirrors `cmd/agent-service`'s
+  CLI loop verbatim, just encoding the multi-turn conversation state (`agent.Proposal` +
+  the `Turn` history) into hidden form fields carried between requests instead of
+  maintaining a server-side session — this is a local, single-operator tool, and every
+  `agent.Confirm` call before confirmation re-validates against the real module registry
+  regardless, so tampering with the hidden field can at most get validation rejected; it
+  can't bypass the schema or the compliance checks.
+- **Strategy status board** (`/`): every strategy grouped by
+  `DRAFT/BACKTESTED/PAPER_TRADING/LIVE_ELIGIBLE/LIVE/SUSPENDED`.
+- **Strategy detail** (`/strategies/{id}`): backtest results (out-of-sample results are set
+  apart in their own prominent border, and explicitly flagged "doesn't mean this has been
+  validated" when there are zero trades), a cumulative-P&L SVG curve rebuilt from
+  trade-by-trade data (`backtest_results` doesn't persist a per-candle equity curve, so
+  it's the best that can be reconstructed from the existing `Trades`), paper-trading
+  statistics, and order/decision/state-transition history.
+- **Candle chart** (`/chart/{symbol}`): embeds TradingView's official free Advanced Chart
+  widget (pointed at OKX as its data source). Moving averages/RSI/MACD and other common
+  technical indicators shown there are the widget's own, not computed by the platform —
+  it's purely a reference chart for eyeballing the market, unrelated to and not
+  participating in any decision actually computed by `support_resistance`/
+  `volume_breakout`/etc. Both the status board and strategy detail pages link to it, and
+  the symbol's timeframe is automatically converted to TradingView's interval parameter.
 
-界面只暴露三个写操作，其余流转继续走既有的 CLI/自动化路径：向导确认（存 `DRAFT`）、
-`LIVE_ELIGIBLE → LIVE` 的手动解锁、以及模型设置。`LIVE_ELIGIBLE → LIVE` 是状态机规则里
-唯一强制要求人显式点头的一步，`handleUnlockLive` 结构上直接照抄
-`cmd/executor/promote.go` 的 `checkPromotions`（重新查当前状态、`CheckTransition`
-校验、失败回显成页面提示而不是 500）。
+The interface only exposes three write operations — every other transition still goes
+through the existing CLI/automation paths: wizard confirmation (saves as `DRAFT`), the
+manual `LIVE_ELIGIBLE → LIVE` unlock, and model settings. `LIVE_ELIGIBLE → LIVE` is the one
+step the state machine's rules mandate an explicit human nod for; `handleUnlockLive` is
+structurally a direct copy of `cmd/executor/promote.go`'s `checkPromotions` (re-fetch the
+current state, validate with `CheckTransition`, and echo a failure back as a page message
+instead of a 500).
 
-`internal/storage/backtests.go` 是新增的只读路径：`backtest_results` 表此前只有
-`python/backtest` 会写，Go 侧从未读过。
+`internal/storage/backtests.go` is a newly added read-only path: the `backtest_results`
+table was previously only ever written by `python/backtest` — the Go side had never read
+from it before.
 
-#### 模型设置（`/settings`）与多供应商支持
+#### Model settings (`/settings`) and multi-provider support
 
-Agent 翻译层现在支持多个 LLM 供应商，不再绑死 Anthropic。抽象在 `internal/agent`：
+The Agent translation layer now supports multiple LLM providers instead of being locked to
+Anthropic. The abstraction lives in `internal/agent`:
 
-- `agent.LLM` 接口（`llm.go`）是唯一的对接点，`Agent` 的翻译/校验/合规逻辑完全不
-  关心底层是哪家供应商。
-- `agent.Provider`（`provider.go`）登记当前支持的供应商，目前是 `anthropic`
-  （`AnthropicLLM`，强制工具调用）和 `openai`（`OpenAILLM`，`llm_openai.go`，
-  强制 function-call 加 `strict: true`）——两边都是"强制结构化输出"而不是
-  "请你输出 JSON"，绝不允许自由文本直接进入执行链路这条红线在两个供应商上是
-  同一份约束，不因为换供应商就放松。新增供应商只需要实现 `LLM` 接口并在
-  `Providers` 里登记一行。
-- Web 界面的 `/settings` 页面可以直接选供应商、填 API key（+ 可选的模型覆盖），
-  不需要改环境变量重启进程；`cmd/webui` 启动时如果检测到 `ANTHROPIC_API_KEY`
-  仍然会像以前一样自动配置好，`/settings` 只是多了一条不用碰 shell 的路径。
-  **key 只保存在进程内存里，不落库**——落库等于在数据库里明文存一份密钥，
-  这个项目没有认证/加密存储机制，代价和收益不成比例；重启服务需要重新填一次，
-  界面文案会如实说明这一点。
+- The `agent.LLM` interface (`llm.go`) is the single integration point — `Agent`'s
+  translate/validate/compliance logic is entirely unaware of which provider sits
+  underneath.
+- `agent.Provider` (`provider.go`) registers the currently supported providers: `anthropic`
+  (`AnthropicLLM`, forced tool-use) and `openai` (`OpenAILLM`, `llm_openai.go`, forced
+  function-calling with `strict: true`) — both enforce "structured output" rather than
+  merely "please output JSON," and the red line of never letting free-form text enter the
+  execution chain directly is the same constraint on both providers; it doesn't loosen just
+  because the provider changed. Adding a new provider only requires implementing the `LLM`
+  interface and registering one line in `Providers`.
+- The `/settings` page lets you pick a provider and fill in an API key (plus an optional
+  model override) directly, without touching environment variables or restarting the
+  process. `cmd/webui` still auto-configures itself from `ANTHROPIC_API_KEY` at startup if
+  it's set, same as before — `/settings` is just an additional path that doesn't require
+  touching a shell. **The key is only kept in process memory, never persisted to the
+  database** — persisting it would mean storing a plaintext secret in the database, and
+  this project has no authentication/encrypted-storage mechanism for that, so the cost
+  isn't worth the benefit; restarting the service requires re-entering it, and the UI copy
+  says so honestly.
 
 ```bash
-go test ./internal/agent/...     # Provider 派发、空 key 拒绝等
-go test ./internal/webui/...     # /settings 的保存/清除/失败不顶替现有配置等
+go test ./internal/agent/...     # provider dispatch, empty-key rejection, etc.
+go test ./internal/webui/...     # /settings save/clear/failure doesn't clobber the existing config, etc.
 ```
 
-### 行情接入：OKX 实时/历史 K 线
+### Market data: OKX live/historical candles
 
 ```bash
-go run ./cmd/signal-engine -source okx -state PAPER_TRADING   # 接实时行情
+go run ./cmd/signal-engine -source okx -state PAPER_TRADING   # connect to live market data
 go test ./internal/marketdata/okx/... ./cmd/signal-engine/...
-go test -tags=integration ./internal/marketdata/okx/... -v    # 真打 OKX，不需要 key
+go test -tags=integration ./internal/marketdata/okx/... -v    # hits real OKX, no key needed
 ```
 
-`cmd/signal-engine` 原来只能重放本地 CSV，现在 `-source okx` 能真正"活"起来：启动时用
-REST 回填一段历史窗口，随后订阅 WebSocket 持续喂实时收盘 K 线。选 OKX 而不是 CLAUDE.md
-里默认提到的 Binance，是因为从常见的云端开发环境出口 IP 访问 Binance 会返回 451（地区
-封锁），OKX 没有这个问题。
+`cmd/signal-engine` used to only be able to replay local CSVs — `-source okx` now lets it
+genuinely "run live": on startup it backfills a historical window via REST, then subscribes
+over WebSocket for a continuous stream of real-time candle closes. OKX was chosen instead
+of the Binance mentioned by default in CLAUDE.md because Binance returns 451 (regional
+block) from the egress IPs of common cloud dev environments — OKX doesn't have that
+problem.
 
-- `internal/marketdata/okx`：`Client.FetchCandles` 拉历史、`Client.Subscribe` 订阅实时，
-  两条路径共用同一份行数据解析（REST 和 WS 是同一套数组编码）。WebSocket 推送里的
-  `confirm` 字段区分"还在走"和"已收盘"，只有已收盘的 K 线会被推给调用方——用一根还在
-  变化的 K 线触发决策，等于让实时链路重新踩一遍回测引擎一直小心避开的前视偏差。
-- `cmd/signal-engine` 按 `(symbol, timeframe)` 分组订阅，一组一个 goroutine，标的间
-  互相隔离；断线后固定退避重连。顺带修了 CSV 重放路径里一个潜藏的小问题：原来的
-  `feeds` 只按 symbol 去重，两个策略共用同一个 symbol 但周期不同的话，第二个会悄悄
-  读到第一个的行情而不报错。
-- **OKX 的 K 线接口不提供主动买卖量拆分**（没有 Binance 那种 taker-buy 字段），所以
-  OKX 行情喂给 `cvd_orderflow` 模块时，`Candle.TakerBuyVolume` 恒为零值。模块自带的
-  `CandleFlowProvider` 对此已经有防护（"有成交量却没有主动买入量"会直接报错，而不是
-  拿零值当真实数据算），用 OKX 数据源的策略如果配了 `cvd_orderflow`，必须显式换成
-  `SyntheticFlowProvider`，这是有意的设计，不是需要修的 bug。
-
----
-
-## 当前限制
-
-以下是明确知道、但 MVP 阶段有意未做的部分：
-
-- **实时行情只接了 OKX**。回测/CSV 重放路径不受影响；换一家交易所（比如真的要接
-  Binance）需要照着 `internal/marketdata/okx` 的样子实现一份新的适配器，`cmd/signal-engine`
-  这边不需要改（`historicalSource`/`liveSource` 是消费方自己定义的最小接口）。
-- **下单和拉行情不是同一家**。`internal/execution/binance.go` 只接了币安测试网下单，
-  `internal/marketdata/okx` 只接了 OKX 拉行情，两者目前没有绑在一起——这在"模拟盘不
-  下真实单"的阶段问题不大，但要注意实盘阶段"看到的价格"和"能下单的地方"目前是两个
-  不同的交易所，需要为此专门评审。
-- **只对接测试网**。`NewBinanceTestnetBroker` 会拒绝非测试网地址；接真实资金账户
-  应当是一次显式的代码改动加评审，不是改配置。
-- **CVD 数据来自 K 线的主动买入量**，精度低于逐笔订单流。`SyntheticFlowProvider`
-  是纯占位实现，信号里会标注 `is_synthetic: true`，下游可据此拒绝其进入实盘。
-- **新闻情绪打分是关键词占位实现**，不是真正的语义理解，无法识别否定/讽刺/上下文。
-  `KeywordSentimentProvider` 会在信号里标注 `is_heuristic: true`；行情数据里也还没有
-  真实新闻源接入，`MarketData.News` 目前要靠调用方自己填充。
-- **`go test -race` 未在本机跑通**：需要 64 位 gcc，当前环境的 mingw 是 32 位的。
-  执行层的并发路径靠 `sync.Mutex` 保护，建议在有完整工具链的机器上补跑一次。
-- **界面的向导隐藏字段不签名/不加密**（详见阶段 7 一节），这是本地单操作者工具下
-  的刻意简化，多用户/联网部署前需要重新评估。
+- `internal/marketdata/okx`: `Client.FetchCandles` pulls history, `Client.Subscribe`
+  subscribes to the live feed — both paths share the same row-parsing code (REST and WS use
+  the same array encoding). The `confirm` field on WebSocket pushes distinguishes "still
+  forming" from "closed" — only closed candles are handed to the caller. Triggering a
+  decision off a candle that's still changing would mean the live path re-introduces the
+  exact look-ahead bias the backtest engine has always been careful to avoid.
+- `cmd/signal-engine` subscribes grouped by `(symbol, timeframe)`, one goroutine per group,
+  fully isolated across symbols; it reconnects with a fixed backoff after a disconnect.
+  While at it, this also fixed a latent bug in the CSV replay path: the old `feeds` map only
+  deduplicated by symbol, so if two strategies shared a symbol but used different
+  timeframes, the second one would silently read the first one's market data instead of
+  erroring out.
+- **OKX's candle API doesn't provide a taker-buy/sell split** (no Binance-style
+  taker-buy field), so when OKX market data feeds the `cvd_orderflow` module,
+  `Candle.TakerBuyVolume` is always zero. The module's built-in `CandleFlowProvider` already
+  guards against this ("volume present but zero taker-buy volume" raises an error outright,
+  rather than treating the zero as real data) — a strategy using an OKX data source that
+  also configures `cvd_orderflow` must explicitly switch to `SyntheticFlowProvider`. This is
+  an intentional design decision, not a bug to fix.
 
 ---
 
-## 环境变量
+## Current limitations
 
-见 `.env.example`。最常用的几个：
+The following are known gaps that were deliberately left out of the MVP stage:
 
-| 变量 | 默认值 | 说明 |
+- **Live market data only connects to OKX.** The backtest/CSV-replay path is unaffected;
+  switching to another exchange (say, actually wiring up Binance) means implementing a new
+  adapter shaped like `internal/marketdata/okx` — `cmd/signal-engine` itself needs no
+  changes (`historicalSource`/`liveSource` are minimal interfaces the consumer defines
+  itself).
+- **Order placement and market data don't come from the same exchange.**
+  `internal/execution/binance.go` only connects to Binance's testnet for order placement,
+  and `internal/marketdata/okx` only connects to OKX for market data — the two are
+  currently not tied together. This isn't a big deal while paper trading never places real
+  orders, but it's worth flagging: once live, "the price you're seeing" and "the place
+  you can actually place an order" are currently two different exchanges, which needs a
+  dedicated review before going live for real.
+- **Only testnets are wired up.** `NewBinanceTestnetBroker` refuses any non-testnet
+  address; connecting a real funded account should be a deliberate, reviewed code change,
+  not a config flip.
+- **CVD data comes from a candle's taker-buy volume**, which is lower fidelity than
+  tick-by-tick order flow. `SyntheticFlowProvider` is a pure placeholder implementation —
+  signals from it are tagged `is_synthetic: true`, and downstream consumers can reject it
+  from going live on that basis.
+- **News sentiment scoring is a keyword-based placeholder**, not real semantic
+  understanding — it can't recognize negation, sarcasm, or context.
+  `KeywordSentimentProvider` tags its signals `is_heuristic: true`; there's also no real
+  news source wired into market data yet, so `MarketData.News` currently has to be
+  populated by the caller.
+- **`go test -race` hasn't been run successfully on this machine**: it needs a 64-bit gcc,
+  and the mingw toolchain in the current environment is 32-bit. The execution layer's
+  concurrent paths are protected by `sync.Mutex`; it's worth running this once on a machine
+  with a complete toolchain.
+- **The wizard's hidden form fields in the UI aren't signed or encrypted** (see the Stage 7
+  section) — a deliberate simplification for a local, single-operator tool. This needs to be
+  re-evaluated before any multi-user or internet-facing deployment.
+
+---
+
+## Environment variables
+
+See `.env.example`. The most commonly used ones:
+
+| Variable | Default | Description |
 |---|---|---|
-| `TF_PG_PORT` | `55432` | Postgres 端口 |
-| `TF_KAFKA_BROKERS` | `localhost:59200` | Kafka 地址 |
-| `ANTHROPIC_API_KEY` | 空 | `cmd/agent-service`（CLI 向导）必需；`cmd/webui` 可选，不设也能通过 `/settings` 页面配置任意供应商 |
-| `TF_AGENT_MODEL` | `claude-opus-5` | 翻译层使用的模型 |
-| `TF_MODULE_TIMEOUT` | `3s` | 单模块超时，超时后降级为中性信号 |
-| `TF_HTTP_ADDR` | `:8080` | `cmd/webui` 的监听地址 |
+| `TF_PG_PORT` | `55432` | Postgres port |
+| `TF_KAFKA_BROKERS` | `localhost:59200` | Kafka address |
+| `ANTHROPIC_API_KEY` | empty | Required for `cmd/agent-service` (the CLI wizard); optional for `cmd/webui` — can be configured for any provider via the `/settings` page instead |
+| `TF_AGENT_MODEL` | `claude-opus-5` | Model used by the translation layer |
+| `TF_MODULE_TIMEOUT` | `3s` | Per-module timeout; degrades to a neutral signal on timeout |
+| `TF_HTTP_ADDR` | `:8080` | `cmd/webui`'s listen address |

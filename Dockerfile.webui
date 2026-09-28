@@ -1,12 +1,14 @@
-# cmd/webui 比其它 Go 服务多一个真实依赖：点"运行回测"时，它会 shell 出一个 Python
-# 子进程（`python -m tradeforge_backtest.cli`，见 internal/webui/handlers_backtest.go）
-# 跑真正的撮合引擎，默认还会用 psycopg 直接把结果写回 Postgres（CLI 没传 --no-save）。
-# 这是它单独有一份 Dockerfile、不跟 go.Dockerfile 共用的唯一原因——运行时环境真的
-# 不同，不是为了省一个文件。
+# cmd/webui has one real dependency the other Go services don't: clicking "run backtest"
+# shells out to a Python subprocess (`python -m tradeforge_backtest.cli`, see
+# internal/webui/handlers_backtest.go) to run the actual fill-matching engine, which by
+# default also writes results straight back to Postgres via psycopg (the CLI call doesn't
+# pass --no-save). That's the only reason this has its own Dockerfile instead of sharing
+# go.Dockerfile -- the runtime environment is genuinely different, not just to save a file.
 #
-# 前端模板（internal/webui/templates）是 go:embed 进二进制的，不需要单独 COPY 进镜像。
+# The frontend templates (internal/webui/templates) are go:embed'd into the binary, so
+# they don't need to be COPY'd into the image separately.
 #
-# 用法：
+# Usage:
 #   docker build -f Dockerfile.webui -t tradeforge-webui .
 
 # syntax=docker/dockerfile:1
@@ -26,16 +28,20 @@ FROM python:${PYTHON_VERSION}-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata \
     && rm -rf /var/lib/apt/lists/*
 
-# python/backtest 核心逻辑零依赖（decimal/csv/json 都是标准库），只有"落库"这个可选功能
-# 需要 psycopg——但 webui 的调用路径没传 --no-save，默认就会走落库，所以这里必须装。
+# python/backtest's core logic has zero dependencies (decimal/csv/json are all stdlib) --
+# only the optional "persist to the database" feature needs psycopg. But webui's call path
+# doesn't pass --no-save, so it goes through that path by default, which means this has to
+# be installed.
 RUN pip install --no-cache-dir 'psycopg[binary]>=3.1'
 
 WORKDIR /app
 COPY python/backtest ./python/backtest
 COPY --from=build /out/webui /usr/local/bin/webui
 
-# webui 以 python/backtest 所在目录的上一级为工作目录运行子进程（PythonDir 默认相对路径
-# "python/backtest"，见 internal/config/config.go），保持跟本地开发时一致的相对路径关系。
+# webui runs the subprocess with its working directory set to the parent of
+# python/backtest (PythonDir defaults to the relative path "python/backtest", see
+# internal/config/config.go), keeping the same relative-path relationship as local
+# development.
 WORKDIR /app
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/webui"]
