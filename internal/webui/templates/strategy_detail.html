@@ -1,141 +1,140 @@
 {{define "strategy_detail_content"}}
-{{if .Banner}}
-  <div class="{{if .BannerErr}}banner-err{{else}}banner-ok{{end}}">{{.Banner}}</div>
+{{if not .Banner.IsZero}}
+  <div class="{{if .BannerErr}}banner-err{{else}}banner-ok{{end}}">{{msg .Banner}}</div>
 {{end}}
 
 <h1>{{.Strategy.Name}} <span class="badge badge-{{lower (print .Strategy.State)}}">{{.Strategy.State}}</span></h1>
-<p class="note">{{.Strategy.Symbol}} · {{.Strategy.Timeframe}} · {{.Strategy.Combine}}{{if eq (print .Strategy.Combine) "WEIGHTED"}}（阈值 {{.Strategy.Threshold}}）{{end}} {{if not .Strategy.CreatedAt.IsZero}}· 创建于 {{.Strategy.CreatedAt.Format "2006-01-02 15:04"}}{{end}}
-  · <a href="/builder/{{.Strategy.Symbol}}?timeframe={{.Strategy.Timeframe}}&strategy={{.Strategy.ID}}">去画板查看</a></p>
-{{if .Strategy.SourceUtterance}}<p class="note">原始描述："{{.Strategy.SourceUtterance}}"</p>{{end}}
+<p class="note">{{.Strategy.Symbol}} · {{.Strategy.Timeframe}} · {{.Strategy.Combine}}{{if eq (print .Strategy.Combine) "WEIGHTED"}}{{t "webui.strategy_detail.header.threshold" "value" .Strategy.Threshold}}{{end}} {{if not .Strategy.CreatedAt.IsZero}}· {{t "webui.strategy_detail.header.created_at" "time" (.Strategy.CreatedAt.Format "2006-01-02 15:04")}}{{end}}
+  · <a href="/builder/{{.Strategy.Symbol}}?timeframe={{.Strategy.Timeframe}}&strategy={{.Strategy.ID}}">{{t "webui.strategy_detail.header.view_builder"}}</a></p>
+{{if .Strategy.SourceUtterance}}<p class="note">{{t "webui.strategy_detail.header.source_utterance" "text" .Strategy.SourceUtterance}}</p>{{end}}
 
 <nav class="page-nav">
-  {{if .GateProgress.TargetLabel}}<a href="#next-step">下一步</a>{{end}}
-  <a href="#modules">模块/风控</a>
-  <a href="#backtest-run">运行回测</a>
-  <a href="#backtest-results">回测结果</a>
-  {{if .PaperStats}}<a href="#paper-stats">模拟盘统计</a>{{end}}
-  <a href="#orders">订单</a>
-  <a href="#decisions">决策</a>
-  <a href="#transitions">状态流转</a>
+  {{if not .GateProgress.TargetLabel.IsZero}}<a href="#next-step">{{t "webui.strategy_detail.nav.next_step"}}</a>{{end}}
+  <a href="#modules">{{t "webui.strategy_detail.nav.modules"}}</a>
+  <a href="#backtest-run">{{t "webui.strategy_detail.nav.run_backtest"}}</a>
+  <a href="#backtest-results">{{t "webui.strategy_detail.nav.backtest_results"}}</a>
+  {{if .PaperStats}}<a href="#paper-stats">{{t "webui.strategy_detail.nav.paper_stats"}}</a>{{end}}
+  <a href="#orders">{{t "webui.strategy_detail.nav.orders"}}</a>
+  <a href="#decisions">{{t "webui.strategy_detail.nav.decisions"}}</a>
+  <a href="#transitions">{{t "webui.strategy_detail.nav.transitions"}}</a>
 </nav>
 
-{{if .GateProgress.TargetLabel}}
+{{if not .GateProgress.TargetLabel.IsZero}}
 <div class="card" id="next-step">
-  <h2>距离"{{.GateProgress.TargetLabel}}"还差什么</h2>
-  {{if .GateProgress.Note}}
-    <p class="note">{{.GateProgress.Note}}</p>
+  <h2>{{t "webui.strategy_detail.next_step.heading" "target" (msg .GateProgress.TargetLabel)}}</h2>
+  {{if not .GateProgress.Note.IsZero}}
+    <p class="note">{{msg .GateProgress.Note}}</p>
   {{end}}
   {{if .GateProgress.Items}}
   <table>
-    <tr><th>检查项</th><th>当前值</th><th>门槛要求</th><th>是否达标</th></tr>
+    <tr><th>{{t "webui.strategy_detail.next_step.table.check"}}</th><th>{{t "webui.strategy_detail.next_step.table.current"}}</th><th>{{t "webui.strategy_detail.next_step.table.required"}}</th><th>{{t "webui.strategy_detail.next_step.table.pass"}}</th></tr>
     {{range .GateProgress.Items}}
     <tr>
       <td>{{msg .Label}}</td>
       <td>{{msg .Current}}</td>
       <td>{{msg .Required}}</td>
-      <td>{{if .Pass}}<span class="gate-pass">✓ 达标</span>{{else}}<span class="gate-fail">✗ 未达标</span>{{end}}</td>
+      <td>{{if .Pass}}<span class="gate-pass">{{t "webui.strategy_detail.next_step.pass_yes"}}</span>{{else}}<span class="gate-fail">{{t "webui.strategy_detail.next_step.pass_no"}}</span>{{end}}</td>
     </tr>
     {{end}}
   </table>
   {{if .GateProgress.AllPass}}
-    <p class="note gate-pass">全部达标，可以推进到下一步了。</p>
+    <p class="note gate-pass">{{t "webui.strategy_detail.next_step.all_pass"}}</p>
   {{end}}
   {{end}}
 </div>
 {{end}}
 
 <div class="card" id="modules">
-  <h2>模块组合</h2>
+  <h2>{{t "webui.strategy_detail.modules.heading"}}</h2>
   <table>
-    <tr><th>模块</th><th>权重</th><th>参数</th></tr>
+    <tr><th>{{t "webui.strategy_detail.modules.table.module"}}</th><th>{{t "webui.strategy_detail.modules.table.weight"}}</th><th>{{t "webui.strategy_detail.modules.table.params"}}</th></tr>
     {{range .Strategy.Modules}}
     <tr>
       <td>{{.Module}}</td>
       <td>{{if gt .Weight 0.0}}{{.Weight}}{{else}}—{{end}}</td>
-      <td>{{if .Params}}{{range $k, $v := .Params}}{{$k}}={{$v}} {{end}}{{else}}默认值{{end}}</td>
+      <td>{{if .Params}}{{range $k, $v := .Params}}{{$k}}={{$v}} {{end}}{{else}}{{t "webui.strategy_detail.modules.default_params"}}{{end}}</td>
     </tr>
     {{end}}
   </table>
-  <h2>风控</h2>
+  <h2>{{t "webui.strategy_detail.risk.heading"}}</h2>
   <table>
-    <tr><th>单笔最大仓位</th><td>{{.Strategy.Risk.MaxPositionSizeQuote}}</td></tr>
-    {{if .Strategy.Risk.MaxDailyLossQuote.IsPositive}}<tr><th>单日最大亏损</th><td>{{.Strategy.Risk.MaxDailyLossQuote}}</td></tr>{{end}}
-    {{if gt .Strategy.Risk.StopLossPct 0.0}}<tr><th>止损</th><td>{{pct .Strategy.Risk.StopLossPct}}</td></tr>{{end}}
-    {{if gt .Strategy.Risk.TakeProfitPct 0.0}}<tr><th>止盈</th><td>{{pct .Strategy.Risk.TakeProfitPct}}</td></tr>{{end}}
+    <tr><th>{{t "webui.strategy_detail.risk.max_position"}}</th><td>{{.Strategy.Risk.MaxPositionSizeQuote}}</td></tr>
+    {{if .Strategy.Risk.MaxDailyLossQuote.IsPositive}}<tr><th>{{t "webui.strategy_detail.risk.max_daily_loss"}}</th><td>{{.Strategy.Risk.MaxDailyLossQuote}}</td></tr>{{end}}
+    {{if gt .Strategy.Risk.StopLossPct 0.0}}<tr><th>{{t "webui.strategy_detail.risk.stop_loss"}}</th><td>{{pct .Strategy.Risk.StopLossPct}}</td></tr>{{end}}
+    {{if gt .Strategy.Risk.TakeProfitPct 0.0}}<tr><th>{{t "webui.strategy_detail.risk.take_profit"}}</th><td>{{pct .Strategy.Risk.TakeProfitPct}}</td></tr>{{end}}
   </table>
 </div>
 
 <div class="card" id="backtest-run">
-  <h2>运行回测</h2>
+  <h2>{{t "webui.strategy_detail.run_backtest.heading"}}</h2>
   {{template "run_backtest_form" .}}
 </div>
 
 <div class="card" id="backtest-results">
-  <h2>回测结果</h2>
+  <h2>{{t "webui.strategy_detail.backtest_results.heading"}}</h2>
   {{template "backtest_summary" .}}
 </div>
 
 {{if .PaperStats}}
 <div class="card" id="paper-stats">
-  <h2>模拟盘运行统计</h2>
+  <h2>{{t "webui.strategy_detail.paper_stats.heading"}}</h2>
   <table>
-    <tr><th>开始时间</th><td>{{.PaperStats.StartedAt.Format "2006-01-02 15:04"}}</td></tr>
-    <tr><th>已运行</th><td>{{.PaperStats.Duration}}</td></tr>
-    <tr><th>成交笔数</th><td>{{.PaperStats.TradeCount}}</td></tr>
+    <tr><th>{{t "webui.strategy_detail.paper_stats.started_at"}}</th><td>{{.PaperStats.StartedAt.Format "2006-01-02 15:04"}}</td></tr>
+    <tr><th>{{t "webui.strategy_detail.paper_stats.duration"}}</th><td>{{.PaperStats.Duration}}</td></tr>
+    <tr><th>{{t "webui.strategy_detail.paper_stats.trade_count"}}</th><td>{{.PaperStats.TradeCount}}</td></tr>
   </table>
 </div>
 {{end}}
 
 <div class="card" id="orders">
   <details{{if .Orders}} open{{end}}>
-    <summary><h2 style="display:inline;">订单记录{{if not .Orders}}（暂无）{{end}}</h2></summary>
+    <summary><h2 style="display:inline;">{{t "webui.strategy_detail.orders.heading"}}{{if not .Orders}}{{t "webui.strategy_detail.orders.empty_suffix"}}{{end}}</h2></summary>
     {{template "orders_table" .Orders}}
   </details>
 </div>
 
 <div class="card" id="decisions">
   <details{{if .Decisions}} open{{end}}>
-    <summary><h2 style="display:inline;">决策记录{{if not .Decisions}}（暂无）{{end}}</h2></summary>
+    <summary><h2 style="display:inline;">{{t "webui.strategy_detail.decisions.heading"}}{{if not .Decisions}}{{t "webui.strategy_detail.decisions.empty_suffix"}}{{end}}</h2></summary>
     {{template "decisions_table" .Decisions}}
   </details>
 </div>
 
 <div class="card" id="transitions">
-  <h2>状态流转历史</h2>
+  <h2>{{t "webui.strategy_detail.transitions.heading"}}</h2>
   {{template "transitions_table" .Transitions}}
 </div>
 
 {{if .CanConfirmBacktest}}
 <div class="card">
-  <h2>确认回测结果</h2>
+  <h2>{{t "webui.strategy_detail.confirm_backtest.heading"}}</h2>
   {{template "confirm_backtest_form" .}}
 </div>
 {{end}}
 
 {{if .CanStartPaperTrading}}
 <div class="card">
-  <h2>进入模拟盘</h2>
+  <h2>{{t "webui.strategy_detail.start_paper.heading"}}</h2>
   {{template "start_paper_trading_form" .}}
 </div>
 {{end}}
 
 {{if .CanUnlockLive}}
 <div class="card">
-  <h2>解锁实盘</h2>
+  <h2>{{t "webui.strategy_detail.live_unlock.heading"}}</h2>
   {{template "live_unlock_form" .}}
 </div>
 {{end}}
 
 {{if .CanConfirmBacktest}}
 <div class="card">
-  <h2>删除策略</h2>
+  <h2>{{t "webui.strategy_detail.delete.heading"}}</h2>
   <p class="note">
-    只能删除 DRAFT 状态的策略（还没有回测/模拟盘/实盘历史）。删除后关联的回测结果、
-    订单、决策、状态流转记录会一并永久删除，无法恢复。
+    {{t "webui.strategy_detail.delete.warning"}}
   </p>
   <form method="post" action="/strategies/{{.Strategy.ID}}/delete"
-    onsubmit="return confirm('确定要永久删除《{{.Strategy.Name}}》吗？此操作不可撤销。');">
-    <button type="submit" class="danger">永久删除这条策略</button>
+    onsubmit="return confirm('{{t `webui.strategy_detail.delete.confirm_js` `name` .Strategy.Name}}');">
+    <button type="submit" class="danger">{{t "webui.strategy_detail.delete.button"}}</button>
   </form>
 </div>
 {{end}}

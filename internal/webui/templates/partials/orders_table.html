@@ -1,16 +1,16 @@
 {{define "orders_table"}}
 {{if not .}}
-  <p class="note">暂无订单。</p>
+  <p class="note">{{t "webui.strategy_detail.orders_table.empty"}}</p>
 {{else}}
 <table>
-  <tr><th>时间</th><th>模式</th><th>方向</th><th>状态</th><th>数量</th><th>成交价</th><th>手续费</th><th>触发依据</th></tr>
+  <tr><th>{{t "webui.strategy_detail.orders_table.time"}}</th><th>{{t "webui.strategy_detail.orders_table.mode"}}</th><th>{{t "webui.strategy_detail.table.direction"}}</th><th>{{t "webui.strategy_detail.orders_table.status"}}</th><th>{{t "webui.strategy_detail.orders_table.quantity"}}</th><th>{{t "webui.strategy_detail.orders_table.filled_price"}}</th><th>{{t "webui.strategy_detail.orders_table.fee"}}</th><th>{{t "webui.strategy_detail.orders_table.provenance"}}</th></tr>
   {{range .}}
   {{$order := .}}
   <tr>
     <td>{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
     <td>{{.Mode}}</td>
     <td>{{.Side}}</td>
-    <td>{{.Status}}{{if eq (print .Status) "REJECTED"}}（{{.RejectReason}}）{{end}}</td>
+    <td>{{.Status}}{{if eq (print .Status) "REJECTED"}}{{t "webui.strategy_detail.orders_table.reject_paren" "reason" .RejectReason}}{{end}}</td>
     <td>{{.Quantity}}</td>
     <td>{{if .FilledPrice.IsPositive}}{{.FilledPrice}}{{else}}—{{end}}</td>
     <td>{{if .Fee.IsPositive}}{{.Fee}}{{else}}—{{end}}</td>
@@ -27,19 +27,19 @@
 {{define "provenance_detail"}}
 <details>
   <summary class="note">
-    {{.Combine}}{{if gt .Threshold 0.0}}（阈值 {{printf "%.2f" .Threshold}}）{{end}} · 强度 {{printf "%.2f" .Score}}
+    {{.Combine}}{{if gt .Threshold 0.0}}{{t "webui.strategy_detail.header.threshold" "value" (printf "%.2f" .Threshold)}}{{end}} · {{t "webui.strategy_detail.provenance.score" "value" (printf "%.2f" .Score)}}
   </summary>
   <div class="provenance">
     {{if not .Note.IsZero}}<p class="note">{{msg .Note}}</p>{{end}}
     <table class="provenance-signals">
-      <tr><th>模块</th><th>方向</th><th>置信度</th><th>原因</th><th>生效参数</th></tr>
+      <tr><th>{{t "webui.strategy_detail.table.module"}}</th><th>{{t "webui.strategy_detail.table.direction"}}</th><th>{{t "webui.strategy_detail.table.confidence"}}</th><th>{{t "webui.strategy_detail.table.reason"}}</th><th>{{t "webui.strategy_detail.table.effective_params"}}</th></tr>
       {{range .Signals}}
       {{$params := index $.ModuleParams .Module}}
       <tr{{if .Degraded}} class="degraded"{{end}}>
         <td>{{.Module}}</td>
         <td>{{.Direction}}</td>
         <td>{{printf "%.2f" .Confidence}}</td>
-        <td class="note">{{msg .Reason}}{{if .Degraded}}（降级{{if .Err}}：{{.Err}}{{end}}）{{end}}</td>
+        <td class="note">{{msg .Reason}}{{if .Degraded}}{{if .Err}}{{t "webui.strategy_detail.table.degraded_paren_err" "err" .Err}}{{else}}{{t "webui.strategy_detail.table.degraded_paren"}}{{end}}{{end}}</td>
         <td class="note">{{if $params}}{{range $k, $v := $params}}{{$k}}={{$v}} {{end}}{{else}}—{{end}}</td>
       </tr>
       {{end}}

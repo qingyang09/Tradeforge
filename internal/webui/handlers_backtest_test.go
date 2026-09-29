@@ -14,6 +14,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
+	"tradeforge/internal/i18n"
 	"tradeforge/internal/marketdata/okx"
 	"tradeforge/pkg/types"
 )
@@ -225,7 +226,7 @@ func TestDoRunBacktestWritesTempFilesInvokesPythonAndCleansUp(t *testing.T) {
 	if isErr {
 		t.Fatalf("不应报错，banner=%q", banner)
 	}
-	if !strings.Contains(banner, "回测已完成") {
+	if !strings.Contains(i18n.Render(i18n.DefaultLang, banner), "回测已完成") {
 		t.Errorf("成功时的 banner 应该说明已完成，实际：%q", banner)
 	}
 
@@ -283,7 +284,7 @@ func TestDoRunBacktestSurfacesPythonStderrOnFailure(t *testing.T) {
 	if !isErr {
 		t.Fatal("Python 子进程失败时应该报错")
 	}
-	if !strings.Contains(banner, "决策数与K线数不一致") {
+	if !strings.Contains(i18n.Render(i18n.DefaultLang, banner), "决策数与K线数不一致") {
 		t.Errorf("banner 应该包含子进程的 stderr 内容，实际：%q", banner)
 	}
 }
@@ -304,7 +305,7 @@ func TestDoRunBacktestFailsCleanlyWhenOKXUnreachable(t *testing.T) {
 	if !isErr {
 		t.Fatal("拉不到行情时应该报错")
 	}
-	if !strings.Contains(banner, "拉取历史行情失败") {
+	if !strings.Contains(i18n.Render(i18n.DefaultLang, banner), "拉取历史行情失败") {
 		t.Errorf("banner 应说明是拉行情失败，实际：%q", banner)
 	}
 }
