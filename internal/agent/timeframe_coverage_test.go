@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"tradeforge/internal/i18n"
 	"tradeforge/pkg/types"
 )
 
@@ -85,7 +86,7 @@ func TestTranslateRetriesWhenModuleTimeframeIsDropped(t *testing.T) {
 	})
 
 	a, stub := newAgent(firstBad, secondGood)
-	p, err := a.Translate(context.Background(), utterance, nil)
+	p, err := a.Translate(context.Background(), utterance, nil, i18n.LangZH)
 	if err != nil {
 		t.Fatalf("translate failed: %v", err)
 	}

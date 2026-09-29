@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"tradeforge/internal/agent"
+	"tradeforge/internal/i18n"
 	"tradeforge/internal/marketdata/okx"
 	"tradeforge/internal/storage"
 	"tradeforge/pkg/idgen"
@@ -92,7 +93,10 @@ func (s *Server) handleBatchScanTranslate(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	p, err := ag.Translate(r.Context(), batchContextualUtterance(len(symbols), utterance), nil)
+	// i18n.DefaultLang (Chinese) for now, matching this app's current
+	// Chinese-only behavior exactly -- see render.go's msg template func doc
+	// comment for why, and the plan's Phase 4 for the per-request fix.
+	p, err := ag.Translate(r.Context(), batchContextualUtterance(len(symbols), utterance), nil, i18n.DefaultLang)
 	if err != nil {
 		s.renderFragment(w, "wizard_error_fragment", wizardErrorData{Message: "翻译失败：" + err.Error()})
 		return
@@ -140,7 +144,9 @@ func (s *Server) handleBatchScanClarify(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	p, err := ag.Translate(r.Context(), answer, newHistory)
+	// i18n.DefaultLang (Chinese) for now -- see the comment on the Translate
+	// call above.
+	p, err := ag.Translate(r.Context(), answer, newHistory, i18n.DefaultLang)
 	if err != nil {
 		s.renderFragment(w, "wizard_error_fragment", wizardErrorData{Message: "翻译失败：" + err.Error()})
 		return

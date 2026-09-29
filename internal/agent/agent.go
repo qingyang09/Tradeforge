@@ -21,6 +21,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
+	"tradeforge/internal/i18n"
 	"tradeforge/internal/modules"
 	"tradeforge/internal/strategy"
 	"tradeforge/pkg/types"
@@ -59,8 +60,6 @@ func (p *Proposal) NeedsClarification() bool { return p.Outcome == OutcomeClarif
 type Agent struct {
 	llm        LLM
 	registry   *modules.Registry
-	schema     Schema
-	system     string
 	maxRetries int
 }
 
@@ -72,29 +71,31 @@ func New(llm LLM, reg *modules.Registry, maxRetries int) *Agent {
 	return &Agent{
 		llm:        llm,
 		registry:   reg,
-		schema:     BuildSchema(reg),
-		system:     SystemPrompt(reg),
 		maxRetries: maxRetries,
 	}
 }
 
-// Schema returns the JSON Schema this Agent uses, for debugging and display.
-func (a *Agent) Schema() Schema { return a.schema }
+// Schema returns the JSON Schema this Agent uses, in lang, for debugging and display.
+func (a *Agent) Schema(lang i18n.Lang) Schema { return BuildSchema(a.registry, lang) }
 
-// SystemPrompt returns the system prompt this Agent uses.
-func (a *Agent) SystemPrompt() string { return a.system }
+// SystemPrompt returns the system prompt this Agent uses, in lang.
+func (a *Agent) SystemPrompt(lang i18n.Lang) string { return SystemPrompt(a.registry, lang) }
 
 // Translate translates one natural-language utterance into a proposal awaiting confirmation.
 //
 // history is the prior conversation turns (passed in when the user is answering clarifying questions); may be nil.
+// lang selects which language the system prompt, schema hints, and the
+// model's own restatement/questions come back in.
 //
 // Note: this method only produces a proposal and never writes the config into the system. Writing must go through Confirm.
-func (a *Agent) Translate(ctx context.Context, utterance string, history []Turn) (*Proposal, error) {
+func (a *Agent) Translate(ctx context.Context, utterance string, history []Turn, lang i18n.Lang) (*Proposal, error) {
 	if strings.TrimSpace(utterance) == "" {
 		return nil, errors.New("strategy description cannot be empty")
 	}
 
-	turns := append(append([]Turn{}, history...), Turn{Role: "user", Text: UserPrompt(utterance)})
+	system := SystemPrompt(a.registry, lang)
+	schema := BuildSchema(a.registry, lang)
+	turns := append(append([]Turn{}, history...), Turn{Role: "user", Text: UserPrompt(utterance, lang)})
 
 	// The multi-timeframe consistency check needs "everything the user has
 	// said so far", not just this turn — timeframe info may well have been
@@ -110,7 +111,7 @@ func (a *Agent) Translate(ctx context.Context, utterance string, history []Turn)
 
 	var lastErr error
 	for attempt := 1; attempt <= a.maxRetries+1; attempt++ {
-		raw, err := a.llm.Complete(ctx, a.system, a.schema, turns)
+		raw, err := a.llm.Complete(ctx, system, schema, turns)
 		if err != nil {
 			// A call failure is an infrastructure problem, not a model-output
 			// problem, so it doesn't go through the retry logic.
@@ -143,7 +144,7 @@ func (a *Agent) Translate(ctx context.Context, utterance string, history []Turn)
 		// let it start over from scratch.
 		turns = append(turns,
 			Turn{Role: "assistant", Text: raw},
-			Turn{Role: "user", Text: RetryPrompt(err.Error())},
+			Turn{Role: "user", Text: RetryPrompt(err.Error(), lang)},
 		)
 	}
 

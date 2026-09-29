@@ -198,7 +198,10 @@ func (s *Server) handleBuilderTranslate(w http.ResponseWriter, r *http.Request) 
 		"（当前正在 %s 的可视化建策画板上操作，除非用户明确说了别的标的，否则这条规则默认就是针对 %s 的）%s",
 		symbol, symbol, utterance)
 
-	p, err := ag.Translate(r.Context(), contextualUtterance, nil)
+	// i18n.DefaultLang (Chinese) for now, matching this app's current
+	// Chinese-only behavior exactly -- see render.go's msg template func doc
+	// comment for why, and the plan's Phase 4 for the per-request fix.
+	p, err := ag.Translate(r.Context(), contextualUtterance, nil, i18n.DefaultLang)
 	if err != nil {
 		s.renderFragment(w, "wizard_error_fragment", wizardErrorData{Message: "翻译失败：" + err.Error()})
 		return
@@ -224,7 +227,7 @@ func (s *Server) describeConfig(ctx context.Context, userID string, cfg types.St
 	if ag == nil {
 		return describePlain(lang, cfg)
 	}
-	text, err := ag.Describe(ctx, cfg)
+	text, err := ag.Describe(ctx, cfg, lang)
 	if err != nil {
 		s.logger.Warn("Agent 复述失败，改用确定性兜底复述", "err", err)
 		return describePlain(lang, cfg)

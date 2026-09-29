@@ -22,6 +22,7 @@ import (
 
 	"tradeforge/internal/agent"
 	"tradeforge/internal/config"
+	"tradeforge/internal/i18n"
 	"tradeforge/internal/modules"
 	"tradeforge/internal/storage"
 	"tradeforge/pkg/idgen"
@@ -102,7 +103,7 @@ func runClarificationLoop(
 	current := utterance
 
 	for round := 0; round < 5; round++ {
-		p, err := a.Translate(ctx, current, history)
+		p, err := a.Translate(ctx, current, history, i18n.LangEN)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -216,9 +217,9 @@ func printConfigSummary(c types.StrategyConfig) {
 
 func printSchemaAndPrompt(reg *modules.Registry) {
 	a := agent.New(nil, reg, 0)
-	blob, _ := json.MarshalIndent(a.Schema(), "", "  ")
+	blob, _ := json.MarshalIndent(a.Schema(i18n.LangEN), "", "  ")
 	fmt.Println("=== JSON Schema ===")
 	fmt.Println(string(blob))
 	fmt.Println("\n=== System Prompt ===")
-	fmt.Println(a.SystemPrompt())
+	fmt.Println(a.SystemPrompt(i18n.LangEN))
 }

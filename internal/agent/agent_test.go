@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"tradeforge/internal/i18n"
 	"tradeforge/internal/modules"
 	"tradeforge/pkg/types"
 )
@@ -396,7 +397,7 @@ func TestTranslationPairs(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			a, _ := newAgent(tc.modelJSON)
-			p, err := a.Translate(context.Background(), tc.utterance, nil)
+			p, err := a.Translate(context.Background(), tc.utterance, nil, i18n.LangZH)
 			if err != nil {
 				t.Fatalf("translate failed: %v", err)
 			}
@@ -462,7 +463,7 @@ func TestAmbiguousInputsAskInsteadOfGuessing(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			a, _ := newAgent(tc.modelJSON)
-			p, err := a.Translate(context.Background(), tc.utterance, nil)
+			p, err := a.Translate(context.Background(), tc.utterance, nil, i18n.LangZH)
 			if err != nil {
 				t.Fatalf("translate failed: %v", err)
 			}
@@ -490,7 +491,7 @@ func TestClarificationLoopContinuesWithHistory(t *testing.T) {
 
 	a, stub := newAgent(first, second)
 
-	p1, err := a.Translate(context.Background(), "放量 2 倍，一小时线", nil)
+	p1, err := a.Translate(context.Background(), "放量 2 倍，一小时线", nil, i18n.LangZH)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,7 +503,7 @@ func TestClarificationLoopContinuesWithHistory(t *testing.T) {
 		{Role: "user", Text: "放量 2 倍，一小时线"},
 		{Role: "assistant", Text: strings.Join(p1.Questions, "\n")},
 	}
-	p2, err := a.Translate(context.Background(), "BTC", history)
+	p2, err := a.Translate(context.Background(), "BTC", history, i18n.LangZH)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -624,7 +625,7 @@ func TestRejectsInvalidModelOutput(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// maxRetries=0: confirms a single failure is rejected outright, no repair attempted.
 			a := New(&StubLLM{Responses: []string{tc.response}}, modules.NewDefaultRegistry(), 0)
-			_, err := a.Translate(context.Background(), "随便一句话", nil)
+			_, err := a.Translate(context.Background(), "随便一句话", nil, i18n.LangZH)
 			if err == nil {
 				t.Fatal("expected this output to be rejected, but it passed")
 			}
@@ -649,7 +650,7 @@ func TestRetryRegeneratesInsteadOfPatching(t *testing.T) {
 	})
 
 	a, stub := newAgent(bad, good)
-	p, err := a.Translate(context.Background(), "BTC 一小时", nil)
+	p, err := a.Translate(context.Background(), "BTC 一小时", nil, i18n.LangZH)
 	if err != nil {
 		t.Fatalf("second attempt should succeed: %v", err)
 	}
@@ -677,7 +678,7 @@ func TestGivesUpAfterMaxRetries(t *testing.T) {
 		"risk":    risk("1000"),
 	})
 	a, stub := newAgent(bad)
-	if _, err := a.Translate(context.Background(), "BTC", nil); err == nil {
+	if _, err := a.Translate(context.Background(), "BTC", nil, i18n.LangZH); err == nil {
 		t.Fatal("should eventually fail when the model keeps producing invalid output")
 	}
 	if len(stub.Calls) != 3 { // 1 initial call + 2 retries
@@ -707,7 +708,7 @@ func TestRejectsInvestmentAdviceLanguage(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			a := New(&StubLLM{Responses: []string{tc.response}}, modules.NewDefaultRegistry(), 0)
-			_, err := a.Translate(context.Background(), "BTC 一小时放量", nil)
+			_, err := a.Translate(context.Background(), "BTC 一小时放量", nil, i18n.LangZH)
 			if err == nil {
 				t.Fatal("output with investment-advice wording must be rejected")
 			}
@@ -742,7 +743,7 @@ func TestConfirmRequiresExplicitApproval(t *testing.T) {
 		"risk":    risk("1000"),
 	})
 	a, _ := newAgent(good)
-	p, err := a.Translate(context.Background(), "BTC 一小时放量做多", nil)
+	p, err := a.Translate(context.Background(), "BTC 一小时放量做多", nil, i18n.LangZH)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -768,7 +769,7 @@ func TestConfirmRequiresExplicitApproval(t *testing.T) {
 
 func TestConfirmRejectsClarificationProposal(t *testing.T) {
 	a, _ := newAgent(reply(OutcomeClarify, "还缺信息。", nil, "交易什么？"))
-	p, err := a.Translate(context.Background(), "放量就买", nil)
+	p, err := a.Translate(context.Background(), "放量就买", nil, i18n.LangZH)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -785,7 +786,7 @@ func TestConfirmRevalidatesTamperedProposal(t *testing.T) {
 		"risk":    risk("1000"),
 	})
 	a, _ := newAgent(good)
-	p, _ := a.Translate(context.Background(), "BTC 一小时放量", nil)
+	p, _ := a.Translate(context.Background(), "BTC 一小时放量", nil, i18n.LangZH)
 
 	p.Config.Modules[0].Module = "不存在的模块"
 	if _, err := a.Confirm(p, true); err == nil {
@@ -795,7 +796,7 @@ func TestConfirmRevalidatesTamperedProposal(t *testing.T) {
 
 func TestTranslateRejectsEmptyUtterance(t *testing.T) {
 	a, _ := newAgent(reply(OutcomeClarify, "x", nil, "q"))
-	if _, err := a.Translate(context.Background(), "   ", nil); err == nil {
+	if _, err := a.Translate(context.Background(), "   ", nil, i18n.LangZH); err == nil {
 		t.Fatal("an empty description should be rejected")
 	}
 }
@@ -806,7 +807,7 @@ func TestTranslateRejectsEmptyUtterance(t *testing.T) {
 // keep up when a module is added, rather than leaving a handwritten copy to rot.
 func TestSchemaIsDerivedFromRegistry(t *testing.T) {
 	reg := modules.NewDefaultRegistry()
-	schema := BuildSchema(reg)
+	schema := BuildSchema(reg, i18n.LangZH)
 
 	blob, err := json.Marshal(schema)
 	if err != nil {
@@ -832,7 +833,7 @@ func TestSchemaIsDerivedFromRegistry(t *testing.T) {
 // The system prompt must state the compliance boundaries up front, and include the module catalog.
 func TestSystemPromptCarriesBoundariesAndCatalog(t *testing.T) {
 	reg := modules.NewDefaultRegistry()
-	prompt := SystemPrompt(reg)
+	prompt := SystemPrompt(reg, i18n.LangZH)
 
 	for _, must := range []string{"不是投资顾问", "绝不评价", "绝不主动推荐", "clarification_needed"} {
 		if !strings.Contains(prompt, must) {

@@ -6,6 +6,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
+	"tradeforge/internal/i18n"
 	"tradeforge/internal/modules"
 	"tradeforge/pkg/types"
 )
@@ -26,7 +27,7 @@ func TestDescribeReturnsRestatement(t *testing.T) {
 	})}}
 	a := New(stub, modules.NewDefaultRegistry(), 2)
 
-	got, err := a.Describe(context.Background(), sampleConfig())
+	got, err := a.Describe(context.Background(), sampleConfig(), i18n.LangZH)
 	if err != nil {
 		t.Fatalf("Describe() 失败：%v", err)
 	}
@@ -44,7 +45,7 @@ func TestDescribeRejectsAdvisoryLanguage(t *testing.T) {
 	})}}
 	a := New(stub, modules.NewDefaultRegistry(), 2)
 
-	_, err := a.Describe(context.Background(), sampleConfig())
+	_, err := a.Describe(context.Background(), sampleConfig(), i18n.LangZH)
 	if err == nil {
 		t.Fatal("包含投资建议措辞的复述应被拒绝")
 	}
@@ -58,7 +59,7 @@ func TestDescribeRejectsEmptyRestatement(t *testing.T) {
 	stub := &StubLLM{Responses: []string{MustJSON(map[string]any{"restatement": "  "})}}
 	a := New(stub, modules.NewDefaultRegistry(), 2)
 
-	_, err := a.Describe(context.Background(), sampleConfig())
+	_, err := a.Describe(context.Background(), sampleConfig(), i18n.LangZH)
 	if err == nil {
 		t.Fatal("空复述应被拒绝")
 	}
@@ -68,7 +69,7 @@ func TestDescribeRejectsMalformedJSON(t *testing.T) {
 	stub := &StubLLM{Responses: []string{"不是 JSON"}}
 	a := New(stub, modules.NewDefaultRegistry(), 2)
 
-	_, err := a.Describe(context.Background(), sampleConfig())
+	_, err := a.Describe(context.Background(), sampleConfig(), i18n.LangZH)
 	if err == nil {
 		t.Fatal("非法 JSON 输出应被拒绝")
 	}
@@ -78,7 +79,7 @@ func TestDescribeSurfacesLLMError(t *testing.T) {
 	stub := &StubLLM{Err: errStub}
 	a := New(stub, modules.NewDefaultRegistry(), 2)
 
-	_, err := a.Describe(context.Background(), sampleConfig())
+	_, err := a.Describe(context.Background(), sampleConfig(), i18n.LangZH)
 	if err == nil {
 		t.Fatal("模型调用失败应向上传播")
 	}
