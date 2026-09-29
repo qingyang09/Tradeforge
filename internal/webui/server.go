@@ -15,6 +15,7 @@ import (
 	"sync"
 
 	"tradeforge/internal/agent"
+	"tradeforge/internal/i18n"
 	"tradeforge/internal/marketdata/okx"
 	"tradeforge/internal/modules"
 	"tradeforge/internal/storage"
@@ -140,9 +141,13 @@ type Server struct {
 	envAgent       *agent.Agent
 	envAgentStatus agentStatus
 
-	gate   strategy.Gate
-	tmpl   *template.Template
-	logger *slog.Logger
+	gate strategy.Gate
+	// tmplByLang holds one fully-bound *template.Template per supported
+	// i18n.Lang -- see render.go's parseTemplatesByLang. Look up via
+	// s.tmplFor(lang), never index this map directly (it falls back to
+	// i18n.DefaultLang for a lang not present).
+	tmplByLang map[i18n.Lang]*template.Template
+	logger     *slog.Logger
 
 	// registry 独立于 agent 存在：校验一份 StrategyConfig（strategy.Validate）只需要
 	// 模块注册表，不需要 LLM。可视化建策（handlers_builder.go）和 handleWizardConfirm
@@ -194,13 +199,13 @@ func (s *Server) SetVAPIDPublicKey(key string) {
 
 // New 构造 Server 并解析全部模板。模板解析失败是启动期错误，不是运行期错误。
 func New(store Store, ag *agent.Agent, gate strategy.Gate, logger *slog.Logger) (*Server, error) {
-	tmpl, err := parseTemplates()
+	tmplByLang, err := parseTemplatesByLang()
 	if err != nil {
 		return nil, err
 	}
 	okxClient := okx.NewClient()
 	s := &Server{
-		store: store, gate: gate, tmpl: tmpl, logger: logger, sessions: newSessionStore(),
+		store: store, gate: gate, tmplByLang: tmplByLang, logger: logger, sessions: newSessionStore(),
 		agentCache: make(map[string]agentCacheEntry),
 		registry:   modules.NewDefaultRegistry(), okxClient: okxClient,
 		symbolCache: newSymbolCache(okxClient),
@@ -265,9 +270,10 @@ func (s *Server) invalidateUserAgent(userID string) {
 //
 // 除登录本身外的所有路由都套一层 requireAuth：这个界面能看到策略细节、能改绑
 // LLM API key，任何一个端点漏保护都等于整个登录形同虚设，所以在这里统一包裹，
-// 不指望每个 handler 自己记得检查。豁免名单目前是 /login、/signup、/logout，
-// 加上 PWA 需要的四个静态资源路由（/manifest.json、/sw.js、两个图标）——浏览器
-// 拉取这些文件时还没有登录态，见 static.go。
+// 不指望每个 handler 自己记得检查。豁免名单目前是 /login、/signup、/logout、
+// /lang/{en,zh}（语言切换必须在登录前也能用，见 lang.go），加上 PWA 需要的四个
+// 静态资源路由（/manifest.json、/sw.js、两个图标）——浏览器拉取这些文件时还没有
+// 登录态，见 static.go。
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", s.handleLoginShow)
@@ -275,6 +281,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /signup", s.handleSignupShow)
 	mux.HandleFunc("POST /signup", s.handleSignupSubmit)
 	mux.HandleFunc("POST /logout", s.handleLogout)
+	mux.HandleFunc("GET /lang/en", s.handleSetLang(i18n.LangEN))
+	mux.HandleFunc("GET /lang/zh", s.handleSetLang(i18n.LangZH))
 	mux.HandleFunc("GET /manifest.json", s.handleManifest)
 	mux.HandleFunc("GET /sw.js", s.handleServiceWorker)
 	mux.HandleFunc("GET /static/icon-192.png", s.handleIcon192)

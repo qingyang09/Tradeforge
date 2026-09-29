@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"tradeforge/internal/agent"
-	"tradeforge/internal/i18n"
 	"tradeforge/internal/marketdata/okx"
 	"tradeforge/internal/storage"
 	"tradeforge/pkg/idgen"
@@ -69,39 +68,36 @@ func (s *Server) handleBatchScanTranslate(w http.ResponseWriter, r *http.Request
 	userID, _ := currentUserID(r)
 	ag, _ := s.userAgent(r.Context(), userID)
 	if ag == nil {
-		s.renderFragment(w, "wizard_error_fragment", wizardErrorData{Message: "Agent 翻译层未就绪，请先在设置页面配置模型。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "Agent 翻译层未就绪，请先在设置页面配置模型。"})
 		return
 	}
 	utterance := strings.TrimSpace(r.FormValue("utterance"))
 	if utterance == "" {
-		s.renderFragment(w, "wizard_error_fragment", wizardErrorData{Message: "交易规则不能为空。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "交易规则不能为空。"})
 		return
 	}
 	n, err := parseBatchCount(r.FormValue("count"))
 	if err != nil {
-		s.renderFragment(w, "wizard_error_fragment", wizardErrorData{Message: err.Error()})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: err.Error()})
 		return
 	}
 
 	symbols, err := s.scanTopSymbols(r.Context(), n)
 	if err != nil {
-		s.renderFragment(w, "wizard_error_fragment", wizardErrorData{Message: "扫描市场标的失败：" + err.Error()})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "扫描市场标的失败：" + err.Error()})
 		return
 	}
 	if len(symbols) == 0 {
-		s.renderFragment(w, "wizard_error_fragment", wizardErrorData{Message: "没有扫描到任何标的，请稍后重试。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "没有扫描到任何标的，请稍后重试。"})
 		return
 	}
 
-	// i18n.DefaultLang (Chinese) for now, matching this app's current
-	// Chinese-only behavior exactly -- see render.go's msg template func doc
-	// comment for why, and the plan's Phase 4 for the per-request fix.
-	p, err := ag.Translate(r.Context(), batchContextualUtterance(len(symbols), utterance), nil, i18n.DefaultLang)
+	p, err := ag.Translate(r.Context(), batchContextualUtterance(len(symbols), utterance), nil, resolveLang(r))
 	if err != nil {
-		s.renderFragment(w, "wizard_error_fragment", wizardErrorData{Message: "翻译失败：" + err.Error()})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "翻译失败：" + err.Error()})
 		return
 	}
-	s.renderBatchProposal(w, p, nil, symbols)
+	s.renderBatchProposal(w, r, p, nil, symbols)
 }
 
 // batchContextualUtterance 给用户的原始描述前面拼一句上下文提示，告诉模型这条规则会
@@ -120,17 +116,17 @@ func (s *Server) handleBatchScanClarify(w http.ResponseWriter, r *http.Request) 
 	userID, _ := currentUserID(r)
 	ag, _ := s.userAgent(r.Context(), userID)
 	if ag == nil {
-		s.renderFragment(w, "wizard_error_fragment", wizardErrorData{Message: "Agent 翻译层未就绪，请先在设置页面配置模型。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "Agent 翻译层未就绪，请先在设置页面配置模型。"})
 		return
 	}
 	ws, err := decodeState(r.FormValue("state"))
 	if err != nil || ws.Proposal == nil || len(ws.BatchSymbols) == 0 {
-		s.renderFragment(w, "wizard_error_fragment", wizardErrorData{Message: "会话已失效，请重新开始。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "会话已失效，请重新开始。"})
 		return
 	}
 	answer := strings.TrimSpace(r.FormValue("answer"))
 	if answer == "" {
-		s.renderFragment(w, "wizard_error_fragment", wizardErrorData{Message: "回答不能为空。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "回答不能为空。"})
 		return
 	}
 
@@ -139,37 +135,35 @@ func (s *Server) handleBatchScanClarify(w http.ResponseWriter, r *http.Request) 
 		agent.Turn{Role: "assistant", Text: strings.Join(ws.Proposal.Questions, "\n")})
 
 	if len(newHistory)/2 >= maxClarificationRounds {
-		s.renderFragment(w, "wizard_error_fragment",
+		s.renderFragment(w, r, "wizard_error_fragment",
 			wizardErrorData{Message: "澄清轮次过多，请把规则描述得更完整一些后重试。"})
 		return
 	}
 
-	// i18n.DefaultLang (Chinese) for now -- see the comment on the Translate
-	// call above.
-	p, err := ag.Translate(r.Context(), answer, newHistory, i18n.DefaultLang)
+	p, err := ag.Translate(r.Context(), answer, newHistory, resolveLang(r))
 	if err != nil {
-		s.renderFragment(w, "wizard_error_fragment", wizardErrorData{Message: "翻译失败：" + err.Error()})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "翻译失败：" + err.Error()})
 		return
 	}
 	// 扫描出的标的列表在整个多轮会话里保持不变，不重新扫描一次——跟 ForceSymbol
 	// 跨澄清轮次不失效是同一个道理（见 wizardState.BatchSymbols 的注释）。
-	s.renderBatchProposal(w, p, newHistory, ws.BatchSymbols)
+	s.renderBatchProposal(w, r, p, newHistory, ws.BatchSymbols)
 }
 
 // renderBatchProposal 是 renderProposal 的批量版本：NeedsClarification 时渲染批量专属的
 // 澄清片段（posts 到 /wizard/batch/clarify），否则渲染带完整标的列表的确认片段，不展示
 // 单个 Config.Symbol——那只是翻译阶段的占位符，在批量场景里没有意义。
-func (s *Server) renderBatchProposal(w http.ResponseWriter, p *agent.Proposal, history []agent.Turn, symbols []string) {
+func (s *Server) renderBatchProposal(w http.ResponseWriter, r *http.Request, p *agent.Proposal, history []agent.Turn, symbols []string) {
 	state, err := encodeState(wizardState{History: history, Proposal: p, BatchSymbols: symbols})
 	if err != nil {
 		s.serverError(w, err)
 		return
 	}
 	if p.NeedsClarification() {
-		s.renderFragment(w, "batch_clarify_fragment", wizardClarifyData{Questions: p.Questions, State: state})
+		s.renderFragment(w, r, "batch_clarify_fragment", wizardClarifyData{Questions: p.Questions, State: state})
 		return
 	}
-	s.renderFragment(w, "batch_confirm_fragment",
+	s.renderFragment(w, r, "batch_confirm_fragment",
 		batchConfirmData{Restatement: p.Restatement, Config: *p.Config, Symbols: symbols, State: state})
 }
 
@@ -180,12 +174,12 @@ func (s *Server) renderBatchProposal(w http.ResponseWriter, p *agent.Proposal, h
 func (s *Server) handleBatchScanConfirm(w http.ResponseWriter, r *http.Request) {
 	ws, err := decodeState(r.FormValue("state"))
 	if err != nil || ws.Proposal == nil || ws.Proposal.Config == nil || len(ws.BatchSymbols) == 0 {
-		s.renderFragment(w, "wizard_error_fragment", wizardErrorData{Message: "会话已失效，请重新开始。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "会话已失效，请重新开始。"})
 		return
 	}
 
 	if r.FormValue("decision") != "confirm" {
-		s.renderFragment(w, "batch_result_fragment",
+		s.renderFragment(w, r, "batch_result_fragment",
 			batchResultData{Success: false, Message: "已取消，没有任何草稿被创建。"})
 		return
 	}
@@ -227,7 +221,7 @@ func (s *Server) handleBatchScanConfirm(w http.ResponseWriter, r *http.Request) 
 	}
 
 	skipped := len(rows) - created
-	s.renderFragment(w, "batch_result_fragment", batchResultData{
+	s.renderFragment(w, r, "batch_result_fragment", batchResultData{
 		Success: created > 0, Created: created, SkippedCnt: skipped, Rows: rows,
 		Message: fmt.Sprintf("成功创建 %d 份草稿，跳过 %d 个。", created, skipped),
 	})

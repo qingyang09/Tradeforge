@@ -9,16 +9,19 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
+	"tradeforge/internal/i18n"
 	"tradeforge/internal/storage"
 	"tradeforge/pkg/idgen"
+	"tradeforge/pkg/types"
 )
 
 type loginData struct {
-	Error string
+	Error types.Message
+	Lang  i18n.Lang
 }
 
 func (s *Server) handleLoginShow(w http.ResponseWriter, r *http.Request) {
-	s.renderStandalone(w, "login_page", loginData{})
+	s.renderStandalone(w, r, "login_page", loginData{Lang: resolveLang(r)})
 }
 
 func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
@@ -28,27 +31,29 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	email := strings.TrimSpace(r.FormValue("email"))
 	password := r.FormValue("password")
+	lang := resolveLang(r)
 
 	u, err := s.store.GetUserByEmail(r.Context(), email)
 	if err != nil {
 		// 邮箱不存在和密码错误给同一句提示，不让登录页面变成一个"这个邮箱注册过没有"
 		// 的探测工具。
-		s.renderStandalone(w, "login_page", loginData{Error: "邮箱或密码不正确"})
+		s.renderStandalone(w, r, "login_page", loginData{Error: types.Msg("webui.auth.login.bad_credentials"), Lang: lang})
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword(u.PasswordHash, []byte(password)); err != nil {
-		s.renderStandalone(w, "login_page", loginData{Error: "邮箱或密码不正确"})
+		s.renderStandalone(w, r, "login_page", loginData{Error: types.Msg("webui.auth.login.bad_credentials"), Lang: lang})
 		return
 	}
 	s.finishLogin(w, r, u)
 }
 
 type signupData struct {
-	Error string
+	Error types.Message
+	Lang  i18n.Lang
 }
 
 func (s *Server) handleSignupShow(w http.ResponseWriter, r *http.Request) {
-	s.renderStandalone(w, "signup_page", signupData{})
+	s.renderStandalone(w, r, "signup_page", signupData{Lang: resolveLang(r)})
 }
 
 // emailPattern 只做粗略的形状校验（有 @、@ 前后都有非空字符）——真正权威的唯一性
@@ -67,13 +72,14 @@ func (s *Server) handleSignupSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	email := strings.TrimSpace(r.FormValue("email"))
 	password := r.FormValue("password")
+	lang := resolveLang(r)
 
 	if !emailPattern.MatchString(email) {
-		s.renderStandalone(w, "signup_page", signupData{Error: "请输入合法的邮箱地址"})
+		s.renderStandalone(w, r, "signup_page", signupData{Error: types.Msg("webui.auth.signup.bad_email"), Lang: lang})
 		return
 	}
 	if len(password) < minPasswordLen {
-		s.renderStandalone(w, "signup_page", signupData{Error: "密码至少需要 8 位"})
+		s.renderStandalone(w, r, "signup_page", signupData{Error: types.Msg("webui.auth.signup.short_password"), Lang: lang})
 		return
 	}
 
@@ -85,7 +91,7 @@ func (s *Server) handleSignupSubmit(w http.ResponseWriter, r *http.Request) {
 	u := storage.User{ID: idgen.NewUUID(), Email: email, PasswordHash: hash}
 	if err := s.store.CreateUser(r.Context(), u); err != nil {
 		if errors.Is(err, storage.ErrEmailTaken) {
-			s.renderStandalone(w, "signup_page", signupData{Error: "该邮箱已注册"})
+			s.renderStandalone(w, r, "signup_page", signupData{Error: types.Msg("webui.auth.signup.email_taken"), Lang: lang})
 			return
 		}
 		s.serverError(w, err)

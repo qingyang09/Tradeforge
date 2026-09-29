@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"tradeforge/internal/agent"
-	"tradeforge/internal/i18n"
 	"tradeforge/internal/storage"
 	"tradeforge/internal/strategy"
 	"tradeforge/pkg/idgen"
@@ -54,41 +53,38 @@ func (s *Server) handleWizardTranslate(w http.ResponseWriter, r *http.Request) {
 	userID, _ := currentUserID(r)
 	ag, _ := s.userAgent(r.Context(), userID)
 	if ag == nil {
-		s.renderFragment(w, "wizard_error_fragment", wizardErrorData{Message: "Agent 翻译层未就绪，请先在设置页面配置模型。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "Agent 翻译层未就绪，请先在设置页面配置模型。"})
 		return
 	}
 	utterance := strings.TrimSpace(r.FormValue("utterance"))
 	if utterance == "" {
-		s.renderFragment(w, "wizard_error_fragment", wizardErrorData{Message: "交易规则不能为空。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "交易规则不能为空。"})
 		return
 	}
 
-	// i18n.DefaultLang (Chinese) for now, matching this app's current
-	// Chinese-only behavior exactly -- see render.go's msg template func doc
-	// comment for why, and the plan's Phase 4 for the per-request fix.
-	p, err := ag.Translate(r.Context(), utterance, nil, i18n.DefaultLang)
+	p, err := ag.Translate(r.Context(), utterance, nil, resolveLang(r))
 	if err != nil {
-		s.renderFragment(w, "wizard_error_fragment", wizardErrorData{Message: "翻译失败：" + err.Error()})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "翻译失败：" + err.Error()})
 		return
 	}
-	s.renderProposal(w, p, nil, "")
+	s.renderProposal(w, r, p, nil, "")
 }
 
 func (s *Server) handleWizardClarify(w http.ResponseWriter, r *http.Request) {
 	userID, _ := currentUserID(r)
 	ag, _ := s.userAgent(r.Context(), userID)
 	if ag == nil {
-		s.renderFragment(w, "wizard_error_fragment", wizardErrorData{Message: "Agent 翻译层未就绪，请先在设置页面配置模型。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "Agent 翻译层未就绪，请先在设置页面配置模型。"})
 		return
 	}
 	ws, err := decodeState(r.FormValue("state"))
 	if err != nil || ws.Proposal == nil {
-		s.renderFragment(w, "wizard_error_fragment", wizardErrorData{Message: "会话已失效，请重新开始。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "会话已失效，请重新开始。"})
 		return
 	}
 	answer := strings.TrimSpace(r.FormValue("answer"))
 	if answer == "" {
-		s.renderFragment(w, "wizard_error_fragment", wizardErrorData{Message: "回答不能为空。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "回答不能为空。"})
 		return
 	}
 
@@ -99,26 +95,24 @@ func (s *Server) handleWizardClarify(w http.ResponseWriter, r *http.Request) {
 		agent.Turn{Role: "assistant", Text: strings.Join(ws.Proposal.Questions, "\n")})
 
 	if len(newHistory)/2 >= maxClarificationRounds {
-		s.renderFragment(w, "wizard_error_fragment",
+		s.renderFragment(w, r, "wizard_error_fragment",
 			wizardErrorData{Message: "澄清轮次过多，请把规则描述得更完整一些后重试。"})
 		return
 	}
 
-	// i18n.DefaultLang (Chinese) for now -- see the comment on the Translate
-	// call above.
-	p, err := ag.Translate(r.Context(), answer, newHistory, i18n.DefaultLang)
+	p, err := ag.Translate(r.Context(), answer, newHistory, resolveLang(r))
 	if err != nil {
-		s.renderFragment(w, "wizard_error_fragment", wizardErrorData{Message: "翻译失败：" + err.Error()})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "翻译失败：" + err.Error()})
 		return
 	}
-	s.renderProposal(w, p, newHistory, ws.ForceSymbol)
+	s.renderProposal(w, r, p, newHistory, ws.ForceSymbol)
 }
 
 // renderProposal 按 Outcome 分支渲染澄清问题或复述确认，translate/clarify 两个 handler 共用。
 //
 // forceSymbol 非空时会覆盖提案里的标的（见 wizardState.ForceSymbol 的注释），
 // 文字向导传空字符串，行为不变；可视化建策传当前画板的标的。
-func (s *Server) renderProposal(w http.ResponseWriter, p *agent.Proposal, history []agent.Turn, forceSymbol string) {
+func (s *Server) renderProposal(w http.ResponseWriter, r *http.Request, p *agent.Proposal, history []agent.Turn, forceSymbol string) {
 	if forceSymbol != "" && p.Outcome == agent.OutcomeConfig && p.Config != nil {
 		p.Config.Symbol = forceSymbol
 	}
@@ -128,7 +122,7 @@ func (s *Server) renderProposal(w http.ResponseWriter, p *agent.Proposal, histor
 		return
 	}
 	if p.NeedsClarification() {
-		s.renderFragment(w, "wizard_clarify_fragment", wizardClarifyData{Questions: p.Questions, State: state})
+		s.renderFragment(w, r, "wizard_clarify_fragment", wizardClarifyData{Questions: p.Questions, State: state})
 		return
 	}
 	configJSON, err := json.Marshal(p.Config)
@@ -136,7 +130,7 @@ func (s *Server) renderProposal(w http.ResponseWriter, p *agent.Proposal, histor
 		s.serverError(w, err)
 		return
 	}
-	s.renderFragment(w, "wizard_confirm_fragment",
+	s.renderFragment(w, r, "wizard_confirm_fragment",
 		wizardConfirmData{Restatement: p.Restatement, Config: *p.Config, ConfigJSON: string(configJSON), State: state})
 }
 
@@ -154,19 +148,19 @@ type wizardResultData struct {
 func (s *Server) handleWizardConfirm(w http.ResponseWriter, r *http.Request) {
 	ws, err := decodeState(r.FormValue("state"))
 	if err != nil || ws.Proposal == nil {
-		s.renderFragment(w, "wizard_error_fragment", wizardErrorData{Message: "会话已失效，请重新开始。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "会话已失效，请重新开始。"})
 		return
 	}
 
 	if r.FormValue("decision") != "confirm" {
-		s.renderFragment(w, "wizard_result_fragment",
+		s.renderFragment(w, r, "wizard_result_fragment",
 			wizardResultData{Success: false, Message: "已取消，配置未写入系统。"})
 		return
 	}
 
 	cfg, err := s.confirmProposal(ws.Proposal)
 	if err != nil {
-		s.renderFragment(w, "wizard_result_fragment",
+		s.renderFragment(w, r, "wizard_result_fragment",
 			wizardResultData{Success: false, Message: "确认失败：" + err.Error()})
 		return
 	}
@@ -175,7 +169,7 @@ func (s *Server) handleWizardConfirm(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	if err := s.store.SaveStrategy(ctx, cfg); err != nil {
-		s.renderFragment(w, "wizard_result_fragment",
+		s.renderFragment(w, r, "wizard_result_fragment",
 			wizardResultData{Success: false, Message: "写入数据库失败：" + err.Error()})
 		return
 	}
@@ -189,7 +183,7 @@ func (s *Server) handleWizardConfirm(w http.ResponseWriter, r *http.Request) {
 		s.logger.Error("写入审计记录失败", "strategy_id", cfg.ID, "err", err)
 	}
 
-	s.renderFragment(w, "wizard_result_fragment", wizardResultData{Success: true, StrategyID: cfg.ID})
+	s.renderFragment(w, r, "wizard_result_fragment", wizardResultData{Success: true, StrategyID: cfg.ID})
 }
 
 // confirmProposal 重新校验一份提案并把它标记为可入库的状态。逻辑照抄

@@ -1,6 +1,6 @@
 {{define "layout"}}
 <!doctype html>
-<html lang="zh">
+<html lang="{{.Lang}}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -26,6 +26,10 @@
     header nav a { color: #9aa0a8; font-weight: 400; margin-right: 1rem; }
     header nav a:hover { color: #fff; }
     header .user-email { margin-left: auto; color: #9aa0a8; font-size: 0.85rem; }
+    .lang-switch { font-size: 0.8rem; color: #565d6b; }
+    .lang-switch a { color: #9aa0a8; text-decoration: none; }
+    .lang-switch a:hover { color: #fff; }
+    .lang-switch .active { color: #fff; font-weight: 600; }
     header form.logout button {
       font: inherit; font-size: 0.85rem; background: none; border: 1px solid #2a2e39;
       color: #9aa0a8; border-radius: 6px; padding: 0.3rem 0.75rem; cursor: pointer;
@@ -94,15 +98,20 @@
   <header>
     <a href="/">TradeForge</a>
     <nav>
-      <a href="/">状态看板</a>
-      <a href="/wizard">新建策略</a>
-      <a href="/wizard/batch">批量扫描</a>
-      <a href="/builder">K 线图 / 建策</a>
-      <a href="/settings">设置</a>
+      <a href="/">{{t "webui.nav.dashboard"}}</a>
+      <a href="/wizard">{{t "webui.nav.new_strategy"}}</a>
+      <a href="/wizard/batch">{{t "webui.nav.batch_scan"}}</a>
+      <a href="/builder">{{t "webui.nav.builder"}}</a>
+      <a href="/settings">{{t "webui.nav.settings"}}</a>
     </nav>
     <span class="user-email">{{.UserEmail}}</span>
+    <span class="lang-switch">
+      {{if eq .Lang "en"}}<span class="active">EN</span>{{else}}<a href="/lang/en">EN</a>{{end}}
+      /
+      {{if eq .Lang "zh"}}<span class="active">中文</span>{{else}}<a href="/lang/zh">中文</a>{{end}}
+    </span>
     <form class="logout" method="post" action="/logout">
-      <button type="submit">退出登录</button>
+      <button type="submit">{{t "webui.nav.logout"}}</button>
     </form>
   </header>
   <main>

@@ -71,6 +71,7 @@ type builderViewData struct {
 	// 模块会用它保存的参数重新触发一次实时预览。查不到（策略不存在/不属于当前用户/
 	// 没带这个参数）时留空，画板照旧退回空白画布，不阻塞"单纯看图"这个用途。
 	InitialConfigJSON string
+	Lang              i18n.Lang
 }
 
 // handleBuilderView 渲染画板页：独立深色沉浸式文档。画板同时承担"单纯看图"和
@@ -112,11 +113,12 @@ func (s *Server) handleBuilderView(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.renderStandalone(w, "builder_view_page", builderViewData{
+	s.renderStandalone(w, r, "builder_view_page", builderViewData{
 		Symbol:            symbol,
 		Timeframe:         string(tf),
 		AgentReady:        ag != nil,
 		InitialConfigJSON: initialConfigJSON,
+		Lang:              resolveLang(r),
 	})
 }
 
@@ -129,29 +131,29 @@ const maxBuilderConfigBytes = 1 << 20 // 1MiB，画板配置不可能真的这�
 func (s *Server) handleBuilderDescribe(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBuilderConfigBytes+1))
 	if err != nil {
-		s.renderFragment(w, "wizard_error_fragment", wizardErrorData{Message: "读取请求体失败：" + err.Error()})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "读取请求体失败：" + err.Error()})
 		return
 	}
 	if len(body) > maxBuilderConfigBytes {
-		s.renderFragment(w, "wizard_error_fragment", wizardErrorData{Message: "配置体积超出限制。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "配置体积超出限制。"})
 		return
 	}
 
 	cfg, err := agent.DecodeStrategyConfigJSON(body)
 	if err != nil {
-		s.renderFragment(w, "wizard_error_fragment", wizardErrorData{Message: "配置格式有误：" + err.Error()})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "配置格式有误：" + err.Error()})
 		return
 	}
 
 	// 跟 confirmProposal 用的是同一份注册表——用户在这一步能看到的错误，
 	// 跟真正保存时会跑的校验完全一致，不会出现"这里过了、保存时又被拒"的落差。
 	if _, err := strategy.Validate(cfg, s.registry); err != nil {
-		s.renderFragment(w, "wizard_error_fragment", wizardErrorData{Message: "配置未通过校验：" + err.Error()})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "配置未通过校验：" + err.Error()})
 		return
 	}
 
 	userID, _ := currentUserID(r)
-	restatement := s.describeConfig(r.Context(), userID, cfg)
+	restatement := s.describeConfig(r.Context(), userID, cfg, resolveLang(r))
 
 	p := &agent.Proposal{
 		Outcome:         agent.OutcomeConfig,
@@ -159,7 +161,7 @@ func (s *Server) handleBuilderDescribe(w http.ResponseWriter, r *http.Request) {
 		Config:          &cfg,
 		SourceUtterance: "可视化建策",
 	}
-	s.renderProposal(w, p, nil, "")
+	s.renderProposal(w, r, p, nil, "")
 }
 
 // handleBuilderTranslate 是可视化建策接入自然语言翻译层的入口：用户不需要理解
@@ -177,7 +179,7 @@ func (s *Server) handleBuilderTranslate(w http.ResponseWriter, r *http.Request) 
 	userID, _ := currentUserID(r)
 	ag, _ := s.userAgent(r.Context(), userID)
 	if ag == nil {
-		s.renderFragment(w, "wizard_error_fragment", wizardErrorData{Message: "Agent 翻译层未就绪，请先在设置页面配置模型。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "Agent 翻译层未就绪，请先在设置页面配置模型。"})
 		return
 	}
 	symbol := strings.ToUpper(r.PathValue("symbol"))
@@ -187,7 +189,7 @@ func (s *Server) handleBuilderTranslate(w http.ResponseWriter, r *http.Request) 
 	}
 	utterance := strings.TrimSpace(r.FormValue("utterance"))
 	if utterance == "" {
-		s.renderFragment(w, "wizard_error_fragment", wizardErrorData{Message: "交易计划描述不能为空。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "交易计划描述不能为空。"})
 		return
 	}
 
@@ -198,12 +200,9 @@ func (s *Server) handleBuilderTranslate(w http.ResponseWriter, r *http.Request) 
 		"（当前正在 %s 的可视化建策画板上操作，除非用户明确说了别的标的，否则这条规则默认就是针对 %s 的）%s",
 		symbol, symbol, utterance)
 
-	// i18n.DefaultLang (Chinese) for now, matching this app's current
-	// Chinese-only behavior exactly -- see render.go's msg template func doc
-	// comment for why, and the plan's Phase 4 for the per-request fix.
-	p, err := ag.Translate(r.Context(), contextualUtterance, nil, i18n.DefaultLang)
+	p, err := ag.Translate(r.Context(), contextualUtterance, nil, resolveLang(r))
 	if err != nil {
-		s.renderFragment(w, "wizard_error_fragment", wizardErrorData{Message: "翻译失败：" + err.Error()})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "翻译失败：" + err.Error()})
 		return
 	}
 	// 这里刻意不去掉注入的标的上下文前缀（跟早期版本不一样）：p.SourceUtterance 不只是
@@ -213,16 +212,12 @@ func (s *Server) handleBuilderTranslate(w http.ResponseWriter, r *http.Request) 
 	// 于是每一轮都重新追问一遍标的——真实用 DeepSeek 复现过这个循环。
 	// 代价是最终存库的 source_utterance 会带上这段注入文字，但这如实反映了送给模型的
 	// 完整输入，审计意义上不算坏事。
-	s.renderProposal(w, p, nil, symbol)
+	s.renderProposal(w, r, p, nil, symbol)
 }
 
 // describeConfig 优先用 Agent 生成复述；Agent 未就绪（没配 LLM key）时退回确定性
 // 兜底复述——可视化建策的配置本来就没有需要模型理解的歧义，兜底版本一样能用。
-func (s *Server) describeConfig(ctx context.Context, userID string, cfg types.StrategyConfig) string {
-	// i18n.DefaultLang (Chinese) for now, matching this app's current
-	// Chinese-only behavior exactly -- see render.go's msg template func doc
-	// comment for why, and the plan's Phase 4 for the per-request fix.
-	lang := i18n.DefaultLang
+func (s *Server) describeConfig(ctx context.Context, userID string, cfg types.StrategyConfig, lang i18n.Lang) string {
 	ag, _ := s.userAgent(ctx, userID)
 	if ag == nil {
 		return describePlain(lang, cfg)

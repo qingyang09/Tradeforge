@@ -1,10 +1,10 @@
 {{define "login_page"}}
 <!doctype html>
-<html lang="zh">
+<html lang="{{.Lang}}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>登录 · TradeForge</title>
+  <title>{{t "webui.auth.login.title_tag"}} · TradeForge</title>
   <link rel="manifest" href="/manifest.json">
   <meta name="theme-color" content="#0d1117">
   <script>
@@ -19,7 +19,11 @@
       background: #0d1117; color: #d1d4dc;
       display: flex; align-items: center; justify-content: center; min-height: 100vh;
     }
-    .card { background: #12161f; border: 1px solid #1e222d; border-radius: 8px; padding: 2rem 2.25rem; width: 22rem; max-width: 90vw; }
+    .card { background: #12161f; border: 1px solid #1e222d; border-radius: 8px; padding: 2rem 2.25rem; width: 22rem; max-width: 90vw; position: relative; }
+    .lang-switch { position: absolute; top: 1rem; right: 1.25rem; font-size: 0.8rem; color: #565d6b; }
+    .lang-switch a { color: #9aa0a8; text-decoration: none; }
+    .lang-switch a:hover { color: #fff; }
+    .lang-switch .active { color: #fff; font-weight: 600; }
     h1 { font-size: 1.2rem; margin: 0 0 1.25rem; color: #fff; }
     label { display: block; font-size: 0.82rem; color: #9aa0a8; margin-bottom: 0.3rem; }
     input {
@@ -38,16 +42,21 @@
 </head>
 <body>
   <div class="card">
-    <h1>TradeForge 登录</h1>
-    {{if .Error}}<p class="warn">{{.Error}}</p>{{end}}
+    <span class="lang-switch">
+      {{if eq .Lang "en"}}<span class="active">EN</span>{{else}}<a href="/lang/en">EN</a>{{end}}
+      /
+      {{if eq .Lang "zh"}}<span class="active">中文</span>{{else}}<a href="/lang/zh">中文</a>{{end}}
+    </span>
+    <h1>{{t "webui.auth.login.title"}}</h1>
+    {{if not .Error.IsZero}}<p class="warn">{{msg .Error}}</p>{{end}}
     <form method="post" action="/login">
-      <label for="email">邮箱</label>
+      <label for="email">{{t "webui.auth.field.email"}}</label>
       <input id="email" name="email" type="email" autofocus required>
-      <label for="password">密码</label>
+      <label for="password">{{t "webui.auth.field.password"}}</label>
       <input id="password" name="password" type="password" required>
-      <button type="submit">登录</button>
+      <button type="submit">{{t "webui.auth.login.submit"}}</button>
     </form>
-    <p class="alt">还没有账号？<a href="/signup">注册</a></p>
+    <p class="alt">{{t "webui.auth.login.no_account"}} <a href="/signup">{{t "webui.auth.login.signup_link"}}</a></p>
   </div>
 </body>
 </html>

@@ -35,7 +35,7 @@
 
 {{define "builder_view_page"}}
 <!doctype html>
-<html lang="zh">
+<html lang="{{.Lang}}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -69,6 +69,10 @@
     margin-left: auto; background: #2962ff; border: none; color: #fff; border-radius: 4px;
     padding: 0.4rem 1rem; font-size: 0.85rem; cursor: pointer; font-weight: 600;
   }
+  .topbar .lang-switch { font-size: 0.8rem; color: #565d6b; }
+  .topbar .lang-switch a { color: #9aa0a8; text-decoration: none; }
+  .topbar .lang-switch a:hover { color: #fff; }
+  .topbar .lang-switch .active { color: #fff; font-weight: 600; }
   /* 看盘/建策切换：同一个标的、同一张画板页里切两套完全不同的图表引擎——
      建策用的是下面这套能画策略预览线、能拖止损线的 lightweight-charts；
      看盘用回 TradingView 免费组件（画线工具、内置指标都在，但画不出策略预览线，
@@ -236,6 +240,11 @@
     </select>
     <input type="text" id="strategy-name" placeholder="策略名称" value="{{.Symbol}} 画板策略">
     <button class="primary" id="describe-btn">生成配置摘要</button>
+    <span class="lang-switch">
+      {{if eq .Lang "en"}}<span class="active">EN</span>{{else}}<a href="/lang/en">EN</a>{{end}}
+      /
+      {{if eq .Lang "zh"}}<span class="active">中文</span>{{else}}<a href="/lang/zh">中文</a>{{end}}
+    </span>
   </div>
 
   <div id="watch-layout">
