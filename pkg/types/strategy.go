@@ -254,7 +254,12 @@ type Decision struct {
 	// (degraded ones included), for explainability.
 	Signals []Signal `json:"signals"`
 	// Reason is a purely factual explanation of why it triggered or didn't.
-	Reason    string          `json:"reason"`
+	//
+	// A Message (not a string), same reasoning as Signal.Reason: the engine
+	// computes this headlessly and it's persisted (Postgres, Kafka) for
+	// display much later, possibly by a viewer with a different language
+	// preference than whatever was default at compute time.
+	Reason    Message         `json:"reason"`
 	Price     decimal.Decimal `json:"price"`
 	Timestamp time.Time       `json:"timestamp"`
 	// EvaluatedAt is the wall-clock time the engine actually finished computing,

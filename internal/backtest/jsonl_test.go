@@ -22,7 +22,7 @@ func TestWriteJSONLShapeMatchesPythonLoader(t *testing.T) {
 	}
 	decisions := []DecisionLine{{
 		Type: "decision", Index: 0, BarTime: meta.DataEnd, Direction: "LONG",
-		Score: 0.8, Triggered: true, Price: "100.5", Reason: "test",
+		Score: 0.8, Triggered: true, Price: "100.5", Reason: types.Message{Literal: "test"},
 		Signals: []types.Signal{{Module: "volume_breakout", Direction: types.DirectionLong}},
 	}}
 

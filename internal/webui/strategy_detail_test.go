@@ -207,7 +207,7 @@ func TestHandleStrategyDetailShowsDecisionSignalBreakdown(t *testing.T) {
 	store.decisions[id] = []types.Decision{
 		{
 			ID: "dec1", StrategyID: id, Symbol: "BTCUSDT", Direction: types.DirectionLong,
-			Score: 0.8, Triggered: true, Reason: "所有模块一致看多", Timestamp: time.Now(),
+			Score: 0.8, Triggered: true, Reason: types.Message{Literal: "所有模块一致看多"}, Timestamp: time.Now(),
 			Signals: []types.Signal{
 				{Module: "macd_rsi", Direction: types.DirectionLong, Confidence: 0.8, Reason: types.Message{Literal: "MACD 金叉"}},
 			},

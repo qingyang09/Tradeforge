@@ -12,6 +12,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
+	"tradeforge/internal/i18n"
 	"tradeforge/internal/marketdata/synth"
 	"tradeforge/internal/modules"
 	"tradeforge/pkg/types"
@@ -141,9 +142,14 @@ func TestAggregateAllBlockedByOpposingModule(t *testing.T) {
 	}
 	// NOTE: "相反" kept untranslated — it's the literal Chinese substring
 	// produced by aggregate.go's aggregateAll (see the NOTE there); the
-	// assertion has to match what production code actually emits.
-	if !strings.Contains(d.Reason, "相反") {
-		t.Errorf("Reason should explain the direction conflict, got: %s", d.Reason)
+	// assertion has to match what production code actually emits. The
+	// per-module blocker text is rendered at construction time in
+	// i18n.DefaultLang (Chinese) regardless of the outer key's own language
+	// (see aggregate.go's blockerLang comment), so LangZH is what's actually
+	// embedded here.
+	rendered := i18n.Render(i18n.LangZH, d.Reason)
+	if !strings.Contains(rendered, "相反") {
+		t.Errorf("Reason should explain the direction conflict, got: %s", rendered)
 	}
 }
 
@@ -463,7 +469,7 @@ func TestNonTriggeredDecisionsAreStillAudited(t *testing.T) {
 	if len(aud.decisions) != 1 {
 		t.Fatal("a non-triggered decision must still be recorded for audit")
 	}
-	if aud.decisions[0].Reason == "" {
+	if aud.decisions[0].Reason.IsZero() {
 		t.Error("a non-triggered decision needs its reason even more so")
 	}
 }

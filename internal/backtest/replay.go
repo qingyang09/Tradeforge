@@ -62,15 +62,22 @@ type Meta struct {
 // python/backtest/tradeforge_backtest/loaders.py (decision_from_iter parses
 // by these field names) — do not change it.
 type DecisionLine struct {
-	Type      string         `json:"type"`
-	Index     int            `json:"index"`
-	BarTime   time.Time      `json:"bar_time"`
-	Direction string         `json:"direction"`
-	Score     float64        `json:"score"`
-	Triggered bool           `json:"triggered"`
-	Price     string         `json:"price"`
-	Reason    string         `json:"reason"`
-	Signals   []types.Signal `json:"signals"`
+	Type      string    `json:"type"`
+	Index     int       `json:"index"`
+	BarTime   time.Time `json:"bar_time"`
+	Direction string    `json:"direction"`
+	Score     float64   `json:"score"`
+	Triggered bool      `json:"triggered"`
+	Price     string    `json:"price"`
+	// Reason is a types.Message (see pkg/types/i18n.go), marshaled as either
+	// a bare JSON string (a Literal-only Message) or {"key":...,"args":...}
+	// -- python/backtest's loaders.py reads this generically (`item.get
+	// ("reason", "")`, never interpreting its content) and passes it through
+	// as an opaque field, so this shape change doesn't require any Python
+	// logic changes, just tolerating a dict where it used to only see a
+	// string.
+	Reason  types.Message  `json:"reason"`
+	Signals []types.Signal `json:"signals"`
 }
 
 // Replay walks candle-by-candle over the trigger timeframe, returning the

@@ -10,7 +10,7 @@
     <td>{{.Direction}}</td>
     <td>{{printf "%.2f" .Score}}</td>
     <td>{{if .Triggered}}是{{else}}否{{end}}</td>
-    <td class="note">{{.Reason}}</td>
+    <td class="note">{{msg .Reason}}</td>
     <td>{{template "decision_signals_detail" .Signals}}</td>
   </tr>
   {{end}}

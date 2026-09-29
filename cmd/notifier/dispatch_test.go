@@ -198,7 +198,7 @@ func testDecision(strategyID string, triggered bool) types.Decision {
 	return types.Decision{
 		ID: idgen.NewUUID(), StrategyID: strategyID, Symbol: "BTCUSDT",
 		Direction: types.DirectionLong, Score: 0.8, Triggered: triggered,
-		Reason: "test reason", Price: decimal.NewFromInt(50000), Timestamp: time.Now(),
+		Reason: types.Message{Literal: "test reason"}, Price: decimal.NewFromInt(50000), Timestamp: time.Now(),
 	}
 }
 

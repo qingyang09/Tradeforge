@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/shopspring/decimal"
@@ -235,7 +234,7 @@ func TestIntegrationDecisionIsExplainable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.TrimSpace(d.Reason) == "" {
+	if d.Reason.IsZero() {
 		t.Error("a decision must carry a reason")
 	}
 	for _, s := range d.Signals {

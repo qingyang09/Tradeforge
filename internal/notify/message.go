@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"tradeforge/internal/i18n"
 	"tradeforge/pkg/types"
 )
 
@@ -59,12 +60,15 @@ type WebhookPayload struct {
 }
 
 // ToWebhookPayload packs a Message together with the Decision and Mode that
-// produced it into a webhook payload.
-func (m Message) ToWebhookPayload(d types.Decision, mode Mode) WebhookPayload {
+// produced it into a webhook payload. lang controls how the embedded Reason
+// text (a types.Message under the hood, see pkg/types/i18n.go) is rendered
+// -- the receiver gets plain text either way, same as Title/Body, since a
+// webhook payload has no way to carry a translation catalog of its own.
+func (m Message) ToWebhookPayload(d types.Decision, mode Mode, lang i18n.Lang) WebhookPayload {
 	return WebhookPayload{
 		Title: m.Title, Body: m.Body, Mode: mode, StrategyID: d.StrategyID, Symbol: d.Symbol,
 		Direction: string(d.Direction), Score: d.Score, Price: d.Price.String(),
-		Reason: d.Reason, Timestamp: d.Timestamp,
+		Reason: i18n.Render(lang, d.Reason), Timestamp: d.Timestamp,
 	}
 }
 
@@ -72,36 +76,46 @@ func (m Message) ToWebhookPayload(d types.Decision, mode Mode) WebhookPayload {
 // alert body — the sentence itself necessarily contains the word
 // "建议"/"advice" (as part of the negated phrase "不构成投资建议"/"does not
 // constitute investment advice"), and this is the one place that word is
-// allowed to appear. message_test.go's mechanical check strips this
-// sentence out of Body first, then checks the remainder for "建议"/"推荐"
-// ("recommend"/"suggest") — don't delete or rewrite this sentence just
-// because it would otherwise trip that check.
-const complianceDisclaimer = "此提醒只描述系统按你设定的规则计算出的结果，不构成投资建议。"
+// allowed to appear in either language. message_test.go's mechanical check
+// strips this sentence out of Body first, then checks the remainder for
+// "建议"/"推荐" ("recommend"/"suggest") — don't delete or rewrite this
+// sentence just because it would otherwise trip that check.
+func complianceDisclaimer(lang i18n.Lang) string {
+	return i18n.T(lang, "notify.compliance_disclaimer")
+}
 
 // BuildMessage formats a triggered decision into alert copy — a factual
-// description, with no investment-advice wording of any kind. sc only uses
-// its Name/Symbol; it doesn't expose the full strategy config (risk
-// parameters etc. don't need to leak to email/Telegram/webhook receivers).
-func BuildMessage(sc types.StrategyConfig, d types.Decision, mode Mode) Message {
-	modeLabel := "模拟盘预览"
+// description, with no investment-advice wording of any kind — in the
+// recipient's chosen language. sc only uses its Name/Symbol; it doesn't
+// expose the full strategy config (risk parameters etc. don't need to leak
+// to email/Telegram/webhook receivers).
+//
+// lang is the recipient's own stored language preference (cmd/notifier is a
+// headless background service with no per-request cookie to read, unlike
+// the webui), not a live UI toggle -- see the plan's per-user language
+// preference section.
+func BuildMessage(sc types.StrategyConfig, d types.Decision, mode Mode, lang i18n.Lang) Message {
+	modeLabel := i18n.T(lang, "notify.mode.preview")
 	if mode == ModeLive {
-		modeLabel = "实盘"
+		modeLabel = i18n.T(lang, "notify.mode.live")
 	}
-	title := fmt.Sprintf("[%s] %s 触发：%s %s", modeLabel, sc.Name, d.Symbol, directionLabel(d.Direction))
-	body := fmt.Sprintf(
-		"策略：%s\n标的：%s\n方向：%s\n强度：%.2f\n价格：%s\n原因：%s\n触发时间：%s\n\n%s",
-		sc.Name, d.Symbol, directionLabel(d.Direction), d.Score, d.Price.String(), d.Reason,
-		d.Timestamp.Format(time.RFC3339), complianceDisclaimer)
+	reason := i18n.Render(lang, d.Reason)
+	title := i18n.T(lang, "notify.title",
+		"mode_label", modeLabel, "strategy", sc.Name, "symbol", d.Symbol, "direction", directionLabel(lang, d.Direction))
+	body := i18n.T(lang, "notify.body",
+		"strategy", sc.Name, "symbol", d.Symbol, "direction", directionLabel(lang, d.Direction),
+		"score", fmt.Sprintf("%.2f", d.Score), "price", d.Price.String(), "reason", reason,
+		"timestamp", d.Timestamp.Format(time.RFC3339), "disclaimer", complianceDisclaimer(lang))
 	return Message{Title: title, Subject: title, Body: body}
 }
 
-func directionLabel(dir types.Direction) string {
+func directionLabel(lang i18n.Lang, dir types.Direction) string {
 	switch dir {
 	case types.DirectionLong:
-		return "做多"
+		return i18n.T(lang, "notify.direction.long")
 	case types.DirectionShort:
-		return "做空"
+		return i18n.T(lang, "notify.direction.short")
 	default:
-		return "中性"
+		return i18n.T(lang, "notify.direction.neutral")
 	}
 }

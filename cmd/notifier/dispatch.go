@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"tradeforge/internal/i18n"
 	"tradeforge/internal/messaging"
 	"tradeforge/internal/notify"
 	"tradeforge/internal/storage"
@@ -101,12 +102,16 @@ func handleDecision(
 		return
 	}
 
-	msg := notify.BuildMessage(sc, d, mode)
+	// i18n.DefaultLang (Chinese) for now -- this is the exact spot a future
+	// per-user language preference (see the plan) plugs in: look up
+	// sc.UserID's stored preferred_lang instead of hardcoding this.
+	lang := i18n.DefaultLang
+	msg := notify.BuildMessage(sc, d, mode, lang)
 	for _, ch := range channels {
 		if !ch.IsEnabled {
 			continue
 		}
-		dispatchToChannel(ctx, store, senders, ch, d, msg, mode, logger)
+		dispatchToChannel(ctx, store, senders, ch, d, msg, mode, lang, logger)
 	}
 }
 
@@ -138,7 +143,7 @@ func alertMode(state types.StrategyState) (mode notify.Mode, alert bool) {
 // delivered to again, avoiding a failed audit record on every future trigger.
 func dispatchToChannel(
 	ctx context.Context, store notifierStore, senders channelSenders,
-	ch storage.NotificationChannel, d types.Decision, msg notify.Message, mode notify.Mode, logger *slog.Logger,
+	ch storage.NotificationChannel, d types.Decision, msg notify.Message, mode notify.Mode, lang i18n.Lang, logger *slog.Logger,
 ) {
 	already, err := store.AlreadyDelivered(ctx, d.ID, ch.ID)
 	if err != nil {
@@ -150,7 +155,7 @@ func dispatchToChannel(
 		return // Idempotent: the Kafka consumer group may replay an already-processed decision, see the comment on migrations/010.
 	}
 
-	sendErr := senders.send(ctx, ch, msg, d, mode)
+	sendErr := senders.send(ctx, ch, msg, d, mode, lang)
 
 	status := "sent"
 	errMsg := ""

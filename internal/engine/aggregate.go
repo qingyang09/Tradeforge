@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"tradeforge/internal/i18n"
 	"tradeforge/pkg/types"
 )
 
@@ -14,7 +15,7 @@ import (
 // Both modes share the same safety bias: when in doubt, don't trigger.
 // Degraded signals are always treated as neutral — better to miss an
 // opportunity than to place an order on incomplete information.
-func aggregate(cfg types.StrategyConfig, signals []types.Signal) (types.Direction, float64, bool, string) {
+func aggregate(cfg types.StrategyConfig, signals []types.Signal) (types.Direction, float64, bool, types.Message) {
 	switch cfg.Combine {
 	case types.CombineAll:
 		return aggregateAll(signals)
@@ -24,9 +25,20 @@ func aggregate(cfg types.StrategyConfig, signals []types.Signal) (types.Directio
 		// Validate should already have rejected an illegal combine mode;
 		// reaching here means validation was bypassed somehow.
 		return types.DirectionNeutral, 0, false,
-			fmt.Sprintf("unknown combine mode %q, not triggering", cfg.Combine)
+			types.Msg("engine.decision.unknown_combine_mode", "mode", string(cfg.Combine))
 	}
 }
+
+// blockerLang is the language individual per-module blocker fragments are
+// rendered in before being joined into the outer Decision.Reason's "blockers"
+// arg. This is a real, documented limitation (see the plan's Class B design):
+// the outer sentence ("ALL requires every module to agree, but: {blockers}")
+// stays fully translatable, but the embedded per-module detail is frozen in
+// whatever language was in effect at compute time, same as every other
+// interim i18n.DefaultLang spot this session -- a genuinely fully bilingual
+// per-blocker breakdown would need Message to support a list of nested
+// Messages, which is more machinery than this call site currently justifies.
+const blockerLang = i18n.DefaultLang
 
 // aggregateAll requires every module to emit a non-neutral signal in the
 // same direction.
@@ -34,9 +46,9 @@ func aggregate(cfg types.StrategyConfig, signals []types.Signal) (types.Directio
 // Any module that's neutral, degraded, or pointing the opposite way blocks
 // the trigger outright — that's exactly what choosing ALL means to the
 // user: "only act when every condition is satisfied."
-func aggregateAll(signals []types.Signal) (types.Direction, float64, bool, string) {
+func aggregateAll(signals []types.Signal) (types.Direction, float64, bool, types.Message) {
 	if len(signals) == 0 {
-		return types.DirectionNeutral, 0, false, "no module signals"
+		return types.DirectionNeutral, 0, false, types.Msg("engine.decision.no_signals")
 	}
 
 	var blockers []string
@@ -46,16 +58,17 @@ func aggregateAll(signals []types.Signal) (types.Direction, float64, bool, strin
 	for _, s := range signals {
 		switch {
 		case s.Degraded:
-			blockers = append(blockers, fmt.Sprintf("%s is degraded (%s)", s.Module, s.Err))
+			blockers = append(blockers, i18n.T(blockerLang, "engine.decision.blocker.degraded", "module", s.Module, "err", s.Err))
 		case s.Direction == types.DirectionNeutral:
-			blockers = append(blockers, fmt.Sprintf("%s is neutral", s.Module))
+			blockers = append(blockers, i18n.T(blockerLang, "engine.decision.blocker.neutral", "module", s.Module))
 		case dir == types.DirectionNeutral:
 			dir = s.Direction
 		case s.Direction != dir:
-			// NOTE: kept in Chinese — engine_test.go asserts on the "相反"
-			// substring in this message (TestAggregateAllBlockedByOpposingModule).
-			blockers = append(blockers,
-				fmt.Sprintf("%s 方向为 %s，与其余模块的 %s 相反", s.Module, s.Direction, dir))
+			// NOTE: the Chinese catalog entry for this key is kept in Chinese
+			// and must keep containing "相反" -- engine_test.go asserts on
+			// that substring (TestAggregateAllBlockedByOpposingModule).
+			blockers = append(blockers, i18n.T(blockerLang, "engine.decision.blocker.opposing",
+				"module", s.Module, "direction", string(s.Direction), "majority", string(dir)))
 		}
 		sum += s.Confidence
 	}
@@ -64,12 +77,10 @@ func aggregateAll(signals []types.Signal) (types.Direction, float64, bool, strin
 
 	if len(blockers) > 0 {
 		return types.DirectionNeutral, score, false,
-			fmt.Sprintf("ALL combine requires all %d modules to agree, but: %s",
-				len(signals), strings.Join(blockers, "; "))
+			types.Msg("engine.decision.all_blocked", "count", len(signals), "blockers", strings.Join(blockers, "; "))
 	}
 	return dir, score, true,
-		fmt.Sprintf("ALL combine: all %d modules gave a %s signal, average confidence %.3f",
-			len(signals), dir, score)
+		types.Msg("engine.decision.all_triggered", "count", len(signals), "direction", string(dir), "score", fmt.Sprintf("%.3f", score))
 }
 
 // aggregateWeighted computes the weighted net directional strength.
@@ -79,7 +90,7 @@ func aggregateAll(signals []types.Signal) (types.Direction, float64, bool, strin
 // (including neutral and degraded ones), so "half the modules going silent"
 // genuinely drags the strength down, instead of letting the remaining
 // minority of modules push the score past the threshold on their own.
-func aggregateWeighted(cfg types.StrategyConfig, signals []types.Signal) (types.Direction, float64, bool, string) {
+func aggregateWeighted(cfg types.StrategyConfig, signals []types.Signal) (types.Direction, float64, bool, types.Message) {
 	weights := make(map[string]float64, len(cfg.Modules))
 	for _, mc := range cfg.Modules {
 		weights[mc.Module] = mc.Weight
@@ -103,7 +114,7 @@ func aggregateWeighted(cfg types.StrategyConfig, signals []types.Signal) (types.
 	}
 
 	if totalWeight <= 0 {
-		return types.DirectionNeutral, 0, false, "sum of all module weights is 0, cannot weight"
+		return types.DirectionNeutral, 0, false, types.Msg("engine.decision.zero_total_weight")
 	}
 
 	score := net / totalWeight
@@ -113,17 +124,18 @@ func aggregateWeighted(cfg types.StrategyConfig, signals []types.Signal) (types.
 		abs, dir = -score, types.DirectionShort
 	}
 
-	note := ""
+	degradedNote := ""
 	if len(degraded) > 0 {
 		sort.Strings(degraded)
-		note = fmt.Sprintf(" (%s degraded, counted as neutral in the denominator)", strings.Join(degraded, ", "))
+		degradedNote = i18n.T(blockerLang, "engine.decision.degraded_note", "modules", strings.Join(degraded, ", "))
 	}
 
 	if abs < cfg.Threshold {
 		return types.DirectionNeutral, score, false,
-			fmt.Sprintf("WEIGHTED combine: weighted net strength %.3f, below threshold %.3f%s", score, cfg.Threshold, note)
+			types.Msg("engine.decision.weighted_below_threshold",
+				"score", fmt.Sprintf("%.3f", score), "threshold", fmt.Sprintf("%.3f", cfg.Threshold), "note", degradedNote)
 	}
 	return dir, score, true,
-		fmt.Sprintf("WEIGHTED combine: weighted net strength %.3f (%s direction), meets threshold %.3f%s",
-			score, dir, cfg.Threshold, note)
+		types.Msg("engine.decision.weighted_triggered",
+			"score", fmt.Sprintf("%.3f", score), "direction", string(dir), "threshold", fmt.Sprintf("%.3f", cfg.Threshold), "note", degradedNote)
 }

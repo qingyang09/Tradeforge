@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"tradeforge/internal/i18n"
 	"tradeforge/internal/notify"
 	"tradeforge/internal/secretcrypto"
 	"tradeforge/internal/storage"
@@ -28,7 +29,7 @@ type channelSenders struct {
 	webpush  notify.WebPushSender
 }
 
-func (cs channelSenders) send(ctx context.Context, ch storage.NotificationChannel, msg notify.Message, d types.Decision, mode notify.Mode) error {
+func (cs channelSenders) send(ctx context.Context, ch storage.NotificationChannel, msg notify.Message, d types.Decision, mode notify.Mode, lang i18n.Lang) error {
 	plaintext, err := secretcrypto.Decrypt(cs.masterKey, ch.EncryptedConfig, ch.KeySalt, ch.KeyNonce)
 	if err != nil {
 		return fmt.Errorf("failed to decrypt channel config (does TF_MASTER_KEY match what it was saved with?): %w", err)
@@ -57,7 +58,7 @@ func (cs channelSenders) send(ctx context.Context, ch storage.NotificationChanne
 		if err := json.Unmarshal([]byte(plaintext), &c); err != nil {
 			return fmt.Errorf("failed to parse webhook channel config: %w", err)
 		}
-		return cs.webhook.SendWebhook(ctx, c.URL, c.Secret, msg.ToWebhookPayload(d, mode))
+		return cs.webhook.SendWebhook(ctx, c.URL, c.Secret, msg.ToWebhookPayload(d, mode, lang))
 	case "webpush":
 		var sub notify.PushSubscription
 		if err := json.Unmarshal([]byte(plaintext), &sub); err != nil {
