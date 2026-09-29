@@ -2,6 +2,7 @@ package webui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"tradeforge/internal/agent"
+	"tradeforge/internal/i18n"
 	"tradeforge/internal/marketdata/okx"
 	"tradeforge/internal/storage"
 	"tradeforge/pkg/idgen"
@@ -33,7 +35,7 @@ type batchStartData struct {
 func (s *Server) handleBatchScanStart(w http.ResponseWriter, r *http.Request) {
 	userID, _ := currentUserID(r)
 	ag, _ := s.userAgent(r.Context(), userID)
-	s.renderPage(w, r, "批量扫描建策", "batch_start_content", batchStartData{
+	s.renderPage(w, r, i18n.T(resolveLang(r), "webui.batch.start.title"), "batch_start_content", batchStartData{
 		AgentReady: ag != nil, DefaultN: defaultBatchScanCount, MaxN: maxBatchScanCount,
 	})
 }
@@ -45,6 +47,10 @@ type batchConfirmData struct {
 	State       string
 }
 
+// Reason is a plain string, not types.Message: it's already-rendered text by
+// the time it lands here (either prepareDraftConfig's error, itself built
+// from i18n.T against this request's language, or an i18n.T call right at
+// the assignment site below) -- there's no symbolic key left to carry.
 type batchResultRow struct {
 	Symbol     string
 	StrategyID string
@@ -54,7 +60,7 @@ type batchResultRow struct {
 
 type batchResultData struct {
 	Success    bool
-	Message    string
+	Message    types.Message
 	Created    int
 	SkippedCnt int
 	Rows       []batchResultRow
@@ -67,16 +73,17 @@ type batchResultData struct {
 func (s *Server) handleBatchScanTranslate(w http.ResponseWriter, r *http.Request) {
 	userID, _ := currentUserID(r)
 	ag, _ := s.userAgent(r.Context(), userID)
+	lang := resolveLang(r)
 	if ag == nil {
-		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "Agent 翻译层未就绪，请先在设置页面配置模型。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: i18n.T(lang, "webui.wizard.err.agent_not_ready")})
 		return
 	}
 	utterance := strings.TrimSpace(r.FormValue("utterance"))
 	if utterance == "" {
-		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "交易规则不能为空。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: i18n.T(lang, "webui.wizard.err.empty_utterance")})
 		return
 	}
-	n, err := parseBatchCount(r.FormValue("count"))
+	n, err := parseBatchCount(lang, r.FormValue("count"))
 	if err != nil {
 		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: err.Error()})
 		return
@@ -84,17 +91,17 @@ func (s *Server) handleBatchScanTranslate(w http.ResponseWriter, r *http.Request
 
 	symbols, err := s.scanTopSymbols(r.Context(), n)
 	if err != nil {
-		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "扫描市场标的失败：" + err.Error()})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: i18n.T(lang, "webui.batch.err.scan_failed", "err", err.Error())})
 		return
 	}
 	if len(symbols) == 0 {
-		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "没有扫描到任何标的，请稍后重试。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: i18n.T(lang, "webui.batch.err.scan_empty")})
 		return
 	}
 
-	p, err := ag.Translate(r.Context(), batchContextualUtterance(len(symbols), utterance), nil, resolveLang(r))
+	p, err := ag.Translate(r.Context(), batchContextualUtterance(len(symbols), utterance), nil, lang)
 	if err != nil {
-		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "翻译失败：" + err.Error()})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: i18n.T(lang, "webui.wizard.err.translate_failed", "err", err.Error())})
 		return
 	}
 	s.renderBatchProposal(w, r, p, nil, symbols)
@@ -115,18 +122,19 @@ func batchContextualUtterance(symbolCount int, utterance string) string {
 func (s *Server) handleBatchScanClarify(w http.ResponseWriter, r *http.Request) {
 	userID, _ := currentUserID(r)
 	ag, _ := s.userAgent(r.Context(), userID)
+	lang := resolveLang(r)
 	if ag == nil {
-		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "Agent 翻译层未就绪，请先在设置页面配置模型。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: i18n.T(lang, "webui.wizard.err.agent_not_ready")})
 		return
 	}
 	ws, err := decodeState(r.FormValue("state"))
 	if err != nil || ws.Proposal == nil || len(ws.BatchSymbols) == 0 {
-		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "会话已失效，请重新开始。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: i18n.T(lang, "webui.wizard.err.session_expired")})
 		return
 	}
 	answer := strings.TrimSpace(r.FormValue("answer"))
 	if answer == "" {
-		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "回答不能为空。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: i18n.T(lang, "webui.wizard.err.empty_answer")})
 		return
 	}
 
@@ -136,13 +144,13 @@ func (s *Server) handleBatchScanClarify(w http.ResponseWriter, r *http.Request) 
 
 	if len(newHistory)/2 >= maxClarificationRounds {
 		s.renderFragment(w, r, "wizard_error_fragment",
-			wizardErrorData{Message: "澄清轮次过多，请把规则描述得更完整一些后重试。"})
+			wizardErrorData{Message: i18n.T(lang, "webui.wizard.err.too_many_clarifications")})
 		return
 	}
 
-	p, err := ag.Translate(r.Context(), answer, newHistory, resolveLang(r))
+	p, err := ag.Translate(r.Context(), answer, newHistory, lang)
 	if err != nil {
-		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "翻译失败：" + err.Error()})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: i18n.T(lang, "webui.wizard.err.translate_failed", "err", err.Error())})
 		return
 	}
 	// 扫描出的标的列表在整个多轮会话里保持不变，不重新扫描一次——跟 ForceSymbol
@@ -172,15 +180,16 @@ func (s *Server) renderBatchProposal(w http.ResponseWriter, r *http.Request, p *
 // handleBulkDeleteStrategies 的隔离+tally 写法），落库之后的路径（回测/模拟盘/推进/
 // 手动解锁实盘）跟手动建的策略完全一样，不做任何特殊处理。
 func (s *Server) handleBatchScanConfirm(w http.ResponseWriter, r *http.Request) {
+	lang := resolveLang(r)
 	ws, err := decodeState(r.FormValue("state"))
 	if err != nil || ws.Proposal == nil || ws.Proposal.Config == nil || len(ws.BatchSymbols) == 0 {
-		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "会话已失效，请重新开始。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: i18n.T(lang, "webui.wizard.err.session_expired")})
 		return
 	}
 
 	if r.FormValue("decision") != "confirm" {
 		s.renderFragment(w, r, "batch_result_fragment",
-			batchResultData{Success: false, Message: "已取消，没有任何草稿被创建。"})
+			batchResultData{Success: false, Message: types.Msg("webui.batch.result.cancelled")})
 		return
 	}
 
@@ -196,13 +205,14 @@ func (s *Server) handleBatchScanConfirm(w http.ResponseWriter, r *http.Request) 
 		cfg.ID = idgen.NewUUID()
 		cfg.UserID = userID
 
-		prepared, err := s.prepareDraftConfig(cfg, ws.Proposal.SourceUtterance)
+		prepared, err := s.prepareDraftConfig(lang, cfg, ws.Proposal.SourceUtterance)
 		if err != nil {
 			rows = append(rows, batchResultRow{Symbol: symbol, Skipped: true, Reason: err.Error()})
 			continue
 		}
 		if err := s.store.SaveStrategy(ctx, prepared); err != nil {
-			rows = append(rows, batchResultRow{Symbol: symbol, Skipped: true, Reason: "写入数据库失败：" + err.Error()})
+			rows = append(rows, batchResultRow{Symbol: symbol, Skipped: true,
+				Reason: i18n.T(lang, "webui.wizard.result.save_failed", "err", err.Error())})
 			continue
 		}
 		if err := s.store.RecordTransition(ctx, storage.Transition{
@@ -223,20 +233,20 @@ func (s *Server) handleBatchScanConfirm(w http.ResponseWriter, r *http.Request) 
 	skipped := len(rows) - created
 	s.renderFragment(w, r, "batch_result_fragment", batchResultData{
 		Success: created > 0, Created: created, SkippedCnt: skipped, Rows: rows,
-		Message: fmt.Sprintf("成功创建 %d 份草稿，跳过 %d 个。", created, skipped),
+		Message: types.Msg("webui.batch.result.success", "created", created, "skipped", skipped),
 	})
 }
 
 // parseBatchCount 解析并夹逼用户填的扫描数量——非法输入直接报错，超出上限静默夹逼到
 // 上限（仿 okx 包 FetchCandles 对 limit 的处理方式），不是报错拒绝整个请求。
-func parseBatchCount(raw string) (int, error) {
+func parseBatchCount(lang i18n.Lang, raw string) (int, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return defaultBatchScanCount, nil
 	}
 	n, err := strconv.Atoi(raw)
 	if err != nil || n <= 0 {
-		return 0, fmt.Errorf("扫描数量必须是正整数")
+		return 0, errors.New(i18n.T(lang, "webui.batch.err.invalid_count"))
 	}
 	if n > maxBatchScanCount {
 		n = maxBatchScanCount

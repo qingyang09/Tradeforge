@@ -1,24 +1,22 @@
 {{define "batch_start_content"}}
-<h1>批量扫描建策</h1>
+<h1>{{t "webui.batch.start.title"}}</h1>
 <p class="note">
-  系统会按 24 小时成交量选出排名靠前的 N 个标的，把你描述的这条规则原样套用到每一个——
-  参数完全相同，只有标的不同。每个标的仍然要各自过回测、模拟盘，你手动解锁才会真正进入实盘；
-  已经在实盘状态的策略触发信号就会自动下单，这点跟单个建策没有任何区别。
+  {{t "webui.batch.start.intro1"}}
 </p>
 <p class="note">
-  只描述规则本身，不用提具体标的——标的由扫描结果决定，你在这里写的标的会被忽略。
+  {{t "webui.batch.start.intro2"}}
 </p>
 
 <div id="batch-step" class="card">
   {{if not .AgentReady}}
-    <p class="warn">Agent 翻译层未就绪（通常是没有配置 ANTHROPIC_API_KEY），批量扫描暂不可用。</p>
+    <p class="warn">{{t "webui.batch.start.agent_not_ready"}}</p>
   {{else}}
     <form hx-post="/wizard/batch/scan" hx-target="#batch-step" hx-swap="innerHTML">
-      <label for="count">扫描前多少个标的（按 24 小时成交量排名，最多 {{.MaxN}} 个）</label>
+      <label for="count">{{t "webui.batch.start.count_label" "max" .MaxN}}</label>
       <input type="number" id="count" name="count" min="1" max="{{.MaxN}}" value="{{.DefaultN}}">
-      <label for="utterance">交易规则</label>
-      <textarea id="utterance" name="utterance" placeholder="例如：1 小时线，成交量突破 2 倍均量且价格站上阻力位时做多，止损 2%，止盈 5%" required></textarea>
-      <div style="margin-top:0.75rem;"><button type="submit">扫描并翻译</button></div>
+      <label for="utterance">{{t "webui.wizard.field.utterance"}}</label>
+      <textarea id="utterance" name="utterance" placeholder="{{t "webui.batch.start.utterance_placeholder"}}" required></textarea>
+      <div style="margin-top:0.75rem;"><button type="submit">{{t "webui.batch.start.submit"}}</button></div>
     </form>
   {{end}}
 </div>

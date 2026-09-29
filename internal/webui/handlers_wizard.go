@@ -3,12 +3,12 @@ package webui
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"tradeforge/internal/agent"
+	"tradeforge/internal/i18n"
 	"tradeforge/internal/storage"
 	"tradeforge/internal/strategy"
 	"tradeforge/pkg/idgen"
@@ -26,7 +26,7 @@ type wizardStartData struct {
 func (s *Server) handleWizardStart(w http.ResponseWriter, r *http.Request) {
 	userID, _ := currentUserID(r)
 	ag, _ := s.userAgent(r.Context(), userID)
-	s.renderPage(w, r, "新建策略", "wizard_start_content", wizardStartData{AgentReady: ag != nil})
+	s.renderPage(w, r, i18n.T(resolveLang(r), "webui.wizard.start.title"), "wizard_start_content", wizardStartData{AgentReady: ag != nil})
 }
 
 type wizardClarifyData struct {
@@ -45,6 +45,13 @@ type wizardConfirmData struct {
 	State      string
 }
 
+// wizardErrorData.Message stays a plain string (not types.Message) rather
+// than the usual Class A/B split -- handlers_builder.go (the visual
+// chart-builder page, a different in-flight change) constructs this struct
+// with bare Chinese literals too, and changing the field's type would break
+// that file without touching it. i18n.T renders straight to a string at the
+// call site instead, matching its own doc comment's "one-off banner/error
+// string" case.
 type wizardErrorData struct {
 	Message string
 }
@@ -52,19 +59,20 @@ type wizardErrorData struct {
 func (s *Server) handleWizardTranslate(w http.ResponseWriter, r *http.Request) {
 	userID, _ := currentUserID(r)
 	ag, _ := s.userAgent(r.Context(), userID)
+	lang := resolveLang(r)
 	if ag == nil {
-		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "Agent 翻译层未就绪，请先在设置页面配置模型。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: i18n.T(lang, "webui.wizard.err.agent_not_ready")})
 		return
 	}
 	utterance := strings.TrimSpace(r.FormValue("utterance"))
 	if utterance == "" {
-		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "交易规则不能为空。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: i18n.T(lang, "webui.wizard.err.empty_utterance")})
 		return
 	}
 
-	p, err := ag.Translate(r.Context(), utterance, nil, resolveLang(r))
+	p, err := ag.Translate(r.Context(), utterance, nil, lang)
 	if err != nil {
-		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "翻译失败：" + err.Error()})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: i18n.T(lang, "webui.wizard.err.translate_failed", "err", err.Error())})
 		return
 	}
 	s.renderProposal(w, r, p, nil, "")
@@ -73,18 +81,19 @@ func (s *Server) handleWizardTranslate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleWizardClarify(w http.ResponseWriter, r *http.Request) {
 	userID, _ := currentUserID(r)
 	ag, _ := s.userAgent(r.Context(), userID)
+	lang := resolveLang(r)
 	if ag == nil {
-		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "Agent 翻译层未就绪，请先在设置页面配置模型。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: i18n.T(lang, "webui.wizard.err.agent_not_ready")})
 		return
 	}
 	ws, err := decodeState(r.FormValue("state"))
 	if err != nil || ws.Proposal == nil {
-		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "会话已失效，请重新开始。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: i18n.T(lang, "webui.wizard.err.session_expired")})
 		return
 	}
 	answer := strings.TrimSpace(r.FormValue("answer"))
 	if answer == "" {
-		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "回答不能为空。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: i18n.T(lang, "webui.wizard.err.empty_answer")})
 		return
 	}
 
@@ -96,13 +105,13 @@ func (s *Server) handleWizardClarify(w http.ResponseWriter, r *http.Request) {
 
 	if len(newHistory)/2 >= maxClarificationRounds {
 		s.renderFragment(w, r, "wizard_error_fragment",
-			wizardErrorData{Message: "澄清轮次过多，请把规则描述得更完整一些后重试。"})
+			wizardErrorData{Message: i18n.T(lang, "webui.wizard.err.too_many_clarifications")})
 		return
 	}
 
-	p, err := ag.Translate(r.Context(), answer, newHistory, resolveLang(r))
+	p, err := ag.Translate(r.Context(), answer, newHistory, lang)
 	if err != nil {
-		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "翻译失败：" + err.Error()})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: i18n.T(lang, "webui.wizard.err.translate_failed", "err", err.Error())})
 		return
 	}
 	s.renderProposal(w, r, p, newHistory, ws.ForceSymbol)
@@ -136,7 +145,7 @@ func (s *Server) renderProposal(w http.ResponseWriter, r *http.Request, p *agent
 
 type wizardResultData struct {
 	Success    bool
-	Message    string
+	Message    types.Message
 	StrategyID string
 }
 
@@ -146,22 +155,23 @@ type wizardResultData struct {
 // 模块注册表来校验的，导致这个本不需要 LLM 的保存步骤，被"Agent 是否就绪"卡住——
 // 可视化建策要求不依赖 LLM key 也能用，所以把这里改成直接用 s.registry 校验。
 func (s *Server) handleWizardConfirm(w http.ResponseWriter, r *http.Request) {
+	lang := resolveLang(r)
 	ws, err := decodeState(r.FormValue("state"))
 	if err != nil || ws.Proposal == nil {
-		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "会话已失效，请重新开始。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: i18n.T(lang, "webui.wizard.err.session_expired")})
 		return
 	}
 
 	if r.FormValue("decision") != "confirm" {
 		s.renderFragment(w, r, "wizard_result_fragment",
-			wizardResultData{Success: false, Message: "已取消，配置未写入系统。"})
+			wizardResultData{Success: false, Message: types.Msg("webui.wizard.result.cancelled")})
 		return
 	}
 
-	cfg, err := s.confirmProposal(ws.Proposal)
+	cfg, err := s.confirmProposal(lang, ws.Proposal)
 	if err != nil {
 		s.renderFragment(w, r, "wizard_result_fragment",
-			wizardResultData{Success: false, Message: "确认失败：" + err.Error()})
+			wizardResultData{Success: false, Message: types.Msg("webui.wizard.result.confirm_failed", "err", err.Error())})
 		return
 	}
 	cfg.ID = idgen.NewUUID()
@@ -170,7 +180,7 @@ func (s *Server) handleWizardConfirm(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if err := s.store.SaveStrategy(ctx, cfg); err != nil {
 		s.renderFragment(w, r, "wizard_result_fragment",
-			wizardResultData{Success: false, Message: "写入数据库失败：" + err.Error()})
+			wizardResultData{Success: false, Message: types.Msg("webui.wizard.result.save_failed", "err", err.Error())})
 		return
 	}
 	if err := s.store.RecordTransition(ctx, storage.Transition{
@@ -189,17 +199,17 @@ func (s *Server) handleWizardConfirm(w http.ResponseWriter, r *http.Request) {
 // confirmProposal 重新校验一份提案并把它标记为可入库的状态。逻辑照抄
 // agent.Confirm（internal/agent/agent.go），唯一区别是用 s.registry 而不是通过
 // *agent.Agent 拿校验用的模块注册表——这样这一步就不需要 LLM 参与。
-func (s *Server) confirmProposal(p *agent.Proposal) (types.StrategyConfig, error) {
+func (s *Server) confirmProposal(lang i18n.Lang, p *agent.Proposal) (types.StrategyConfig, error) {
 	if p == nil {
-		return types.StrategyConfig{}, errors.New("提案为空")
+		return types.StrategyConfig{}, errors.New(i18n.T(lang, "webui.wizard.err.proposal_empty"))
 	}
 	if p.NeedsClarification() {
-		return types.StrategyConfig{}, errors.New("该提案仍在等待用户澄清，不能直接确认")
+		return types.StrategyConfig{}, errors.New(i18n.T(lang, "webui.wizard.err.proposal_needs_clarification"))
 	}
 	if p.Config == nil {
-		return types.StrategyConfig{}, errors.New("提案中没有配置")
+		return types.StrategyConfig{}, errors.New(i18n.T(lang, "webui.wizard.err.proposal_missing_config"))
 	}
-	return s.prepareDraftConfig(*p.Config, p.SourceUtterance)
+	return s.prepareDraftConfig(lang, *p.Config, p.SourceUtterance)
 }
 
 // prepareDraftConfig 把一份配置整理成可以直接落库的 DRAFT 状态：重新校验、盖时间戳。
@@ -208,9 +218,9 @@ func (s *Server) confirmProposal(p *agent.Proposal) (types.StrategyConfig, error
 // 两份"校验+状态+时间戳"的代码。
 //
 // 隐藏字段哪怕被篡改，重新校验最多导致这里被拒绝，不会绕过 schema 或合规检查。
-func (s *Server) prepareDraftConfig(cfg types.StrategyConfig, sourceUtterance string) (types.StrategyConfig, error) {
+func (s *Server) prepareDraftConfig(lang i18n.Lang, cfg types.StrategyConfig, sourceUtterance string) (types.StrategyConfig, error) {
 	if _, err := strategy.Validate(cfg, s.registry); err != nil {
-		return types.StrategyConfig{}, fmt.Errorf("确认时校验未通过：%w", err)
+		return types.StrategyConfig{}, errors.New(i18n.T(lang, "webui.wizard.err.validation_failed", "err", err.Error()))
 	}
 	cfg.SourceUtterance = sourceUtterance
 	cfg.State = types.StateDraft
