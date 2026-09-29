@@ -307,16 +307,44 @@ func (s *Store) RecordDecision(ctx context.Context, d types.Decision) error {
 	if err != nil {
 		return fmt.Errorf("marshal signals: %w", err)
 	}
+	// reason is a plain text column, not jsonb (unlike signals/provenance/
+	// detail, which are whole JSON documents where types.Message's own
+	// MarshalJSON is invoked automatically as a nested field) -- it must be
+	// explicitly JSON-encoded here, or pgx has no encode plan for an
+	// arbitrary struct going into a text column. See decodeReasonColumn for
+	// the matching read-side decode, which also handles rows written before
+	// Decision.Reason became a types.Message (plain unquoted text, not JSON).
+	reason, err := json.Marshal(d.Reason)
+	if err != nil {
+		return fmt.Errorf("marshal decision reason: %w", err)
+	}
 	const q = `
 		INSERT INTO decisions (id, strategy_id, symbol, direction, score, triggered, reason, price, signals, bar_time, evaluated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`
 	_, err = s.pool.Exec(ctx, q,
 		d.ID, d.StrategyID, d.Symbol, string(d.Direction), d.Score, d.Triggered,
-		d.Reason, d.Price.String(), signals, d.Timestamp, d.EvaluatedAt)
+		string(reason), d.Price.String(), signals, d.Timestamp, d.EvaluatedAt)
 	if err != nil {
 		return fmt.Errorf("write decision audit: %w", err)
 	}
 	return nil
+}
+
+// decodeReasonColumn decodes the decisions.reason text column into a
+// types.Message. New rows hold JSON (either {"key":...,"args":...} or a
+// JSON-quoted legacy-literal string, per types.Message's own MarshalJSON);
+// rows written before Decision.Reason became a types.Message hold the plain
+// Chinese sentence directly, with no JSON quoting at all, so they fail to
+// parse as JSON -- in that case the raw text becomes the Message's Literal,
+// same as the legacy-string fallback types.Message.UnmarshalJSON already
+// provides for jsonb-embedded fields, just applied one level up here since
+// this column isn't itself a JSON document.
+func decodeReasonColumn(raw string) types.Message {
+	var m types.Message
+	if err := json.Unmarshal([]byte(raw), &m); err == nil {
+		return m
+	}
+	return types.Message{Literal: raw}
 }
 
 // ListDecisions reads a strategy's decision records in reverse
@@ -343,13 +371,14 @@ func (s *Store) ListDecisions(ctx context.Context, userID, strategyID string, li
 	var out []types.Decision
 	for rows.Next() {
 		var d types.Decision
-		var dir, price string
+		var dir, price, reason string
 		var signals []byte
 		if err := rows.Scan(&d.ID, &d.StrategyID, &d.Symbol, &dir, &d.Score, &d.Triggered,
-			&d.Reason, &price, &signals, &d.Timestamp, &d.EvaluatedAt); err != nil {
+			&reason, &price, &signals, &d.Timestamp, &d.EvaluatedAt); err != nil {
 			return nil, err
 		}
 		d.Direction = types.Direction(dir)
+		d.Reason = decodeReasonColumn(reason)
 		if d.Price, err = decimal.NewFromString(price); err != nil {
 			return nil, fmt.Errorf("parse decision price %q: %w", price, err)
 		}
