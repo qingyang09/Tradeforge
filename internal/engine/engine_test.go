@@ -36,8 +36,10 @@ type fakeModule struct {
 	panic bool
 }
 
-func (f *fakeModule) Name() string        { return f.name }
-func (f *fakeModule) Description() string { return "fake module for testing" }
+func (f *fakeModule) Name() string { return f.name }
+func (f *fakeModule) Description() types.Message {
+	return types.Message{Literal: "fake module for testing"}
+}
 func (f *fakeModule) RequiredParams() []types.ParamSpec {
 	return []types.ParamSpec{{Name: "k", Type: types.ParamInt, Default: 1, Min: types.F(1), Max: types.F(10)}}
 }
@@ -61,7 +63,7 @@ func (f *fakeModule) Evaluate(ctx context.Context, md types.MarketData, params m
 	}
 	return types.Signal{
 		Module: f.name, Symbol: md.Symbol, Direction: f.dir, Confidence: f.conf,
-		Timestamp: md.Time(), Price: decimal.NewFromInt(100), Reason: "fake module output",
+		Timestamp: md.Time(), Price: decimal.NewFromInt(100), Reason: types.Message{Literal: "fake module output"},
 	}, nil
 }
 
@@ -473,13 +475,16 @@ func TestNonTriggeredDecisionsAreStillAudited(t *testing.T) {
 // timeframe's market data to the right module.
 type tfEchoModule struct{ name string }
 
-func (f *tfEchoModule) Name() string                      { return f.name }
-func (f *tfEchoModule) Description() string               { return "echoes back the timeframe it received" }
+func (f *tfEchoModule) Name() string { return f.name }
+func (f *tfEchoModule) Description() types.Message {
+	return types.Message{Literal: "echoes back the timeframe it received"}
+}
 func (f *tfEchoModule) RequiredParams() []types.ParamSpec { return nil }
 func (f *tfEchoModule) Evaluate(ctx context.Context, md types.MarketData, params map[string]any) (types.Signal, error) {
 	return types.Signal{
 		Module: f.name, Symbol: md.Symbol, Direction: types.DirectionLong, Confidence: 0.9,
-		Timestamp: md.Time(), Price: decimal.NewFromInt(100), Reason: "timeframe seen: " + string(md.Timeframe),
+		Timestamp: md.Time(), Price: decimal.NewFromInt(100),
+		Reason: types.Message{Literal: "timeframe seen: " + string(md.Timeframe)},
 	}, nil
 }
 
@@ -501,11 +506,11 @@ func TestEvaluateRoutesEachModuleToItsOwnTimeframe(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	byName := signalsByModule(d.Signals)
-	if !strings.Contains(byName["slow"].Reason, "1h") {
-		t.Errorf("the slow module should see 1h market data, got Reason=%q", byName["slow"].Reason)
+	if !strings.Contains(byName["slow"].Reason.Literal, "1h") {
+		t.Errorf("the slow module should see 1h market data, got Reason=%q", byName["slow"].Reason.Literal)
 	}
-	if !strings.Contains(byName["fast"].Reason, "15m") {
-		t.Errorf("the fast module should follow the trigger timeframe and see 15m market data, got Reason=%q", byName["fast"].Reason)
+	if !strings.Contains(byName["fast"].Reason.Literal, "15m") {
+		t.Errorf("the fast module should follow the trigger timeframe and see 15m market data, got Reason=%q", byName["fast"].Reason.Literal)
 	}
 	if d.Timestamp != feeds[types.TF15m].Time() {
 		t.Errorf("Decision.Timestamp should come from the trigger timeframe's feed")

@@ -5,7 +5,6 @@ import (
 	"io"
 	"log/slog"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -101,7 +100,7 @@ func TestReplayTriggersAtDesignedPoint(t *testing.T) {
 		if s.Direction != types.DirectionLong {
 			t.Errorf("module %s Direction = %s, want LONG", s.Module, s.Direction)
 		}
-		if strings.TrimSpace(s.Reason) == "" {
+		if s.Reason.IsZero() {
 			t.Errorf("module %s has no explanation for why it triggered", s.Module)
 		}
 	}

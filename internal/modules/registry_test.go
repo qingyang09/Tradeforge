@@ -60,7 +60,7 @@ func TestEveryModuleHasUsableDefaults(t *testing.T) {
 				t.Fatal("module declares no parameters")
 			}
 			for _, s := range specs {
-				if s.Description == "" {
+				if s.Description.IsZero() {
 					t.Errorf("param %q has no description, the Agent can't understand its meaning from this", s.Name)
 				}
 				if !s.Required && s.Default == nil {

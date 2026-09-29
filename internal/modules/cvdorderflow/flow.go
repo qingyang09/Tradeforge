@@ -2,10 +2,10 @@ package cvdorderflow
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/shopspring/decimal"
 
+	"tradeforge/internal/i18n"
 	"tradeforge/pkg/types"
 )
 
@@ -17,6 +17,27 @@ type Delta struct {
 	// imbalance ratio in [-1, 1].
 	Total decimal.Decimal
 }
+
+// DataSourceError indicates a FlowProvider could not produce order-flow data
+// at all (as opposed to a normal "insufficient data" case, which the module
+// reports as a neutral Signal instead). Its Reason is a translatable
+// types.Message rather than a pre-rendered string, since flow.go runs
+// headlessly and has no idea what language whoever eventually sees this error
+// prefers -- see types.Message's doc comment.
+type DataSourceError struct {
+	reason types.Message
+}
+
+// Error implements the error interface, rendering in English for logs and Go
+// error-handling code. Callers that want a bilingual render should use Reason
+// directly instead (see internal/execution.BrokerConfigError for the same
+// convention).
+func (e *DataSourceError) Error() string {
+	return i18n.Render(i18n.LangEN, e.reason)
+}
+
+// Reason returns this error's translatable message.
+func (e *DataSourceError) Reason() types.Message { return e.reason }
 
 // FlowProvider abstracts the source of order-flow data.
 //
@@ -61,7 +82,7 @@ func (CandleFlowProvider) Deltas(_ context.Context, md types.MarketData) ([]Delt
 	// -Volume, which would fabricate a string of purely fictitious bearish
 	// imbalances — this must error rather than be computed as if valid.
 	if missing > 0 && missing == countWithVolume(md.Candles) {
-		return nil, fmt.Errorf("行情数据缺少主动买入量字段（%d 根 K 线），无法计算 CVD", missing)
+		return nil, &DataSourceError{reason: types.Msg("modules.cvd_orderflow.error.missing_taker_volume", "count", missing)}
 	}
 	return out, nil
 }

@@ -42,8 +42,8 @@ func New() *Module { return &Module{} }
 func (m *Module) Name() string { return ModuleName }
 
 // Description implements modules.SignalModule.
-func (m *Module) Description() string {
-	return "计算最新一根 K 线成交量相对近期均量的倍数，倍数超过阈值时输出信号，方向由 K 线涨跌或主动买卖量净差决定。"
+func (m *Module) Description() types.Message {
+	return types.Msg("modules.volume_breakout.description")
 }
 
 // RequiredParams implements modules.SignalModule.
@@ -52,22 +52,22 @@ func (m *Module) RequiredParams() []types.ParamSpec {
 		{
 			Name: "window", Type: types.ParamInt, Default: 20,
 			Min: types.F(5), Max: types.F(500),
-			Description: "均量窗口，用于计算基准成交量的 K 线根数（不含最新一根）。",
+			Description: types.Msg("modules.volume_breakout.param.window"),
 		},
 		{
 			Name: "multiplier", Type: types.ParamFloat, Default: 2.0,
 			Min: types.F(1.0), Max: types.F(20.0),
-			Description: "放量倍数阈值：最新成交量达到均量的该倍数才触发信号。",
+			Description: types.Msg("modules.volume_breakout.param.multiplier"),
 		},
 		{
 			Name: "direction_source", Type: types.ParamString, Default: SourceCandle,
 			Enum:        []string{SourceCandle, SourceTaker},
-			Description: "方向判定来源：candle 按 K 线收阳/收阴，taker 按主动买卖量净差。",
+			Description: types.Msg("modules.volume_breakout.param.direction_source"),
 		},
 		{
 			Name: "min_body_ratio", Type: types.ParamFloat, Default: 0.0,
 			Min: types.F(0), Max: types.F(1),
-			Description: "最小实体占比：K 线实体长度与全幅之比低于该值时视为方向不明，输出中性。0 表示不过滤。",
+			Description: types.Msg("modules.volume_breakout.param.min_body_ratio"),
 		},
 	}
 }
@@ -90,7 +90,8 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 	// Needs `window` candles as the baseline plus 1 current candle.
 	if len(md.Candles) < window+1 {
 		return types.NeutralSignal(ModuleName, md.Symbol,
-			fmt.Sprintf("K 线不足：需要至少 %d 根，实际 %d 根", window+1, len(md.Candles)),
+			types.Msg("modules.volume_breakout.reason.insufficient_candles",
+				"required", window+1, "actual", len(md.Candles)),
 			md.Time()), nil
 	}
 
@@ -115,17 +116,20 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 	// (a halt, a data gap). Any ratio computed against it is effectively
 	// infinite, so it can't be treated as a genuine volume surge.
 	if !avg.IsPositive() {
-		s := types.NeutralSignal(ModuleName, md.Symbol, "基准窗口内均量为零，无法计算放量倍数", cur.CloseTime)
+		s := types.NeutralSignal(ModuleName, md.Symbol,
+			types.Msg("modules.volume_breakout.reason.zero_average_volume"), cur.CloseTime)
 		s.Price, s.Raw = cur.Close, raw
 		return s, nil
 	}
 
 	ratio := cur.Volume.Div(avg)
 	raw["ratio"] = ratio.InexactFloat64()
+	ratioStr := fmt.Sprintf("%.2f", ratio.InexactFloat64())
 
 	if ratio.LessThan(decimal.NewFromFloat(multiplier)) {
 		s := types.NeutralSignal(ModuleName, md.Symbol,
-			fmt.Sprintf("成交量为均量的 %.2f 倍，未达到 %.2f 倍阈值", ratio.InexactFloat64(), multiplier),
+			types.Msg("modules.volume_breakout.reason.below_threshold",
+				"ratio", ratioStr, "multiplier", fmt.Sprintf("%.2f", multiplier)),
 			cur.CloseTime)
 		s.Price, s.Raw = cur.Close, raw
 		return s, nil
@@ -136,7 +140,8 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 	if minBody.IsPositive() {
 		rng := cur.Range()
 		if !rng.IsPositive() {
-			s := types.NeutralSignal(ModuleName, md.Symbol, "K 线全幅为零，无法判定方向", cur.CloseTime)
+			s := types.NeutralSignal(ModuleName, md.Symbol,
+				types.Msg("modules.volume_breakout.reason.zero_range"), cur.CloseTime)
 			s.Price, s.Raw = cur.Close, raw
 			return s, nil
 		}
@@ -144,19 +149,21 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 		raw["body_ratio"] = bodyRatio.InexactFloat64()
 		if bodyRatio.LessThan(minBody) {
 			s := types.NeutralSignal(ModuleName, md.Symbol,
-				fmt.Sprintf("放量 %.2f 倍，但实体占比 %.2f 低于 %.2f，方向不明",
-					ratio.InexactFloat64(), bodyRatio.InexactFloat64(), minBody.InexactFloat64()),
+				types.Msg("modules.volume_breakout.reason.ambiguous_body",
+					"ratio", ratioStr,
+					"body_ratio", fmt.Sprintf("%.2f", bodyRatio.InexactFloat64()),
+					"min_body_ratio", fmt.Sprintf("%.2f", minBody.InexactFloat64())),
 				cur.CloseTime)
 			s.Price, s.Raw = cur.Close, raw
 			return s, nil
 		}
 	}
 
-	dir, dirReason := direction(cur, source)
-	raw["direction_basis"] = dirReason
+	dir, basis, basisArgs := direction(cur, source)
+	raw["direction_basis"] = basis
 	if dir == types.DirectionNeutral {
 		s := types.NeutralSignal(ModuleName, md.Symbol,
-			fmt.Sprintf("放量 %.2f 倍，但%s，方向不明", ratio.InexactFloat64(), dirReason), cur.CloseTime)
+			directionUnclearMessage(basis, ratioStr), cur.CloseTime)
 		s.Price, s.Raw = cur.Close, raw
 		return s, nil
 	}
@@ -168,19 +175,34 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 		Confidence: confidence(ratio.InexactFloat64(), multiplier),
 		Timestamp:  cur.CloseTime,
 		Price:      cur.Close,
-		Reason: fmt.Sprintf("成交量为近 %d 根均量的 %.2f 倍（阈值 %.2f 倍），%s",
-			window, ratio.InexactFloat64(), multiplier, dirReason),
-		Raw: raw,
+		Reason:     triggeredMessage(basis, window, ratioStr, fmt.Sprintf("%.2f", multiplier), basisArgs),
+		Raw:        raw,
 	}, nil
 }
 
+// Direction-determination bases: machine-readable tags identifying which
+// concrete rule decided (or failed to decide) a signal's direction. Used
+// both as an audit-friendly Raw value and to select the right catalog key
+// for the final Reason message.
+const (
+	basisBullishCandle     = "bullish_candle"
+	basisBearishCandle     = "bearish_candle"
+	basisFlatClose         = "flat_close"
+	basisZeroVolume        = "zero_volume"
+	basisNoTakerData       = "no_taker_data"
+	basisTakerBuyDominant  = "taker_buy_dominant"
+	basisTakerSellDominant = "taker_sell_dominant"
+	basisTakerBalanced     = "taker_balanced"
+)
+
 // direction determines direction using the configured source, returning a
-// human-readable reason for the determination alongside it.
-func direction(c types.Candle, source string) (types.Direction, string) {
+// machine-readable basis tag (for Raw/audit and message selection) plus any
+// extra values (e.g. taker buy/sell volume) the chosen message needs.
+func direction(c types.Candle, source string) (types.Direction, string, map[string]any) {
 	switch source {
 	case SourceTaker:
 		if !c.Volume.IsPositive() {
-			return types.DirectionNeutral, "成交量为零"
+			return types.DirectionNeutral, basisZeroVolume, nil
 		}
 		buy, sell := c.TakerBuyVolume, c.TakerSellVolume()
 		// When the data source doesn't supply taker buy volume, TakerBuyVolume
@@ -188,26 +210,62 @@ func direction(c types.Candle, source string) (types.Direction, string) {
 		// fabricate a purely artificial short signal. This case must be
 		// detected explicitly.
 		if buy.IsZero() {
-			return types.DirectionNeutral, "数据源未提供主动买入量"
+			return types.DirectionNeutral, basisNoTakerData, nil
 		}
 		switch {
 		case buy.GreaterThan(sell):
-			return types.DirectionLong, fmt.Sprintf("主动买入量 %s 大于主动卖出量 %s", buy.String(), sell.String())
+			return types.DirectionLong, basisTakerBuyDominant, map[string]any{"buy": buy.String(), "sell": sell.String()}
 		case sell.GreaterThan(buy):
-			return types.DirectionShort, fmt.Sprintf("主动卖出量 %s 大于主动买入量 %s", sell.String(), buy.String())
+			return types.DirectionShort, basisTakerSellDominant, map[string]any{"buy": buy.String(), "sell": sell.String()}
 		default:
-			return types.DirectionNeutral, "主动买卖量相等"
+			return types.DirectionNeutral, basisTakerBalanced, nil
 		}
 
 	default: // SourceCandle
 		switch {
 		case c.Close.GreaterThan(c.Open):
-			return types.DirectionLong, "该 K 线收阳"
+			return types.DirectionLong, basisBullishCandle, nil
 		case c.Close.LessThan(c.Open):
-			return types.DirectionShort, "该 K 线收阴"
+			return types.DirectionShort, basisBearishCandle, nil
 		default:
-			return types.DirectionNeutral, "收盘价等于开盘价"
+			return types.DirectionNeutral, basisFlatClose, nil
 		}
+	}
+}
+
+// directionUnclearMessage builds the Reason for a volume surge whose
+// direction couldn't be determined, per the basis tag from direction().
+func directionUnclearMessage(basis, ratio string) types.Message {
+	switch basis {
+	case basisZeroVolume:
+		return types.Msg("modules.volume_breakout.reason.direction_unclear_zero_volume", "ratio", ratio)
+	case basisNoTakerData:
+		return types.Msg("modules.volume_breakout.reason.direction_unclear_no_taker_data", "ratio", ratio)
+	case basisTakerBalanced:
+		return types.Msg("modules.volume_breakout.reason.direction_unclear_taker_balanced", "ratio", ratio)
+	default: // basisFlatClose
+		return types.Msg("modules.volume_breakout.reason.direction_unclear_flat_close", "ratio", ratio)
+	}
+}
+
+// triggeredMessage builds the Reason for a confirmed directional signal, per
+// the basis tag from direction().
+func triggeredMessage(basis string, window int, ratio, multiplier string, basisArgs map[string]any) types.Message {
+	switch basis {
+	case basisBearishCandle:
+		return types.Msg("modules.volume_breakout.reason.triggered_bearish_candle",
+			"window", window, "ratio", ratio, "multiplier", multiplier)
+	case basisTakerBuyDominant:
+		return types.Msg("modules.volume_breakout.reason.triggered_taker_buy_dominant",
+			"window", window, "ratio", ratio, "multiplier", multiplier,
+			"buy", basisArgs["buy"], "sell", basisArgs["sell"])
+	case basisTakerSellDominant:
+		return types.Msg("modules.volume_breakout.reason.triggered_taker_sell_dominant",
+			"window", window, "ratio", ratio, "multiplier", multiplier,
+			"buy", basisArgs["buy"], "sell", basisArgs["sell"])
+	default: // basisBullishCandle
+		return types.Msg("modules.volume_breakout.reason.triggered_bullish_candle",
+			"window", window, "ratio", ratio, "multiplier", multiplier)
 	}
 }
 

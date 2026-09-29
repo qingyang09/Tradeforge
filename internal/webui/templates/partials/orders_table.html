@@ -39,7 +39,7 @@
         <td>{{.Module}}</td>
         <td>{{.Direction}}</td>
         <td>{{printf "%.2f" .Confidence}}</td>
-        <td class="note">{{.Reason}}{{if .Degraded}}（降级{{if .Err}}：{{.Err}}{{end}}）{{end}}</td>
+        <td class="note">{{msg .Reason}}{{if .Degraded}}（降级{{if .Err}}：{{.Err}}{{end}}）{{end}}</td>
         <td class="note">{{if $params}}{{range $k, $v := $params}}{{$k}}={{$v}} {{end}}{{else}}—{{end}}</td>
       </tr>
       {{end}}

@@ -239,7 +239,7 @@ func TestIntegrationDecisionIsExplainable(t *testing.T) {
 		t.Error("a decision must carry a reason")
 	}
 	for _, s := range d.Signals {
-		if strings.TrimSpace(s.Reason) == "" {
+		if s.Reason.IsZero() {
 			t.Errorf("module %s's signal has no explanation for why it triggered", s.Module)
 		}
 		if s.Timestamp.IsZero() {

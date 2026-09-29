@@ -8,9 +8,11 @@ func init() {
 	register(LangEN, map[string]string{
 		"modules.macdrsi.slow_period_too_small": "must be greater than fast_period ({fast_period})",
 		"modules.macdrsi.oversold_too_large":    "must be less than rsi_overbought ({rsi_overbought})",
+		"modules.unknown_module":                "unknown module {name}; the modules this platform currently provides are: {available}",
 	})
 	register(LangZH, map[string]string{
 		"modules.macdrsi.slow_period_too_small": "必须大于 fast_period（{fast_period}）",
 		"modules.macdrsi.oversold_too_large":    "必须小于 rsi_overbought（{rsi_overbought}）",
+		"modules.unknown_module":                "未知模块 {name}；平台当前提供的模块为：{available}",
 	})
 }

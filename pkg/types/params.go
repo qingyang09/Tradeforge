@@ -27,9 +27,14 @@ const (
 //   - the value constraints the Agent translation layer bakes into its generated JSON Schema
 //   - the parameter-editing widget in the UI
 type ParamSpec struct {
-	Name        string    `json:"name"`
-	Type        ParamType `json:"type"`
-	Description string    `json:"description"`
+	Name string    `json:"name"`
+	Type ParamType `json:"type"`
+	// Description feeds two different consumers that each need it in a
+	// possibly-different language: the webui's parameter-editing widget, and
+	// the JSON-Schema hint text sent to steer the LLM's own output. Both
+	// resolve it through internal/i18n.Render at the point they actually use
+	// it -- see internal/agent/schema.go and internal/webui/handlers_api.go.
+	Description Message `json:"description"`
 	// Default is the fallback value, required whenever Required is false.
 	Default any `json:"default,omitempty"`
 	// Required, when true, means the caller must supply this parameter explicitly.

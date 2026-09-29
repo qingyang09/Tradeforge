@@ -3,7 +3,6 @@ package cvdorderflow
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -161,8 +160,13 @@ func TestMissingTakerDataIsAnError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error when taker buy volume is missing")
 	}
-	if !strings.Contains(err.Error(), "主动买入量") {
-		t.Errorf("error message should explain that taker buy volume is missing, got: %v", err)
+	var dsErr *DataSourceError
+	if !errors.As(err, &dsErr) {
+		t.Fatalf("expected a *DataSourceError, got: %v (%T)", err, err)
+	}
+	const wantKey = "modules.cvd_orderflow.error.missing_taker_volume"
+	if dsErr.Reason().Key != wantKey {
+		t.Errorf("Reason().Key = %q, want %q", dsErr.Reason().Key, wantKey)
 	}
 }
 

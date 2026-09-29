@@ -42,7 +42,7 @@ func TestFakeoutResistanceProducesShort(t *testing.T) {
 	if sig.Confidence <= 0 || sig.Confidence > 1 {
 		t.Errorf("confidence %v is outside (0,1]", sig.Confidence)
 	}
-	if sig.Reason == "" {
+	if sig.Reason.IsZero() {
 		t.Error("Reason must not be empty")
 	}
 }

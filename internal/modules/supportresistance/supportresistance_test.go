@@ -34,7 +34,7 @@ func TestBreakoutAboveResistance(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if sig.Direction != types.DirectionLong {
-		t.Fatalf("Direction = %s, want LONG. Reason: %s, raw=%v", sig.Direction, sig.Reason, sig.Raw)
+		t.Fatalf("Direction = %s, want LONG. Reason: %s, raw=%v", sig.Direction, sig.Reason.Key, sig.Raw)
 	}
 	if got := sig.Raw["event"]; got != eventBreakout {
 		t.Errorf("event = %v, want %s", got, eventBreakout)
@@ -42,7 +42,7 @@ func TestBreakoutAboveResistance(t *testing.T) {
 	if sig.Confidence <= 0 || sig.Confidence > 1 {
 		t.Errorf("confidence %v is outside (0,1]", sig.Confidence)
 	}
-	if sig.Reason == "" {
+	if sig.Reason.IsZero() {
 		t.Error("Reason must not be empty; explainability requires every signal to state why it fired")
 	}
 	ws, ok := sig.Raw["window_start"].(string)
@@ -86,7 +86,7 @@ func TestBreakdownBelowSupport(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if sig.Direction != types.DirectionShort {
-		t.Fatalf("Direction = %s, want SHORT. Reason: %s, raw=%v", sig.Direction, sig.Reason, sig.Raw)
+		t.Fatalf("Direction = %s, want SHORT. Reason: %s, raw=%v", sig.Direction, sig.Reason.Key, sig.Raw)
 	}
 	if got := sig.Raw["event"]; got != eventBreakdown {
 		t.Errorf("event = %v, want %s", got, eventBreakdown)
@@ -107,7 +107,7 @@ func TestTestSupportProducesLowerConfidenceThanBreakout(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if sig.Raw["event"] != eventTestSupp {
-		t.Fatalf("event = %v, want %s (reason: %s)", sig.Raw["event"], eventTestSupp, sig.Reason)
+		t.Fatalf("event = %v, want %s (reason: %s)", sig.Raw["event"], eventTestSupp, sig.Reason.Key)
 	}
 	if sig.Direction != types.DirectionLong {
 		t.Errorf("Direction = %s, want LONG", sig.Direction)
@@ -137,7 +137,7 @@ func TestInsufficientDataReturnsNeutral(t *testing.T) {
 	if sig.Confidence != 0 {
 		t.Errorf("neutral signal confidence = %v, want 0", sig.Confidence)
 	}
-	if sig.Reason == "" {
+	if sig.Reason.IsZero() {
 		t.Error("a neutral signal must also state its reason")
 	}
 }

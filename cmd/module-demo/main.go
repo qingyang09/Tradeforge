@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"tradeforge/internal/i18n"
 	"tradeforge/internal/marketdata/synth"
 	"tradeforge/internal/modules"
 	"tradeforge/internal/modules/cvdorderflow"
@@ -41,7 +42,7 @@ func main() {
 
 	fmt.Println("Registered modules:")
 	for _, m := range reg.All() {
-		fmt.Printf("  - %-20s %s\n", m.Name(), m.Description())
+		fmt.Printf("  - %-20s %s\n", m.Name(), i18n.Render(i18n.LangEN, m.Description()))
 		for _, p := range m.RequiredParams() {
 			fmt.Printf("      %-22s %-7s default %-8v range %s\n",
 				p.Name, p.Type, p.Default, p.AllowedDesc())

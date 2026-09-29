@@ -65,7 +65,7 @@ func decision(cfg types.StrategyConfig, dir types.Direction, price string) types
 		Price: dec(price), Timestamp: base,
 		Signals: []types.Signal{{
 			Module: cfg.Modules[0].Module, Symbol: cfg.Symbol,
-			Direction: dir, Confidence: 0.8, Reason: "测试信号",
+			Direction: dir, Confidence: 0.8, Reason: types.Message{Literal: "测试信号"},
 		}},
 	}
 }

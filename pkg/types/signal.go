@@ -63,9 +63,17 @@ type Signal struct {
 	Timestamp time.Time `json:"timestamp"`
 	// Price is the reference price at signal time, usually the close of the last candle.
 	Price decimal.Decimal `json:"price"`
-	// Reason is a human-readable explanation for the trigger, used for explainability.
-	// It must only describe "what happened" — no investment-advice wording allowed.
-	Reason string `json:"reason"`
+	// Reason is a human-readable explanation for the trigger, used for
+	// explainability. It must only describe "what happened" — no
+	// investment-advice wording allowed.
+	//
+	// A Message (not a string): a module's Evaluate runs headlessly, with no
+	// idea what language whoever eventually views this signal prefers, and
+	// this value gets persisted (Kafka, and via Decision.Signals into
+	// Postgres) for potentially much later display — see the plan's Class B
+	// design for why that means "symbolic key + args, rendered at display
+	// time" rather than a final sentence baked in now.
+	Reason Message `json:"reason"`
 	// Raw holds intermediate values from the module's computation (e.g. support/resistance
 	// levels, volume multiple), used for audit and UI display.
 	Raw map[string]any `json:"raw,omitempty"`
@@ -78,7 +86,7 @@ type Signal struct {
 }
 
 // NeutralSignal builds a neutral signal for a module to return when data is insufficient.
-func NeutralSignal(module, symbol, reason string, ts time.Time) Signal {
+func NeutralSignal(module, symbol string, reason Message, ts time.Time) Signal {
 	return Signal{
 		Module:     module,
 		Symbol:     symbol,
@@ -92,7 +100,8 @@ func NeutralSignal(module, symbol, reason string, ts time.Time) Signal {
 // DegradedSignal builds a degraded signal for the combination engine to fill in
 // when a module times out or errors.
 func DegradedSignal(module, symbol string, err error, ts time.Time) Signal {
-	s := NeutralSignal(module, symbol, "module produced no signal; degraded to neutral", ts)
+	s := NeutralSignal(module, symbol,
+		MsgF("types.signal.degraded", "module produced no signal; degraded to neutral"), ts)
 	s.Degraded = true
 	if err != nil {
 		s.Err = err.Error()

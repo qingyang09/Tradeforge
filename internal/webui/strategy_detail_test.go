@@ -152,8 +152,8 @@ func TestHandleStrategyDetailShowsOrderProvenanceDetail(t *testing.T) {
 			Provenance: types.OrderProvenance{
 				DecisionID: "dec1", Combine: types.CombineAll, Score: 0.8,
 				Signals: []types.Signal{
-					{Module: "support_resistance", Direction: types.DirectionLong, Confidence: 0.9, Reason: "价格突破阻力位"},
-					{Module: "volume_breakout", Direction: types.DirectionLong, Confidence: 0.7, Reason: "成交量放大", Degraded: false},
+					{Module: "support_resistance", Direction: types.DirectionLong, Confidence: 0.9, Reason: types.Message{Literal: "价格突破阻力位"}},
+					{Module: "volume_breakout", Direction: types.DirectionLong, Confidence: 0.7, Reason: types.Message{Literal: "成交量放大"}, Degraded: false},
 				},
 				ModuleParams: map[string]map[string]any{
 					"support_resistance": {"lookback": 20, "tolerance": 0.01},
@@ -209,7 +209,7 @@ func TestHandleStrategyDetailShowsDecisionSignalBreakdown(t *testing.T) {
 			ID: "dec1", StrategyID: id, Symbol: "BTCUSDT", Direction: types.DirectionLong,
 			Score: 0.8, Triggered: true, Reason: "所有模块一致看多", Timestamp: time.Now(),
 			Signals: []types.Signal{
-				{Module: "macd_rsi", Direction: types.DirectionLong, Confidence: 0.8, Reason: "MACD 金叉"},
+				{Module: "macd_rsi", Direction: types.DirectionLong, Confidence: 0.8, Reason: types.Message{Literal: "MACD 金叉"}},
 			},
 		},
 	}

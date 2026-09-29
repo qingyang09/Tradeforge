@@ -31,7 +31,6 @@ package fakeout
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -58,14 +57,8 @@ func New() *Module { return &Module{} }
 func (m *Module) Name() string { return ModuleName }
 
 // Description implements modules.SignalModule.
-func (m *Module) Description() string {
-	return "检测盘整区间的假突破：先在最近的一段行情里识别出一个区间，把区间高点当" +
-		"'前高'、低点当'前低'，再看最近几根 K 线是否突破了区间高/低点后又很快收回——" +
-		"收回则判定为假突破。区间怎么定由 range_mode 决定：tight（默认）要求高低点" +
-		"幅度够紧凑，自动排除趋势行情，但跨度很长的盘整容易被这个固定容差提前截断；" +
-		"extreme 不判断紧凑度，直接取回看窗口内的最高/最低价，适合说不清该量化成" +
-		"多少根K线、但确实拖了很久的盘整。只关注一个离当前最近的区间，不产出大量" +
-		"细碎的关键位。"
+func (m *Module) Description() types.Message {
+	return types.Msg("modules.fakeout.description")
 }
 
 // RequiredParams implements modules.SignalModule.
@@ -73,47 +66,38 @@ func (m *Module) RequiredParams() []types.ParamSpec {
 	return []types.ParamSpec{
 		{
 			Name: "range_mode", Type: types.ParamString, Default: RangeModeTight,
-			Enum: []string{RangeModeTight, RangeModeExtreme},
-			Description: "tight：高低点幅度必须在 range_tightness 容差内才算盘整，自动排除" +
-				"趋势行情，但很长的盘整容易被固定容差提前截断；extreme：不判断紧凑度，" +
-				"直接取 range_lookback 整个回看窗口内的最高/最低价当前高/前低，适合跨度很长、" +
-				"说不清该量化成多少根K线的盘整，代价是趋势行情也会被老实报出区间高低点。",
+			Enum:        []string{RangeModeTight, RangeModeExtreme},
+			Description: types.Msg("modules.fakeout.param.range_mode"),
 		},
 		{
 			Name: "range_lookback", Type: types.ParamInt, Default: 60,
 			Min: types.F(10), Max: types.F(300),
-			Description: "向前搜索盘整区间的最大根数（不含用于扫描假突破的最近几根）。" +
-				"extreme 模式下这就是实际用来取最高/最低价的窗口大小，不会再收窄。",
+			Description: types.Msg("modules.fakeout.param.range_lookback"),
 		},
 		{
 			Name: "min_range_bars", Type: types.ParamInt, Default: 10,
 			Min: types.F(3), Max: types.F(200),
-			Description: "构成一次有效盘整区间最少需要多少根 K 线；不足这个数量不算盘整，" +
-				"不会产生可监控的区间高低点。",
+			Description: types.Msg("modules.fakeout.param.min_range_bars"),
 		},
 		{
 			Name: "range_tightness", Type: types.ParamFloat, Default: 0.03,
 			Min: types.F(0.002), Max: types.F(0.2),
-			Description: "判定'盘整'的松紧度：区间最高价与最低价之差相对区间中枢价格的比例，" +
-				"超过这个比例就不算横盘（说明还在趋势里），值越小要求盘整得越紧。" +
-				"range_mode 为 extreme 时这个参数不生效。",
+			Description: types.Msg("modules.fakeout.param.range_tightness"),
 		},
 		{
 			Name: "breakout_confirm", Type: types.ParamFloat, Default: 0.001,
 			Min: types.F(0), Max: types.F(0.05),
-			Description: "突破确认幅度：收盘价要越过区间高/低点这个比例才算真正突破，用于过滤刺破。",
+			Description: types.Msg("modules.fakeout.param.breakout_confirm"),
 		},
 		{
 			Name: "reversal_window", Type: types.ParamInt, Default: 5,
 			Min: types.F(1), Max: types.F(20),
-			Description: "假突破判定窗口：突破发生后最多几根 K 线内收回才算假突破，超过这个窗口" +
-				"再收回不算（此时更像是趋势延续后的正常回调，而不是这次突破本身失败了）。",
+			Description: types.Msg("modules.fakeout.param.reversal_window"),
 		},
 		{
 			Name: "reversal_confirm", Type: types.ParamFloat, Default: 0.001,
 			Min: types.F(0), Max: types.F(0.05),
-			Description: "收回确认幅度：最新收盘价要跌回/涨回区间高/低点这个比例以内才算确认收回，" +
-				"跟 breakout_confirm 是两个独立的阈值，分别控制突破和收回各自的确认严格度。",
+			Description: types.Msg("modules.fakeout.param.reversal_confirm"),
 		},
 	}
 }
@@ -150,7 +134,7 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 	reversalWindow := types.MustInt(p, "reversal_window")
 	reversalConfirm := decimal.NewFromFloat(types.MustFloat(p, "reversal_confirm"))
 
-	neutral := func(reason string, raw map[string]any) types.Signal {
+	neutral := func(reason types.Message, raw map[string]any) types.Signal {
 		s := types.NeutralSignal(ModuleName, md.Symbol, reason, md.Time())
 		if last, ok := md.Last(); ok {
 			s.Price = last.Close
@@ -164,14 +148,14 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 	// the current candle (used to determine whether it has already reversed back).
 	scanSize := reversalWindow + 1
 	if len(md.Candles) < minRangeBars+scanSize {
-		return neutral(fmt.Sprintf("K 线不足：需要至少 %d 根，实际 %d 根",
-			minRangeBars+scanSize, len(md.Candles)), notFound), nil
+		return neutral(types.Msg("modules.fakeout.reason.insufficient_bars",
+			"required", minRangeBars+scanSize, "actual", len(md.Candles)), notFound), nil
 	}
 
 	n := len(md.Candles)
 	cur := md.Candles[n-1]
 	if !cur.Close.IsPositive() {
-		return neutral("最新收盘价非正，数据异常", notFound), nil
+		return neutral(types.Msg("modules.fakeout.reason.invalid_close"), notFound), nil
 	}
 	// The candles within the scan window where a breakout might have happened (excluding the current candle).
 	scanCandles := md.Candles[n-scanSize : n-1]
@@ -201,7 +185,7 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 		for k, v := range windowStart {
 			raw[k] = v
 		}
-		return neutral("未在回看窗口内找到有效盘整区间（价格波动幅度或维持时间不满足要求）", raw), nil
+		return neutral(types.Msg("modules.fakeout.reason.no_range_found"), raw), nil
 	}
 
 	// Once a range is found, window_start is switched to point at that
@@ -250,7 +234,7 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 		for k, v := range rangeInfo {
 			raw[k] = v
 		}
-		return neutral("找到盘整区间，但最近未出现'突破后又收回'的假突破模式", raw), nil
+		return neutral(types.Msg("modules.fakeout.reason.no_fakeout_pattern"), raw), nil
 	}
 
 	raw := map[string]any{
@@ -390,15 +374,17 @@ func confidenceFor(bars, minBars int) float64 {
 	return c
 }
 
-func reasonFor(event string, levelPrice decimal.Decimal, rangeBars int, breakoutClose, reclaimClose decimal.Decimal) string {
+func reasonFor(event string, levelPrice decimal.Decimal, rangeBars int, breakoutClose, reclaimClose decimal.Decimal) types.Message {
 	switch event {
 	case eventFakeoutResistance:
-		return fmt.Sprintf("识别到 %d 根 K 线构成的盘整区间，其高点 %s 曾被收盘价 %s 突破，随后收回至 %s，判定为假突破",
-			rangeBars, levelPrice, breakoutClose, reclaimClose)
+		return types.Msg("modules.fakeout.reason.fakeout_resistance",
+			"bars", rangeBars, "level", levelPrice.String(),
+			"breakout_close", breakoutClose.String(), "reclaim_close", reclaimClose.String())
 	case eventFakeoutSupport:
-		return fmt.Sprintf("识别到 %d 根 K 线构成的盘整区间，其低点 %s 曾被收盘价 %s 跌破，随后收回至 %s，判定为假跌破",
-			rangeBars, levelPrice, breakoutClose, reclaimClose)
+		return types.Msg("modules.fakeout.reason.fakeout_support",
+			"bars", rangeBars, "level", levelPrice.String(),
+			"breakout_close", breakoutClose.String(), "reclaim_close", reclaimClose.String())
 	default:
-		return "无事件"
+		return types.Msg("modules.fakeout.reason.no_event")
 	}
 }

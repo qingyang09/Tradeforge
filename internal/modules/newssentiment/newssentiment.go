@@ -51,8 +51,8 @@ func (m *Module) Provider() SentimentProvider { return m.provider }
 func (m *Module) Name() string { return ModuleName }
 
 // Description implements modules.SignalModule.
-func (m *Module) Description() string {
-	return "对回看窗口内与该标的相关的新闻标题打分，按新近程度加权聚合成情绪得分，得分越过阈值时输出方向信号。"
+func (m *Module) Description() types.Message {
+	return types.Msg("modules.news_sentiment.description")
 }
 
 // RequiredParams implements modules.SignalModule.
@@ -61,17 +61,17 @@ func (m *Module) RequiredParams() []types.ParamSpec {
 		{
 			Name: "lookback_hours", Type: types.ParamInt, Default: 24,
 			Min: types.F(1), Max: types.F(168),
-			Description: "回看窗口（小时），只统计这段时间内发布、且与该标的相关的新闻。",
+			Description: types.Msg("modules.news_sentiment.param.lookback_hours"),
 		},
 		{
 			Name: "sentiment_threshold", Type: types.ParamFloat, Default: 0.3,
 			Min: types.F(0.05), Max: types.F(1.0),
-			Description: "加权情绪得分的触发阈值，得分绝对值超过该阈值才输出方向信号。",
+			Description: types.Msg("modules.news_sentiment.param.sentiment_threshold"),
 		},
 		{
 			Name: "min_news_count", Type: types.ParamInt, Default: 1,
 			Min: types.F(1), Max: types.F(50),
-			Description: "窗口内至少要有这么多条相关新闻才输出方向信号，不足则视为数据不足。",
+			Description: types.Msg("modules.news_sentiment.param.min_news_count"),
 		},
 	}
 }
@@ -95,14 +95,14 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 	if last, ok := md.Last(); ok {
 		price = last.Close
 	}
-	neutral := func(reason string) types.Signal {
+	neutral := func(reason types.Message) types.Signal {
 		s := types.NeutralSignal(ModuleName, md.Symbol, reason, now)
 		s.Price = price
 		return s
 	}
 
 	if now.IsZero() {
-		return neutral("没有行情数据，无法确定参考时间"), nil
+		return neutral(types.Msg("modules.news_sentiment.reason.no_market_data")), nil
 	}
 
 	window := time.Duration(lookbackHours) * time.Hour
@@ -140,7 +140,8 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 	}
 
 	if len(items) < minCount {
-		s := neutral(fmt.Sprintf("窗口内相关新闻 %d 条，未达到最少 %d 条的要求", len(items), minCount))
+		s := neutral(types.Msg("modules.news_sentiment.reason.insufficient_news",
+			"count", len(items), "min_count", minCount))
 		s.Raw = raw
 		return s, nil
 	}
@@ -172,8 +173,9 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 			Module: ModuleName, Symbol: md.Symbol, Direction: types.DirectionLong,
 			Confidence: confidence(weighted, threshold, len(items)),
 			Timestamp:  now, Price: price,
-			Reason: fmt.Sprintf("过去 %d 小时内 %d 条相关新闻，加权情绪得分 %.2f，超过 %.2f 的阈值",
-				lookbackHours, len(items), weighted, threshold),
+			Reason: types.Msg("modules.news_sentiment.reason.positive_threshold_exceeded",
+				"hours", lookbackHours, "count", len(items), "score", fmt.Sprintf("%.2f", weighted),
+				"threshold", fmt.Sprintf("%.2f", threshold)),
 			Raw: raw,
 		}, nil
 	case weighted <= -threshold:
@@ -181,14 +183,15 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 			Module: ModuleName, Symbol: md.Symbol, Direction: types.DirectionShort,
 			Confidence: confidence(-weighted, threshold, len(items)),
 			Timestamp:  now, Price: price,
-			Reason: fmt.Sprintf("过去 %d 小时内 %d 条相关新闻，加权情绪得分 %.2f，低于 -%.2f 的阈值",
-				lookbackHours, len(items), weighted, threshold),
+			Reason: types.Msg("modules.news_sentiment.reason.negative_threshold_exceeded",
+				"hours", lookbackHours, "count", len(items), "score", fmt.Sprintf("%.2f", weighted),
+				"threshold", fmt.Sprintf("%.2f", threshold)),
 			Raw: raw,
 		}, nil
 	}
 
-	s := neutral(fmt.Sprintf("窗口内 %d 条相关新闻，加权情绪得分 %.2f，未达到 %.2f 的阈值",
-		len(items), weighted, threshold))
+	s := neutral(types.Msg("modules.news_sentiment.reason.below_threshold",
+		"count", len(items), "score", fmt.Sprintf("%.2f", weighted), "threshold", fmt.Sprintf("%.2f", threshold)))
 	s.Raw = raw
 	return s, nil
 }

@@ -37,10 +37,8 @@ func New() *Module { return &Module{} }
 func (m *Module) Name() string { return ModuleName }
 
 // Description implements modules.SignalModule.
-func (m *Module) Description() string {
-	return "计算成交量分布重心（Point of Control）：把回看窗口内每根 K 线的成交量" +
-		"记到其典型价格（最高+最低+收盘取平均）所在的价格桶，成交量最大的桶即为 POC。" +
-		"只有 OHLCV 数据，是对真实逐笔成交量分布的粗粒度近似，不是精确值。"
+func (m *Module) Description() types.Message {
+	return types.Msg("modules.poc.description")
 }
 
 // RequiredParams implements modules.SignalModule.
@@ -49,19 +47,17 @@ func (m *Module) RequiredParams() []types.ParamSpec {
 		{
 			Name: "lookback", Type: types.ParamInt, Default: 100,
 			Min: types.F(20), Max: types.F(500),
-			Description: "回看窗口，参与成交量分布统计的 K 线根数。",
+			Description: types.Msg("modules.poc.param.lookback"),
 		},
 		{
 			Name: "bucket_count", Type: types.ParamInt, Default: 24,
 			Min: types.F(5), Max: types.F(100),
-			Description: "把回看窗口内的价格区间均分成多少个桶，桶越多价格分辨率越高，" +
-				"但每个桶落入的样本也越少。",
+			Description: types.Msg("modules.poc.param.bucket_count"),
 		},
 		{
 			Name: "proximity", Type: types.ParamFloat, Default: 0.003,
 			Min: types.F(0.0001), Max: types.F(0.05),
-			Description: "触及判定距离：收盘价与 POC 的相对距离在该比例以内视为触及，含义与 " +
-				"support_resistance 的同名参数一致。",
+			Description: types.Msg("modules.poc.param.proximity"),
 		},
 	}
 }
@@ -80,7 +76,7 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 	bucketCount := types.MustInt(p, "bucket_count")
 	proximity := decimal.NewFromFloat(types.MustFloat(p, "proximity"))
 
-	neutral := func(reason string) types.Signal {
+	neutral := func(reason types.Message) types.Signal {
 		s := types.NeutralSignal(ModuleName, md.Symbol, reason, md.Time())
 		if last, ok := md.Last(); ok {
 			s.Price = last.Close
@@ -90,7 +86,8 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 	}
 
 	if len(md.Candles) < 2 {
-		return neutral(fmt.Sprintf("K 线不足：至少需要 2 根，实际 %d 根", len(md.Candles))), nil
+		return neutral(types.Msg("modules.poc.reason.insufficient_data",
+			"required", 2, "actual", len(md.Candles))), nil
 	}
 
 	window := md.Candles
@@ -104,14 +101,14 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 
 	pocPrice, pocVolume, err := computePOC(window, bucketCount)
 	if err != nil {
-		s := neutral(err.Error())
+		s := neutral(types.Msg("modules.poc.reason.no_price_movement"))
 		s.Raw["window_start"] = windowStart
 		return s, nil
 	}
 
 	cur := window[len(window)-1]
 	if !cur.Close.IsPositive() {
-		return neutral("最新收盘价非正，数据异常"), nil
+		return neutral(types.Msg("modules.poc.reason.non_positive_close")), nil
 	}
 
 	raw := map[string]any{
@@ -125,7 +122,7 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 
 	dist := relDist(cur.Close, pocPrice)
 	if dist.GreaterThan(proximity) {
-		s := types.NeutralSignal(ModuleName, md.Symbol, "收盘价未触及成交量分布重心（POC）附近", cur.CloseTime)
+		s := types.NeutralSignal(ModuleName, md.Symbol, types.Msg("modules.poc.reason.not_near_poc"), cur.CloseTime)
 		s.Price = cur.Close
 		s.Raw = raw
 		return s, nil
@@ -147,8 +144,9 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 		Confidence: 0.4, // an approximation is inherently imprecise, so confidence is deliberately kept low, not on par with support_resistance's exact key levels
 		Timestamp:  cur.CloseTime,
 		Price:      cur.Close,
-		Reason: fmt.Sprintf("收盘价 %s 触及近似 POC %s（回看 %d 根 K 线，%d 个价格桶）",
-			cur.Close, pocPrice, len(window), bucketCount),
+		Reason: types.Msg("modules.poc.reason.touched_poc",
+			"close", cur.Close.String(), "poc", pocPrice.String(),
+			"bars", len(window), "buckets", bucketCount),
 		Raw: raw,
 	}, nil
 }
@@ -167,7 +165,10 @@ func computePOC(candles []types.Candle, bucketCount int) (decimal.Decimal, decim
 	}
 	span := high.Sub(low)
 	if !span.IsPositive() {
-		return decimal.Zero, decimal.Zero, fmt.Errorf("回看窗口内价格没有波动，无法计算成交量分布")
+		// Internal-only error: the caller (Evaluate) never surfaces this
+		// string, it maps the failure to the modules.poc.reason.no_price_movement
+		// Message itself. Kept in English since nothing user-facing reads it.
+		return decimal.Zero, decimal.Zero, fmt.Errorf("no price movement within lookback window, can't compute a volume distribution")
 	}
 
 	buckets := make([]decimal.Decimal, bucketCount)

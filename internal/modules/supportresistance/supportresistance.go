@@ -14,7 +14,6 @@ package supportresistance
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"time"
 
@@ -36,8 +35,8 @@ func New() *Module { return &Module{} }
 func (m *Module) Name() string { return ModuleName }
 
 // Description implements modules.SignalModule.
-func (m *Module) Description() string {
-	return "基于回看窗口内摆动高低点的聚类，计算支撑位与阻力位，并在价格突破、跌破或回踩关键位时输出信号。"
+func (m *Module) Description() types.Message {
+	return types.Msg("modules.support_resistance.description")
 }
 
 // RequiredParams implements modules.SignalModule.
@@ -46,32 +45,32 @@ func (m *Module) RequiredParams() []types.ParamSpec {
 		{
 			Name: "lookback", Type: types.ParamInt, Default: 200,
 			Min: types.F(30), Max: types.F(1000),
-			Description: "回看窗口，参与关键位计算的 K 线根数。",
+			Description: types.Msg("modules.support_resistance.param.lookback"),
 		},
 		{
 			Name: "pivot_strength", Type: types.ParamInt, Default: 2,
 			Min: types.F(1), Max: types.F(10),
-			Description: "摆动点强度：一根 K 线的高点要高于左右各 N 根才算摆动高点，低点同理。数值越大识别出的点越少但越显著。",
+			Description: types.Msg("modules.support_resistance.param.pivot_strength"),
 		},
 		{
 			Name: "tolerance", Type: types.ParamFloat, Default: 0.005,
 			Min: types.F(0.0001), Max: types.F(0.05),
-			Description: "聚类容差，以价格的相对比例计。0.005 表示相差 0.5% 以内的摆动点归为同一个关键位。",
+			Description: types.Msg("modules.support_resistance.param.tolerance"),
 		},
 		{
 			Name: "min_touches", Type: types.ParamInt, Default: 2,
 			Min: types.F(1), Max: types.F(10),
-			Description: "一个关键位至少要被触及的次数，低于该次数的位被丢弃。",
+			Description: types.Msg("modules.support_resistance.param.min_touches"),
 		},
 		{
 			Name: "breakout_confirm", Type: types.ParamFloat, Default: 0.001,
 			Min: types.F(0), Max: types.F(0.05),
-			Description: "突破确认幅度：收盘价要越过关键位这个比例才算突破，用于过滤刺破。",
+			Description: types.Msg("modules.support_resistance.param.breakout_confirm"),
 		},
 		{
 			Name: "proximity", Type: types.ParamFloat, Default: 0.003,
 			Min: types.F(0.0001), Max: types.F(0.05),
-			Description: "回踩判定距离：收盘价与关键位的相对距离在该比例以内视为触及测试。",
+			Description: types.Msg("modules.support_resistance.param.proximity"),
 		},
 	}
 }
@@ -118,7 +117,7 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 	// neutral is the single place that builds neutral signals, carrying the
 	// reference price along — even with no signal, downstream audit still
 	// needs to know "what was the price at the time".
-	neutral := func(reason string) types.Signal {
+	neutral := func(reason types.Message) types.Signal {
 		s := types.NeutralSignal(ModuleName, md.Symbol, reason, md.Time())
 		if last, ok := md.Last(); ok {
 			s.Price = last.Close
@@ -129,13 +128,14 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 	// Need at least: enough candles to identify a pivot (2*strength+1), plus the current and previous candle.
 	minCandles := 2*strength + 3
 	if len(md.Candles) < minCandles {
-		return neutral(fmt.Sprintf("K 线不足：需要至少 %d 根，实际 %d 根", minCandles, len(md.Candles))), nil
+		return neutral(types.Msg("modules.support_resistance.reason.insufficient_candles",
+			"min", minCandles, "actual", len(md.Candles))), nil
 	}
 
 	cur := md.Candles[len(md.Candles)-1]
 	prev := md.Candles[len(md.Candles)-2]
 	if !cur.Close.IsPositive() {
-		return neutral("最新收盘价非正，数据异常"), nil
+		return neutral(types.Msg("modules.support_resistance.reason.non_positive_close")), nil
 	}
 
 	// Key levels are computed from history only, excluding the latest candle.
@@ -153,7 +153,7 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 	levels := findLevelsFromPivots(highs, lows, tolerance, minTouches)
 
 	if len(levels) == 0 {
-		s := neutral(fmt.Sprintf("回看窗口内未找到触及次数达到 %d 次的关键位", minTouches))
+		s := neutral(types.Msg("modules.support_resistance.reason.no_level_min_touches", "min_touches", minTouches))
 		s.Raw = map[string]any{"window_start": windowStart}
 		return s, nil
 	}
@@ -232,7 +232,7 @@ func (m *Module) detect(
 	}
 
 	if best == nil {
-		s := types.NeutralSignal(ModuleName, symbol, "收盘价既未突破也未贴近任何关键位", cur.CloseTime)
+		s := types.NeutralSignal(ModuleName, symbol, types.Msg("modules.support_resistance.reason.no_level_nearby"), cur.CloseTime)
 		s.Price = cur.Close
 		s.Raw = raw
 		return s
@@ -280,22 +280,22 @@ func confidenceFor(event string, touches int) float64 {
 	return c
 }
 
-func reasonFor(event string, l Level, close decimal.Decimal) string {
+func reasonFor(event string, l Level, close decimal.Decimal) types.Message {
 	switch event {
 	case eventBreakout:
-		return fmt.Sprintf("收盘价 %s 向上突破阻力位 %s（该位被触及 %d 次）",
-			close.String(), l.Price.String(), l.Touches)
+		return types.Msg("modules.support_resistance.reason.breakout_above_resistance",
+			"close", close.String(), "level", l.Price.String(), "touches", l.Touches)
 	case eventBreakdown:
-		return fmt.Sprintf("收盘价 %s 向下跌破支撑位 %s（该位被触及 %d 次）",
-			close.String(), l.Price.String(), l.Touches)
+		return types.Msg("modules.support_resistance.reason.breakdown_below_support",
+			"close", close.String(), "level", l.Price.String(), "touches", l.Touches)
 	case eventTestSupp:
-		return fmt.Sprintf("收盘价 %s 回踩支撑位 %s（该位被触及 %d 次）",
-			close.String(), l.Price.String(), l.Touches)
+		return types.Msg("modules.support_resistance.reason.pullback_to_support",
+			"close", close.String(), "level", l.Price.String(), "touches", l.Touches)
 	case eventTestResist:
-		return fmt.Sprintf("收盘价 %s 上测阻力位 %s（该位被触及 %d 次）",
-			close.String(), l.Price.String(), l.Touches)
+		return types.Msg("modules.support_resistance.reason.test_resistance_from_below",
+			"close", close.String(), "level", l.Price.String(), "touches", l.Touches)
 	default:
-		return "无事件"
+		return types.Msg("modules.support_resistance.reason.no_event")
 	}
 }
 

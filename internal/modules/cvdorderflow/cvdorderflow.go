@@ -64,8 +64,8 @@ func (m *Module) Provider() FlowProvider { return m.provider }
 func (m *Module) Name() string { return ModuleName }
 
 // Description implements modules.SignalModule.
-func (m *Module) Description() string {
-	return "计算累计成交量差（CVD），检测窗口内的主动买卖失衡，以及价格与 CVD 之间的背离。"
+func (m *Module) Description() types.Message {
+	return types.Msg("modules.cvd_orderflow.description")
 }
 
 // RequiredParams implements modules.SignalModule.
@@ -74,27 +74,27 @@ func (m *Module) RequiredParams() []types.ParamSpec {
 		{
 			Name: "window", Type: types.ParamInt, Default: 50,
 			Min: types.F(10), Max: types.F(1000),
-			Description: "计算窗口，参与 CVD 与失衡度统计的 K 线根数。",
+			Description: types.Msg("modules.cvd_orderflow.param.window"),
 		},
 		{
 			Name: "imbalance_threshold", Type: types.ParamFloat, Default: 0.25,
 			Min: types.F(0.01), Max: types.F(1.0),
-			Description: "失衡阈值：窗口内净买卖差占总成交量的比例超过该值即触发。取值 0~1。",
+			Description: types.Msg("modules.cvd_orderflow.param.imbalance_threshold"),
 		},
 		{
 			Name: "divergence_threshold", Type: types.ParamFloat, Default: 0.15,
 			Min: types.F(0.01), Max: types.F(1.0),
-			Description: "背离阈值：CVD 变动的归一化幅度超过该值才认定为有效背离。",
+			Description: types.Msg("modules.cvd_orderflow.param.divergence_threshold"),
 		},
 		{
 			Name: "min_price_move", Type: types.ParamFloat, Default: 0.005,
 			Min: types.F(0), Max: types.F(0.5),
-			Description: "背离所需的最小价格变动比例，用于排除价格几乎没动时的伪背离。",
+			Description: types.Msg("modules.cvd_orderflow.param.min_price_move"),
 		},
 		{
 			Name: "detect", Type: types.ParamString, Default: DetectBoth,
 			Enum:        []string{DetectBoth, DetectImbalance, DetectDivergence},
-			Description: "检测模式：both 同时检测失衡与背离，或只检测其中一种。",
+			Description: types.Msg("modules.cvd_orderflow.param.detect"),
 		},
 	}
 }
@@ -117,7 +117,8 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 
 	if len(md.Candles) < window {
 		return types.NeutralSignal(ModuleName, md.Symbol,
-			fmt.Sprintf("K 线不足：需要至少 %d 根，实际 %d 根", window, len(md.Candles)),
+			types.Msg("modules.cvd_orderflow.reason.insufficient_candles",
+				"required", window, "actual", len(md.Candles)),
 			md.Time()), nil
 	}
 
@@ -158,7 +159,8 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 	}
 
 	if !totalVol.IsPositive() {
-		s := types.NeutralSignal(ModuleName, md.Symbol, "窗口内总成交量为零，无法计算 CVD 失衡度", cur.CloseTime)
+		s := types.NeutralSignal(ModuleName, md.Symbol,
+			types.Msg("modules.cvd_orderflow.reason.zero_volume"), cur.CloseTime)
 		s.Price, s.Raw = cur.Close, raw
 		return s, nil
 	}
@@ -190,8 +192,10 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 	}
 
 	s := types.NeutralSignal(ModuleName, md.Symbol,
-		fmt.Sprintf("窗口内 CVD 失衡度 %.3f，价格变动 %.3f%%，未触发失衡或背离条件",
-			imbalance, priceMove*100), cur.CloseTime)
+		types.Msg("modules.cvd_orderflow.reason.no_trigger",
+			"imbalance", fmt.Sprintf("%.3f", imbalance),
+			"price_move", fmt.Sprintf("%.3f", priceMove*100)),
+		cur.CloseTime)
 	s.Price, s.Raw = cur.Close, raw
 	return s, nil
 }
@@ -213,10 +217,10 @@ func (m *Module) checkDivergence(
 	// On divergence, follow CVD's direction: order flow is assumed to reflect
 	// real supply/demand ahead of price.
 	dir := types.DirectionShort
-	desc := "价格上涨但主动买盘净流出"
+	reasonKey := "modules.cvd_orderflow.reason.divergence_bearish"
 	if imbalance > 0 {
 		dir = types.DirectionLong
-		desc = "价格下跌但主动买盘净流入"
+		reasonKey = "modules.cvd_orderflow.reason.divergence_bullish"
 	}
 
 	raw["event"] = eventDivergence
@@ -227,8 +231,10 @@ func (m *Module) checkDivergence(
 		Confidence: divergenceConfidence(imbalance, divThreshold),
 		Timestamp:  cur.CloseTime,
 		Price:      cur.Close,
-		Reason: fmt.Sprintf("CVD 背离：%s（价格变动 %.2f%%，CVD 失衡度 %.3f，阈值 %.3f）",
-			desc, priceMove*100, imbalance, divThreshold),
+		Reason: types.Msg(reasonKey,
+			"price_move", fmt.Sprintf("%.2f", priceMove*100),
+			"imbalance", fmt.Sprintf("%.3f", imbalance),
+			"threshold", fmt.Sprintf("%.3f", divThreshold)),
 		Raw: raw,
 	}, true
 }
@@ -243,9 +249,9 @@ func (m *Module) checkImbalance(
 		return types.Signal{}, false
 	}
 
-	dir, desc := types.DirectionLong, "主动买入"
+	dir, reasonKey := types.DirectionLong, "modules.cvd_orderflow.reason.imbalance_buy"
 	if imbalance < 0 {
-		dir, desc = types.DirectionShort, "主动卖出"
+		dir, reasonKey = types.DirectionShort, "modules.cvd_orderflow.reason.imbalance_sell"
 	}
 
 	raw["event"] = eventImbalance
@@ -256,8 +262,9 @@ func (m *Module) checkImbalance(
 		Confidence: imbalanceConfidence(imbalance, threshold),
 		Timestamp:  cur.CloseTime,
 		Price:      cur.Close,
-		Reason: fmt.Sprintf("CVD 失衡：窗口内%s净占总成交量的 %.1f%%（阈值 %.1f%%）",
-			desc, abs(imbalance)*100, threshold*100),
+		Reason: types.Msg(reasonKey,
+			"pct", fmt.Sprintf("%.1f", abs(imbalance)*100),
+			"threshold_pct", fmt.Sprintf("%.1f", threshold*100)),
 		Raw: raw,
 	}, true
 }

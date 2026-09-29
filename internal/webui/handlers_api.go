@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"tradeforge/internal/i18n"
 	"tradeforge/internal/modules/fakeout"
 	"tradeforge/internal/modules/poc"
 	"tradeforge/internal/modules/supportresistance"
@@ -391,21 +392,49 @@ func timeframeList() string {
 	return strings.Join(parts, ", ")
 }
 
-// apiModule 是模块目录里的一条记录，直接把 ParamSpec 原样吐出去——它本来就是
-// "模块自解释"的唯一事实来源（pkg/types/params.go），前端用它生成通用参数表单，
-// 不需要为每个模块单独维护一份表单定义。
+// apiModule 是模块目录里的一条记录，字段跟 ParamSpec（pkg/types/params.go，
+// "模块自解释"的唯一事实来源）基本一一对应，前端用它生成通用参数表单，不需要为
+// 每个模块单独维护一份表单定义——区别只在于 Description 字段：ParamSpec.Description
+// 现在是可翻译的 types.Message，不能直接原样吐给前端（前端没有目录可查），这里在
+// 发送前先用 i18n.Render 渲染成一段现成文字。lang 目前固定用 i18n.DefaultLang
+// （中文），跟这一轮其它 webui 改动一样，是给 Phase 4 接上按请求语言渲染留的位置。
 type apiModule struct {
-	Name        string            `json:"name"`
-	Description string            `json:"description"`
-	Params      []types.ParamSpec `json:"params"`
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Params      []apiParamSpec `json:"params"`
+}
+
+// apiParamSpec mirrors types.ParamSpec for the JSON API, with Description
+// pre-rendered to a plain string (see apiModule's doc comment).
+type apiParamSpec struct {
+	Name        string          `json:"name"`
+	Type        types.ParamType `json:"type"`
+	Description string          `json:"description"`
+	Default     any             `json:"default,omitempty"`
+	Required    bool            `json:"required,omitempty"`
+	Min         *float64        `json:"min,omitempty"`
+	Max         *float64        `json:"max,omitempty"`
+	Enum        []string        `json:"enum,omitempty"`
 }
 
 // handleAPIModules 列出全部已注册模块，供可视化建策的"添加模块"选择器使用。
 func (s *Server) handleAPIModules(w http.ResponseWriter, r *http.Request) {
+	// i18n.DefaultLang (Chinese) for now, matching this app's current
+	// Chinese-only behavior exactly -- see render.go's msg template func doc
+	// comment for why, and the plan's Phase 4 for the per-request fix.
+	lang := i18n.DefaultLang
 	all := s.registry.All()
 	out := make([]apiModule, len(all))
 	for i, m := range all {
-		out[i] = apiModule{Name: m.Name(), Description: m.Description(), Params: m.RequiredParams()}
+		specs := m.RequiredParams()
+		params := make([]apiParamSpec, len(specs))
+		for j, p := range specs {
+			params[j] = apiParamSpec{
+				Name: p.Name, Type: p.Type, Description: i18n.Render(lang, p.Description),
+				Default: p.Default, Required: p.Required, Min: p.Min, Max: p.Max, Enum: p.Enum,
+			}
+		}
+		out[i] = apiModule{Name: m.Name(), Description: i18n.Render(lang, m.Description()), Params: params}
 	}
 	writeJSON(w, out)
 }

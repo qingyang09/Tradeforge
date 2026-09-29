@@ -242,7 +242,7 @@ func testDecision(cfg types.StrategyConfig, id string) types.Decision {
 		Price: decimal.NewFromInt(50000),
 		Signals: []types.Signal{{
 			Module: cfg.Modules[0].Module, Symbol: cfg.Symbol,
-			Direction: types.DirectionLong, Confidence: 0.8, Reason: "test signal",
+			Direction: types.DirectionLong, Confidence: 0.8, Reason: types.Message{Literal: "test signal"},
 		}},
 	}
 }

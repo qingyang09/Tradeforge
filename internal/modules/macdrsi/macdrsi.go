@@ -54,8 +54,8 @@ func New() *Module { return &Module{} }
 func (m *Module) Name() string { return ModuleName }
 
 // Description implements modules.SignalModule.
-func (m *Module) Description() string {
-	return "结合 MACD 金叉/死叉与 RSI 超买超卖反转，检测趋势动量的转向。"
+func (m *Module) Description() types.Message {
+	return types.Msg("modules.macd_rsi.description")
 }
 
 // RequiredParams implements modules.SignalModule.
@@ -64,38 +64,37 @@ func (m *Module) RequiredParams() []types.ParamSpec {
 		{
 			Name: "fast_period", Type: types.ParamInt, Default: 12,
 			Min: types.F(2), Max: types.F(100),
-			Description: "MACD 快线 EMA 周期。",
+			Description: types.Msg("modules.macd_rsi.param.fast_period"),
 		},
 		{
 			Name: "slow_period", Type: types.ParamInt, Default: 26,
 			Min: types.F(3), Max: types.F(200),
-			Description: "MACD 慢线 EMA 周期，必须大于 fast_period。",
+			Description: types.Msg("modules.macd_rsi.param.slow_period"),
 		},
 		{
 			Name: "signal_period", Type: types.ParamInt, Default: 9,
 			Min: types.F(2), Max: types.F(50),
-			Description: "MACD 信号线（DEA）的 EMA 周期。",
+			Description: types.Msg("modules.macd_rsi.param.signal_period"),
 		},
 		{
 			Name: "rsi_period", Type: types.ParamInt, Default: 14,
 			Min: types.F(2), Max: types.F(100),
-			Description: "RSI 计算周期（Wilder 平滑）。",
+			Description: types.Msg("modules.macd_rsi.param.rsi_period"),
 		},
 		{
 			Name: "rsi_overbought", Type: types.ParamFloat, Default: 70.0,
 			Min: types.F(50), Max: types.F(95),
-			Description: "RSI 超买阈值。",
+			Description: types.Msg("modules.macd_rsi.param.rsi_overbought"),
 		},
 		{
 			Name: "rsi_oversold", Type: types.ParamFloat, Default: 30.0,
 			Min: types.F(5), Max: types.F(50),
-			Description: "RSI 超卖阈值，必须小于 rsi_overbought。",
+			Description: types.Msg("modules.macd_rsi.param.rsi_oversold"),
 		},
 		{
 			Name: "mode", Type: types.ParamString, Default: ModeConfluence,
-			Enum: []string{ModeMACDCross, ModeRSIReversal, ModeConfluence},
-			Description: "macd_cross 只看 MACD 金叉死叉；rsi_reversal 只看 RSI 极值反转；" +
-				"confluence 要求金叉死叉发生时 RSI 未处于同向极值区间。",
+			Enum:        []string{ModeMACDCross, ModeRSIReversal, ModeConfluence},
+			Description: types.Msg("modules.macd_rsi.param.mode"),
 		},
 	}
 }
@@ -131,7 +130,7 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 		}
 	}
 
-	neutral := func(reason string) types.Signal {
+	neutral := func(reason types.Message) types.Signal {
 		s := types.NeutralSignal(ModuleName, md.Symbol, reason, md.Time())
 		if last, ok := md.Last(); ok {
 			s.Price = last.Close
@@ -147,7 +146,8 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 		minCandles = minForRSI
 	}
 	if len(md.Candles) < minCandles {
-		return neutral(fmt.Sprintf("K 线不足：需要至少 %d 根，实际 %d 根", minCandles, len(md.Candles))), nil
+		return neutral(types.Msg("modules.macd_rsi.reason.insufficient_candles",
+			"required", minCandles, "actual", len(md.Candles))), nil
 	}
 
 	closes := make([]decimal.Decimal, len(md.Candles))
@@ -196,8 +196,11 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 	dir, event, triggered := decideDirection(mode,
 		bullishCross, bearishCross, bullishReversal, bearishReversal, rsiNow, oversold, overbought)
 	if !triggered {
-		s := neutral(fmt.Sprintf("模式 %s 下本根未触发信号（MACD %.4f/%.4f，RSI %.1f）",
-			mode, macdNow.InexactFloat64(), sigNow.InexactFloat64(), rsiNow))
+		s := neutral(types.Msg("modules.macd_rsi.reason.no_trigger",
+			"mode", mode,
+			"macd", fmt.Sprintf("%.4f", macdNow.InexactFloat64()),
+			"macd_signal", fmt.Sprintf("%.4f", sigNow.InexactFloat64()),
+			"rsi", fmt.Sprintf("%.1f", rsiNow)))
 		s.Raw = raw
 		return s, nil
 	}
@@ -368,9 +371,9 @@ func crossSignal(
 	raw["event"] = event
 	gap := macd.Sub(signal).Abs()
 
-	verb := "金叉"
+	reasonKey := "modules.macd_rsi.reason.bullish_cross"
 	if dir == types.DirectionShort {
-		verb = "死叉"
+		reasonKey = "modules.macd_rsi.reason.bearish_cross"
 	}
 	return types.Signal{
 		Module:     ModuleName,
@@ -379,8 +382,10 @@ func crossSignal(
 		Confidence: crossConfidence(gap, norm),
 		Timestamp:  cur.CloseTime,
 		Price:      cur.Close,
-		Reason:     fmt.Sprintf("MACD %s：MACD 线 %.4f，信号线 %.4f", verb, macd.InexactFloat64(), signal.InexactFloat64()),
-		Raw:        raw,
+		Reason: types.Msg(reasonKey,
+			"macd", fmt.Sprintf("%.4f", macd.InexactFloat64()),
+			"signal", fmt.Sprintf("%.4f", signal.InexactFloat64())),
+		Raw: raw,
 	}
 }
 
@@ -403,9 +408,9 @@ func reversalSignal(
 	raw["event"] = event
 
 	var depth, span float64
-	verb := "超卖反弹"
+	reasonKey := "modules.macd_rsi.reason.bullish_reversal"
 	if dir == types.DirectionShort {
-		verb = "超买回落"
+		reasonKey = "modules.macd_rsi.reason.bearish_reversal"
 		depth = extremeRSI - overbought
 		span = 100 - overbought
 	} else {
@@ -424,7 +429,7 @@ func reversalSignal(
 		Confidence: conf,
 		Timestamp:  cur.CloseTime,
 		Price:      cur.Close,
-		Reason:     fmt.Sprintf("RSI %s：前值 %.1f 穿回阈值区间", verb, extremeRSI),
+		Reason:     types.Msg(reasonKey, "prev_rsi", fmt.Sprintf("%.1f", extremeRSI)),
 		Raw:        raw,
 	}
 }

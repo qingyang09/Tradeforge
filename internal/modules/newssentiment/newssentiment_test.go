@@ -96,7 +96,7 @@ func TestBullishNewsProducesLong(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if sig.Direction != types.DirectionLong {
-		t.Fatalf("Direction = %s, want LONG (reason: %s)", sig.Direction, sig.Reason)
+		t.Fatalf("Direction = %s, want LONG (reason: %s)", sig.Direction, sig.Reason.Key)
 	}
 	if sig.Raw["news_count"] != 2 {
 		t.Errorf("news_count = %v, want 2", sig.Raw["news_count"])
@@ -116,7 +116,7 @@ func TestBearishNewsProducesShort(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if sig.Direction != types.DirectionShort {
-		t.Fatalf("Direction = %s, want SHORT (reason: %s)", sig.Direction, sig.Reason)
+		t.Fatalf("Direction = %s, want SHORT (reason: %s)", sig.Direction, sig.Reason.Key)
 	}
 }
 

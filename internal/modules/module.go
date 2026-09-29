@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"sort"
 
+	"tradeforge/internal/i18n"
 	"tradeforge/pkg/types"
 )
 
@@ -28,7 +29,7 @@ type SignalModule interface {
 	// used for display and in the Agent's module-list prompt.
 	// It must describe only "what this module computes" — no recommendations
 	// about when to use it and no performance claims.
-	Description() string
+	Description() types.Message
 
 	// RequiredParams returns the module's parameter spec: name, type, default
 	// value, and valid range. It is the single source of truth for both
@@ -120,7 +121,12 @@ type UnknownModuleError struct {
 }
 
 func (e *UnknownModuleError) Error() string {
-	return fmt.Sprintf("未知模块 %q；平台当前提供的模块为：%v", e.Name, e.Available)
+	return i18n.Render(i18n.LangEN, e.Reason())
+}
+
+// Reason returns this error as a translatable types.Message.
+func (e *UnknownModuleError) Reason() types.Message {
+	return types.Msg("modules.unknown_module", "name", e.Name, "available", fmt.Sprint(e.Available))
 }
 
 // ResolveParams validates and normalizes a set of arguments against a module's

@@ -534,7 +534,7 @@ func TestRejectsInvalidModelOutput(t *testing.T) {
 				"modules": []any{map[string]any{"module": "macd_cross", "params": map[string]any{}}},
 				"risk":    risk("1000"),
 			}),
-			wantErr: "未知模块",
+			wantErr: "unknown module",
 		},
 		{
 			name: "invents a nonexistent parameter",
@@ -662,7 +662,7 @@ func TestRetryRegeneratesInsteadOfPatching(t *testing.T) {
 	// The retry request must tell the model the reason for the previous failure.
 	last := stub.Calls[1]
 	retryText := last[len(last)-1].Text
-	if !strings.Contains(retryText, "未知模块") {
+	if !strings.Contains(retryText, "unknown module") {
 		t.Errorf("retry prompt is missing the specific failure reason: %s", retryText)
 	}
 	if !strings.Contains(retryText, "重新生成") {

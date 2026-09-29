@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 
+	"tradeforge/internal/i18n"
 	"tradeforge/internal/modules"
 	"tradeforge/internal/strategy"
 	"tradeforge/pkg/types"
@@ -126,7 +127,12 @@ func moduleConfigSchema(m modules.SignalModule, timeframes []string) map[string]
 		"type":                 "object",
 		"additionalProperties": false,
 		"required":             []string{"module", "params"},
-		"description":          m.Description(),
+		// i18n.DefaultLang (Chinese) for now, matching this app's current
+		// Chinese-only behavior exactly -- making the LLM prompt itself
+		// language-aware (so it can respond in English) is a separate,
+		// larger piece of work tracked in the plan; this schema text isn't
+		// part of that yet.
+		"description": i18n.Render(i18n.DefaultLang, m.Description()),
 		"properties": map[string]any{
 			"module": map[string]any{"const": m.Name()},
 			"weight": map[string]any{
@@ -151,7 +157,7 @@ func moduleConfigSchema(m modules.SignalModule, timeframes []string) map[string]
 }
 
 func paramSchema(spec types.ParamSpec) map[string]any {
-	out := map[string]any{"description": spec.Description}
+	out := map[string]any{"description": i18n.Render(i18n.DefaultLang, spec.Description)}
 
 	switch spec.Type {
 	case types.ParamInt:
@@ -267,12 +273,16 @@ func ModuleCatalog(reg *modules.Registry) string {
 		b = append(b, fmt.Sprintf(format, args...)...)
 	}
 
+	// i18n.DefaultLang (Chinese) for now, matching this app's current
+	// Chinese-only behavior exactly -- see paramSchema's comment above; the
+	// prompt itself becoming language-aware is separate, tracked work.
+	lang := i18n.DefaultLang
 	appendf("平台当前提供以下 %d 个信号模块，你只能从中选择：\n", len(reg.All()))
 	for _, m := range reg.All() {
-		appendf("\n模块名：%s\n  作用：%s\n  参数：\n", m.Name(), m.Description())
+		appendf("\n模块名：%s\n  作用：%s\n  参数：\n", m.Name(), i18n.Render(lang, m.Description()))
 		for _, p := range m.RequiredParams() {
 			appendf("    - %s（%s，默认 %v，允许范围 %s）：%s\n",
-				p.Name, p.Type, p.Default, p.AllowedDesc(), p.Description)
+				p.Name, p.Type, p.Default, p.AllowedDesc(), i18n.Render(lang, p.Description))
 		}
 	}
 	return string(b)
