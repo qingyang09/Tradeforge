@@ -1,14 +1,14 @@
 {{define "start_paper_trading_form"}}
-<p class="note">进入模拟盘后，执行层（cmd/executor）下次启动会加载这个策略，用实时行情跑模拟交易，不下真实单。</p>
+<p class="note">{{t "webui.strategy_detail.start_paper.note"}}</p>
 <form class="inline" method="post" action="/strategies/{{.Strategy.ID}}/start-paper-trading">
   <div>
-    <label for="pt_actor_id">操作者标识</label>
+    <label for="pt_actor_id">{{t "webui.strategy_detail.form.actor_id_label"}}</label>
     <input id="pt_actor_id" name="actor_id" required>
   </div>
   <div>
-    <label for="pt_reason">理由</label>
+    <label for="pt_reason">{{t "webui.strategy_detail.form.reason_label"}}</label>
     <input id="pt_reason" name="reason" required style="min-width:16rem;">
   </div>
-  <button type="submit">进入模拟盘</button>
+  <button type="submit">{{t "webui.strategy_detail.start_paper.heading"}}</button>
 </form>
 {{end}}

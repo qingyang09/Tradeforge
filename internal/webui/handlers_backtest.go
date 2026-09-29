@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"tradeforge/internal/backtest"
+	"tradeforge/internal/i18n"
 	"tradeforge/internal/marketdata"
 	"tradeforge/internal/storage"
 	"tradeforge/pkg/types"
@@ -121,7 +122,7 @@ func (s *Server) handleRunBacktest(w http.ResponseWriter, r *http.Request) {
 	sc, err := s.store.GetStrategy(ctx, userID, id)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
-			http.Error(w, "策略不存在", http.StatusNotFound)
+			http.Error(w, i18n.T(resolveLang(r), "webui.strategy_detail.not_found"), http.StatusNotFound)
 			return
 		}
 		s.serverError(w, err)
@@ -146,11 +147,11 @@ func (s *Server) handleRunBacktest(w http.ResponseWriter, r *http.Request) {
 	s.renderPage(w, r, data.Strategy.Name, "strategy_detail_content", data)
 }
 
-func (s *Server) doRunBacktest(ctx context.Context, sc types.StrategyConfig, lookback int) (banner string, isErr bool) {
+func (s *Server) doRunBacktest(ctx context.Context, sc types.StrategyConfig, lookback int) (banner types.Message, isErr bool) {
 	md := types.MarketData{Symbol: sc.Symbol, Timeframe: sc.Timeframe}
 	candles, err := s.fetchCandleHistory(ctx, sc.Symbol, sc.Timeframe, lookback)
 	if err != nil {
-		return "拉取历史行情失败：" + err.Error(), true
+		return types.Msg("webui.strategy_detail.banner.fetch_candles_failed", "err", err.Error()), true
 	}
 	md.Candles = candles
 
@@ -161,51 +162,51 @@ func (s *Server) doRunBacktest(ctx context.Context, sc types.StrategyConfig, loo
 		}
 		ctxCandles, err := s.fetchCandleHistory(ctx, sc.Symbol, tf, lookback)
 		if err != nil {
-			return "拉取历史行情失败：" + err.Error(), true
+			return types.Msg("webui.strategy_detail.banner.fetch_candles_failed", "err", err.Error()), true
 		}
 		contextFeeds[tf] = types.MarketData{Symbol: sc.Symbol, Timeframe: tf, Candles: ctxCandles}
 	}
 
 	meta, decisions, err := backtest.Replay(ctx, sc, md, contextFeeds, backtest.DefaultWindow, s.logger)
 	if err != nil {
-		return "信号重放失败：" + err.Error(), true
+		return types.Msg("webui.strategy_detail.banner.replay_failed", "err", err.Error()), true
 	}
 
 	dir, err := os.MkdirTemp("", "tf-run-backtest-*")
 	if err != nil {
-		return "创建临时目录失败：" + err.Error(), true
+		return types.Msg("webui.strategy_detail.banner.tmpdir_failed", "err", err.Error()), true
 	}
 	defer os.RemoveAll(dir)
 
 	stratPath := filepath.Join(dir, "strategy.json")
 	stratBlob, err := json.Marshal(sc)
 	if err != nil {
-		return "序列化策略配置失败：" + err.Error(), true
+		return types.Msg("webui.strategy_detail.banner.marshal_strategy_failed", "err", err.Error()), true
 	}
 	if err := os.WriteFile(stratPath, stratBlob, 0o600); err != nil {
-		return "写入策略配置失败：" + err.Error(), true
+		return types.Msg("webui.strategy_detail.banner.write_strategy_failed", "err", err.Error()), true
 	}
 
 	candlesPath := filepath.Join(dir, "candles.csv")
 	candlesFile, err := os.Create(candlesPath)
 	if err != nil {
-		return "创建K线文件失败：" + err.Error(), true
+		return types.Msg("webui.strategy_detail.banner.create_candles_file_failed", "err", err.Error()), true
 	}
 	writeErr := marketdata.WriteCSV(candlesFile, md)
 	candlesFile.Close()
 	if writeErr != nil {
-		return "写入K线数据失败：" + writeErr.Error(), true
+		return types.Msg("webui.strategy_detail.banner.write_candles_failed", "err", writeErr.Error()), true
 	}
 
 	decisionsPath := filepath.Join(dir, "decisions.jsonl")
 	decisionsFile, err := os.Create(decisionsPath)
 	if err != nil {
-		return "创建决策文件失败：" + err.Error(), true
+		return types.Msg("webui.strategy_detail.banner.create_decisions_file_failed", "err", err.Error()), true
 	}
 	writeErr = backtest.WriteJSONL(decisionsFile, meta, decisions)
 	decisionsFile.Close()
 	if writeErr != nil {
-		return "写入决策数据失败：" + writeErr.Error(), true
+		return types.Msg("webui.strategy_detail.banner.write_decisions_failed", "err", writeErr.Error()), true
 	}
 
 	pyCtx, cancel := context.WithTimeout(ctx, s.backtestCfg.Timeout)
@@ -221,7 +222,7 @@ func (s *Server) doRunBacktest(ctx context.Context, sc types.StrategyConfig, loo
 		if msg == "" {
 			msg = err.Error()
 		}
-		return fmt.Sprintf("回测撮合引擎运行失败：%s", msg), true
+		return types.Msg("webui.strategy_detail.banner.python_engine_failed", "msg", msg), true
 	}
 
 	tradeCount := 0
@@ -230,11 +231,8 @@ func (s *Server) doRunBacktest(ctx context.Context, sc types.StrategyConfig, loo
 			tradeCount++
 		}
 	}
-	return fmt.Sprintf(
-		"回测已完成：拉取了 %d 根 %s 周期真实历史K线，重放出 %d 次触发信号，"+
-			"完整撮合结果见下方。",
-		len(candles), sc.Timeframe, tradeCount,
-	), false
+	return types.Msg("webui.strategy_detail.banner.run_backtest_success",
+		"count", len(candles), "timeframe", sc.Timeframe, "triggers", tradeCount), false
 }
 
 // runPythonSubprocess 是 Server.runPython 的默认实现，真的拉起一个 python 子进程。

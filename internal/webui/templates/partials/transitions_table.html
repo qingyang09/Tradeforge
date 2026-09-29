@@ -1,13 +1,17 @@
 {{define "transitions_table"}}
 {{if not .}}
-  <p class="note">暂无流转记录。</p>
+  <p class="note">{{t "webui.strategy_detail.transitions_table.empty"}}</p>
 {{else}}
 <table>
-  <tr><th>时间</th><th>流转</th><th>操作者</th><th>理由</th></tr>
+  <tr><th>{{t "webui.strategy_detail.transitions_table.time"}}</th><th>{{t "webui.strategy_detail.transitions_table.transition"}}</th><th>{{t "webui.strategy_detail.transitions_table.actor"}}</th><th>{{t "webui.strategy_detail.transitions_table.reason"}}</th></tr>
   {{range .}}
   <tr>
     <td>{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
     <td>{{if .From}}{{.From}} → {{end}}{{.To}}</td>
+    {{/* .Actor/.Reason are the free-text audit trail an operator typed into the
+         confirm/start-paper/unlock-live forms (or "user:<id>") -- genuinely
+         dynamic, user-entered data, not page chrome, so they render verbatim
+         regardless of viewer language. */}}
     <td>{{.Actor}}</td>
     <td class="note">{{.Reason}}</td>
   </tr>

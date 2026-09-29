@@ -6,10 +6,27 @@ import (
 	"net/http"
 	"strings"
 
+	"tradeforge/internal/i18n"
 	"tradeforge/internal/storage"
 	"tradeforge/internal/strategy"
 	"tradeforge/pkg/types"
 )
+
+// transitionErrorMessage extracts the structured, translatable rejection
+// reason from a strategy.CheckTransition error. CheckTransition never
+// returns a bare error -- every rejection path in statemachine.go builds a
+// *strategy.TransitionError, whose Reason field is already the types.Message
+// meant to be shown to the user (see TransitionError's doc comment) -- so
+// this is not a defensive "maybe", it just names that lookup once for the
+// three handlers below instead of repeating the type assertion in each.
+// The fallback only matters if that invariant is ever broken.
+func transitionErrorMessage(err error) types.Message {
+	var terr *strategy.TransitionError
+	if errors.As(err, &terr) {
+		return terr.Reason
+	}
+	return types.Msg("webui.strategy_detail.banner.transition_rejected", "err", err.Error())
+}
 
 // handleConfirmBacktest 是 DRAFT → BACKTESTED 的手动触发入口。
 //
@@ -30,7 +47,7 @@ func (s *Server) handleConfirmBacktest(w http.ResponseWriter, r *http.Request) {
 	sc, err := s.store.GetStrategy(ctx, userID, id)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
-			http.Error(w, "策略不存在", http.StatusNotFound)
+			http.Error(w, i18n.T(resolveLang(r), "webui.strategy_detail.not_found"), http.StatusNotFound)
 			return
 		}
 		s.serverError(w, err)
@@ -51,13 +68,13 @@ func (s *Server) handleConfirmBacktest(w http.ResponseWriter, r *http.Request) {
 	s.renderPage(w, r, data.Strategy.Name, "strategy_detail_content", data)
 }
 
-func (s *Server) doConfirmBacktest(ctx context.Context, userID string, sc types.StrategyConfig, actorID, reason string) (banner string, isErr bool) {
+func (s *Server) doConfirmBacktest(ctx context.Context, userID string, sc types.StrategyConfig, actorID, reason string) (banner types.Message, isErr bool) {
 	bt, err := s.store.LatestBacktestResult(ctx, userID, sc.ID)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
-			return "尚无回测结果，无法确认。请先跑一遍 backtest-runner + tradeforge_backtest 写入结果。", true
+			return types.Msg("webui.strategy_detail.banner.no_backtest_result"), true
 		}
-		return "读取回测结果失败：" + err.Error(), true
+		return types.Msg("webui.strategy_detail.banner.read_backtest_failed", "err", err.Error()), true
 	}
 
 	evidence, err := strategy.CheckTransition(strategy.TransitionRequest{
@@ -66,16 +83,16 @@ func (s *Server) doConfirmBacktest(ctx context.Context, userID string, sc types.
 		Backtest: &bt,
 	}, s.gate)
 	if err != nil {
-		return err.Error(), true
+		return transitionErrorMessage(err), true
 	}
 
 	if err := s.store.UpdateStrategyState(ctx, userID, storage.Transition{
 		StrategyID: sc.ID, From: sc.State, To: types.StateBacktested,
 		Actor: "user:" + actorID, Reason: reason, Evidence: evidence,
 	}); err != nil {
-		return "推进失败：" + err.Error(), true
+		return types.Msg("webui.strategy_detail.banner.update_state_failed", "err", err.Error()), true
 	}
-	return "回测结果已确认，策略进入 BACKTESTED。", false
+	return types.Msg("webui.strategy_detail.banner.confirm_backtest_success"), false
 }
 
 // handleStartPaperTrading 是 BACKTESTED → PAPER_TRADING 的手动触发入口。
@@ -95,7 +112,7 @@ func (s *Server) handleStartPaperTrading(w http.ResponseWriter, r *http.Request)
 	sc, err := s.store.GetStrategy(ctx, userID, id)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
-			http.Error(w, "策略不存在", http.StatusNotFound)
+			http.Error(w, i18n.T(resolveLang(r), "webui.strategy_detail.not_found"), http.StatusNotFound)
 			return
 		}
 		s.serverError(w, err)
@@ -116,22 +133,22 @@ func (s *Server) handleStartPaperTrading(w http.ResponseWriter, r *http.Request)
 	s.renderPage(w, r, data.Strategy.Name, "strategy_detail_content", data)
 }
 
-func (s *Server) doStartPaperTrading(ctx context.Context, userID string, sc types.StrategyConfig, actorID, reason string) (banner string, isErr bool) {
+func (s *Server) doStartPaperTrading(ctx context.Context, userID string, sc types.StrategyConfig, actorID, reason string) (banner types.Message, isErr bool) {
 	evidence, err := strategy.CheckTransition(strategy.TransitionRequest{
 		From: sc.State, To: types.StatePaperTrading,
 		Actor: strategy.ActorUser, ActorID: actorID, Reason: reason,
 	}, s.gate)
 	if err != nil {
-		return err.Error(), true
+		return transitionErrorMessage(err), true
 	}
 
 	if err := s.store.UpdateStrategyState(ctx, userID, storage.Transition{
 		StrategyID: sc.ID, From: sc.State, To: types.StatePaperTrading,
 		Actor: "user:" + actorID, Reason: reason, Evidence: evidence,
 	}); err != nil {
-		return "推进失败：" + err.Error(), true
+		return types.Msg("webui.strategy_detail.banner.update_state_failed", "err", err.Error()), true
 	}
-	return "已进入模拟盘。下一次启动 cmd/executor 会加载这个策略。", false
+	return types.Msg("webui.strategy_detail.banner.start_paper_success"), false
 }
 
 // handleDeleteStrategy 永久删除一条策略。
@@ -156,7 +173,7 @@ func (s *Server) handleDeleteStrategy(w http.ResponseWriter, r *http.Request) {
 	sc, err := s.store.GetStrategy(ctx, userID, id)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
-			http.Error(w, "策略不存在", http.StatusNotFound)
+			http.Error(w, i18n.T(resolveLang(r), "webui.strategy_detail.not_found"), http.StatusNotFound)
 			return
 		}
 		s.serverError(w, err)
@@ -169,7 +186,7 @@ func (s *Server) handleDeleteStrategy(w http.ResponseWriter, r *http.Request) {
 			s.serverError(w, err)
 			return
 		}
-		data.Banner = "只能删除 DRAFT 状态的策略，当前状态是 " + string(sc.State) + "。"
+		data.Banner = types.Msg("webui.strategy_detail.banner.delete_wrong_state", "state", string(sc.State))
 		data.BannerErr = true
 		s.renderPage(w, r, data.Strategy.Name, "strategy_detail_content", data)
 		return

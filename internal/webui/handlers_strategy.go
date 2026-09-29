@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"tradeforge/internal/i18n"
 	"tradeforge/internal/storage"
 	"tradeforge/internal/strategy"
 	"tradeforge/pkg/types"
@@ -30,7 +31,7 @@ type strategyDetailData struct {
 	CanStartPaperTrading bool
 	CanUnlockLive        bool
 	// Banner 是操作反馈（如解锁实盘的结果），普通 GET 请求下为空。
-	Banner    string
+	Banner    types.Message
 	BannerErr bool
 }
 
@@ -44,7 +45,7 @@ func (s *Server) handleStrategyDetail(w http.ResponseWriter, r *http.Request) {
 	data, err := s.loadStrategyDetail(r.Context(), userID, id)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
-			http.Error(w, "策略不存在", http.StatusNotFound)
+			http.Error(w, i18n.T(resolveLang(r), "webui.strategy_detail.not_found"), http.StatusNotFound)
 			return
 		}
 		s.serverError(w, err)
@@ -116,9 +117,8 @@ func (s *Server) loadStrategyDetail(ctx context.Context, userID, id string) (str
 //
 // Label/Current/Required 是 types.Message（key+args），不是现成字符串——
 // strategy.GateCriterion 这次改成了可翻译的结构化消息，模板要通过 {{msg .Label}}
-// 这类调用渲染，不能再直接 {{.Label}}。目前 render.go 的 msg 函数固定用中文渲染
-// （这个界面本身还没接语言切换），等 Phase 4 做真正的语言开关时会把它换成按当次
-// 请求语言渲染，这里的结构不用再改。
+// 这类调用渲染，不能再直接 {{.Label}}。render.go 的 msg 函数按当次请求的
+// tf_lang cookie 渲染语言（见 lang.go 的 resolveLang），这里的结构不用再改。
 type gateProgressItem struct {
 	Label    types.Message
 	Current  types.Message
@@ -128,16 +128,16 @@ type gateProgressItem struct {
 
 // gateProgress 是策略详情页"距离下一步还差什么"卡片要渲染的数据。
 type gateProgress struct {
-	// TargetLabel 是这一步要推进到的目标的说明文案。留空表示当前状态没有
-	// "下一步"这回事（LIVE 只能人工暂停，SUSPENDED 必须先回模拟盘），
+	// TargetLabel 是这一步要推进到的目标的说明文案。零值（IsZero）表示当前
+	// 状态没有"下一步"这回事（LIVE 只能人工暂停，SUSPENDED 必须先回模拟盘），
 	// 模板据此决定要不要渲染整张卡片。
-	TargetLabel string
+	TargetLabel types.Message
 	// Items 非空时才是"有具体门槛数据可以逐条比对"的情况；为空时看 Note。
 	Items   []gateProgressItem
 	AllPass bool
 	// Note 用于两种情况：这一步压根没有数据门槛（比如 BACKTESTED→PAPER_TRADING）；
 	// 或者门槛存在但还没有数据可评估（比如还没运行过回测）。
-	Note string
+	Note types.Message
 }
 
 // buildGateProgress 把 strategy.Gate 的门槛翻译成界面能直接渲染的"当前值 vs 要求值"
@@ -151,21 +151,33 @@ func buildGateProgress(gate strategy.Gate, state types.StrategyState, bt *types.
 	switch state {
 	case types.StateDraft:
 		if bt == nil {
-			return gateProgress{TargetLabel: "样本外回测达标", Note: "还没有回测结果，先在上面运行一次回测。"}
+			return gateProgress{
+				TargetLabel: types.Msg("webui.strategy_detail.gate.target.backtest"),
+				Note:        types.Msg("webui.strategy_detail.gate.note.no_backtest_yet"),
+			}
 		}
-		return criteriaToProgress("样本外回测达标", strategy.EvaluateBacktestGate(bt, gate))
+		return criteriaToProgress(types.Msg("webui.strategy_detail.gate.target.backtest"), strategy.EvaluateBacktestGate(bt, gate))
 
 	case types.StatePaperTrading:
 		if ps == nil {
-			return gateProgress{TargetLabel: "模拟盘运行达标", Note: "还没有模拟盘运行统计——开始跑模拟交易后系统会记录运行时长和成交笔数。"}
+			return gateProgress{
+				TargetLabel: types.Msg("webui.strategy_detail.gate.target.paper"),
+				Note:        types.Msg("webui.strategy_detail.gate.note.no_paper_stats_yet"),
+			}
 		}
-		return criteriaToProgress("模拟盘运行达标", strategy.EvaluatePaperGate(ps, gate))
+		return criteriaToProgress(types.Msg("webui.strategy_detail.gate.target.paper"), strategy.EvaluatePaperGate(ps, gate))
 
 	case types.StateBacktested:
-		return gateProgress{TargetLabel: "推进到模拟交易阶段", Note: "这一步没有额外的数据门槛，用下方表单即可继续。"}
+		return gateProgress{
+			TargetLabel: types.Msg("webui.strategy_detail.gate.target.start_paper"),
+			Note:        types.Msg("webui.strategy_detail.gate.note.no_gate_start_paper"),
+		}
 
 	case types.StateLiveEligible:
-		return gateProgress{TargetLabel: "开始真实下单", Note: "这一步没有数据门槛——必须由你在下方手动确认，系统不会自动推进。"}
+		return gateProgress{
+			TargetLabel: types.Msg("webui.strategy_detail.gate.target.live"),
+			Note:        types.Msg("webui.strategy_detail.gate.note.no_gate_live"),
+		}
 
 	default:
 		// LIVE：只能人工暂停，没有"下一步"。SUSPENDED：必须先退回模拟盘重新验证，
@@ -174,7 +186,7 @@ func buildGateProgress(gate strategy.Gate, state types.StrategyState, bt *types.
 	}
 }
 
-func criteriaToProgress(targetLabel string, criteria []strategy.GateCriterion) gateProgress {
+func criteriaToProgress(targetLabel types.Message, criteria []strategy.GateCriterion) gateProgress {
 	items := make([]gateProgressItem, len(criteria))
 	allPass := true
 	for i, c := range criteria {

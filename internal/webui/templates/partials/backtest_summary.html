@@ -1,29 +1,33 @@
 {{define "backtest_summary"}}
 {{if not .Backtest}}
-  <p class="note">尚无回测结果。</p>
+  <p class="note">{{t "webui.strategy_detail.backtest.empty"}}</p>
 {{else}}
   <p class="note">
-    数据区间 {{.Backtest.DataStart.Format "2006-01-02"}} ~ {{.Backtest.DataEnd.Format "2006-01-02"}}，
-    引擎版本 {{.Backtest.EngineVersion}}，运行于 {{.Backtest.RanAt.Format "2006-01-02 15:04"}}。
-    手续费 taker {{pct .Backtest.FeeModel.TakerFeeRate}}，滑点 {{.Backtest.FeeModel.SlippageBps}} bps。
+    {{t "webui.strategy_detail.backtest.meta"
+      "start" (.Backtest.DataStart.Format "2006-01-02")
+      "end" (.Backtest.DataEnd.Format "2006-01-02")
+      "version" .Backtest.EngineVersion
+      "ranAt" (.Backtest.RanAt.Format "2006-01-02 15:04")
+      "fee" (pct .Backtest.FeeModel.TakerFeeRate)
+      "bps" .Backtest.FeeModel.SlippageBps}}
   </p>
 
   <div class="oos-box">
-    <h3>样本外——判断能否进入模拟盘的唯一依据</h3>
+    <h3>{{t "webui.strategy_detail.backtest.oos.heading"}}</h3>
     {{if eq .Backtest.OutOfSample.TradeCount 0}}
-      <p class="warn">样本外区间没有产生任何交易，以下指标均为零值，不代表已验证。</p>
+      <p class="warn">{{t "webui.strategy_detail.backtest.oos.no_trades_warning"}}</p>
     {{end}}
     {{template "metrics_row" .Backtest.OutOfSample}}
   </div>
 
-  <h3 style="margin-top:1rem;">样本内</h3>
-  <p class="note">参数如经过调整，是在这段数据上调的，不能作为预期表现。</p>
+  <h3 style="margin-top:1rem;">{{t "webui.strategy_detail.backtest.in_sample.heading"}}</h3>
+  <p class="note">{{t "webui.strategy_detail.backtest.in_sample.note"}}</p>
   {{template "metrics_row" .Backtest.InSample}}
 
-  <h3 style="margin-top:1rem;">全区间</h3>
+  <h3 style="margin-top:1rem;">{{t "webui.strategy_detail.backtest.overall.heading"}}</h3>
   {{template "metrics_row" .Backtest.Overall}}
 
-  <h3 style="margin-top:1rem;">{{if .Chart.IsRealEquityCurve}}权益 / 回撤曲线{{else}}累计盈亏（近似）{{end}}</h3>
+  <h3 style="margin-top:1rem;">{{if .Chart.IsRealEquityCurve}}{{t "webui.strategy_detail.backtest.chart.heading_real"}}{{else}}{{t "webui.strategy_detail.backtest.chart.heading_approx"}}{{end}}</h3>
   {{if .Chart.HasTrades}}
     <svg width="{{.Chart.Width}}" height="{{.Chart.Height}}" viewBox="0 0 {{.Chart.Width}} {{.Chart.Height}}" style="max-width:100%; background:#0d1117; border:1px solid #1e222d; border-radius:6px;">
       {{if .Chart.IsRealEquityCurve}}
@@ -35,23 +39,19 @@
     </svg>
     {{if .Chart.IsRealEquityCurve}}
       <p class="note">
-        灰色为样本内、蓝色为样本外的真实权益曲线（含持仓浮动盈亏，逐根K线采样）；
-        虚线是历史新高包络线，红色阴影是回撤区间（权益比历史新高低多少）。
-        区间 {{.Chart.MinLabel}} ~ {{.Chart.MaxLabel}}。
+        {{t "webui.strategy_detail.backtest.chart.real_note" "min" .Chart.MinLabel "max" .Chart.MaxLabel}}
       </p>
     {{else}}
       <p class="note">
-        本次回测早于权益曲线持久化上线，只能退回近似画法：灰色为样本内、蓝色为样本外的
-        累计已实现盈亏（按开仓时间排序的逐笔 PnL 累加），看不出持仓中途的浮动回撤。
-        区间 {{.Chart.MinLabel}} ~ {{.Chart.MaxLabel}}。
+        {{t "webui.strategy_detail.backtest.chart.approx_note" "min" .Chart.MinLabel "max" .Chart.MaxLabel}}
       </p>
     {{end}}
   {{else}}
-    <p class="note">没有交易记录，无法绘制曲线。</p>
+    <p class="note">{{t "webui.strategy_detail.backtest.chart.no_trades"}}</p>
   {{end}}
 
   {{if .MonthlyReturns}}
-  <h3 style="margin-top:1rem;">月度收益</h3>
+  <h3 style="margin-top:1rem;">{{t "webui.strategy_detail.backtest.monthly_returns.heading"}}</h3>
   <div class="table-scroll">
   <table>
     <tr>{{range .MonthlyReturns}}<th>{{.Month}}</th>{{end}}</tr>
@@ -60,13 +60,13 @@
   </div>
   {{end}}
 
-  <h3 style="margin-top:1rem;">逐笔交易</h3>
+  <h3 style="margin-top:1rem;">{{t "webui.strategy_detail.backtest.trades.heading"}}</h3>
   {{if .Backtest.Trades}}
   <div class="table-scroll">
   <table>
     <tr>
-      <th>开仓时间</th><th>平仓时间</th><th>持仓时长</th><th>方向</th><th>开仓价</th>
-      <th>平仓价</th><th>数量</th><th>盈亏</th><th>手续费</th><th>平仓原因</th><th>区间</th>
+      <th>{{t "webui.strategy_detail.backtest.trades.col_entry_time"}}</th><th>{{t "webui.strategy_detail.backtest.trades.col_exit_time"}}</th><th>{{t "webui.strategy_detail.backtest.trades.col_hold_time"}}</th><th>{{t "webui.strategy_detail.backtest.trades.col_direction"}}</th><th>{{t "webui.strategy_detail.backtest.trades.col_entry_price"}}</th>
+      <th>{{t "webui.strategy_detail.backtest.trades.col_exit_price"}}</th><th>{{t "webui.strategy_detail.backtest.trades.col_quantity"}}</th><th>{{t "webui.strategy_detail.backtest.trades.col_pnl"}}</th><th>{{t "webui.strategy_detail.backtest.trades.col_fees"}}</th><th>{{t "webui.strategy_detail.backtest.trades.col_exit_reason"}}</th><th>{{t "webui.strategy_detail.backtest.trades.col_segment"}}</th>
     </tr>
     {{range .Backtest.Trades}}
     <tr>
@@ -79,6 +79,10 @@
       <td>{{.Quantity}}</td>
       <td>{{.PnL}}</td>
       <td>{{.Fees}}</td>
+      {{/* .ExitReason/.Segment are technical codes written by the Python
+           backtest engine ("signal", "stop_loss", "in_sample", ...), the
+           same kind of raw enum left untranslated elsewhere on this page
+           (Order.Status, Decision.Direction) -- not page chrome. */}}
       <td>{{.ExitReason}}</td>
       <td>{{.Segment}}</td>
     </tr>
@@ -86,7 +90,7 @@
   </table>
   </div>
   {{else}}
-    <p class="note">没有交易明细。</p>
+    <p class="note">{{t "webui.strategy_detail.backtest.trades.empty"}}</p>
   {{end}}
 {{end}}
 {{end}}
@@ -95,8 +99,8 @@
 <div class="table-scroll">
 <table>
   <tr>
-    <th>总收益</th><th>年化</th><th>夏普</th><th>索提诺</th><th>最大回撤</th><th>胜率</th><th>盈亏比</th>
-    <th>交易笔数</th><th>总手续费</th><th>手续费/毛利润</th>
+    <th>{{t "webui.strategy_detail.backtest.metrics.col_total_return"}}</th><th>{{t "webui.strategy_detail.backtest.metrics.col_annualized"}}</th><th>{{t "webui.strategy_detail.backtest.metrics.col_sharpe"}}</th><th>{{t "webui.strategy_detail.backtest.metrics.col_sortino"}}</th><th>{{t "webui.strategy_detail.backtest.metrics.col_max_drawdown"}}</th><th>{{t "webui.strategy_detail.backtest.metrics.col_win_rate"}}</th><th>{{t "webui.strategy_detail.backtest.metrics.col_profit_factor"}}</th>
+    <th>{{t "webui.strategy_detail.backtest.metrics.col_trade_count"}}</th><th>{{t "webui.strategy_detail.backtest.metrics.col_total_fees"}}</th><th>{{t "webui.strategy_detail.backtest.metrics.col_fee_drag"}}</th>
   </tr>
   <tr>
     <td>{{signedPct .TotalReturn}}</td>
