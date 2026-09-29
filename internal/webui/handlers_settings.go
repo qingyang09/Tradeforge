@@ -12,6 +12,7 @@ import (
 	"tradeforge/internal/modules"
 	"tradeforge/internal/storage"
 	"tradeforge/pkg/idgen"
+	"tradeforge/pkg/types"
 )
 
 // settingsData 是设置页面的渲染数据。
@@ -34,12 +35,13 @@ type settingsData struct {
 	NotificationChannels []storage.NotificationChannel
 	VAPIDPublicKey       string
 
-	Message string
-	Error   string
+	Message types.Message
+	Error   types.Message
 }
 
 func (s *Server) handleSettingsShow(w http.ResponseWriter, r *http.Request) {
 	userID, _ := currentUserID(r)
+	lang := resolveLang(r)
 	profiles, err := s.store.ListAgentProfiles(r.Context(), userID)
 	if err != nil {
 		s.logger.Warn("读取已保存的模型配置失败", "err", err)
@@ -53,15 +55,16 @@ func (s *Server) handleSettingsShow(w http.ResponseWriter, r *http.Request) {
 		s.logger.Warn("读取已保存的提醒渠道失败", "err", err)
 	}
 	_, status := s.userAgent(r.Context(), userID)
-	s.renderPage(w, r, "设置", "settings_content", settingsData{
+	s.renderPage(w, r, i18n.T(lang, "webui.settings.title_tag"), "settings_content", settingsData{
 		Providers: agent.Providers, Status: status, Profiles: profiles,
 		BrokerKinds: execution.CredentialedKinds, BrokerProfiles: brokerProfiles,
 		NotificationChannels: notificationChannels, VAPIDPublicKey: s.vapidPublicKey,
 	})
 }
 
-func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, message, errMsg string) {
+func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, message, errMsg types.Message) {
 	userID, _ := currentUserID(r)
+	lang := resolveLang(r)
 	profiles, err := s.store.ListAgentProfiles(r.Context(), userID)
 	if err != nil {
 		s.logger.Warn("读取已保存的模型配置失败", "err", err)
@@ -75,7 +78,7 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, message,
 		s.logger.Warn("读取已保存的提醒渠道失败", "err", err)
 	}
 	_, status := s.userAgent(r.Context(), userID)
-	s.renderPage(w, r, "设置", "settings_content", settingsData{
+	s.renderPage(w, r, i18n.T(lang, "webui.settings.title_tag"), "settings_content", settingsData{
 		Providers: agent.Providers, Status: status, Profiles: profiles,
 		BrokerKinds: execution.CredentialedKinds, BrokerProfiles: brokerProfiles,
 		NotificationChannels: notificationChannels, VAPIDPublicKey: s.vapidPublicKey,
@@ -91,10 +94,11 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, message,
 // 加密落库是唯一的行为，不是可选项。
 func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 	userID, _ := currentUserID(r)
+	lang := resolveLang(r)
 
 	if r.FormValue("action") == "clear" {
 		s.setUserAgent(userID, nil, agentStatus{})
-		s.renderSettings(w, r, "已清除当前配置（已保存的配置仍在列表里，可以随时重新启用）。", "")
+		s.renderSettings(w, r, types.Msg("webui.settings.agent.cleared"), types.Message{})
 		return
 	}
 
@@ -105,18 +109,15 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 	label := strings.TrimSpace(r.FormValue("label"))
 
 	if !provider.Valid() {
-		s.renderSettings(w, r, "", "不支持的模型供应商。")
+		s.renderSettings(w, r, types.Message{}, types.Msg("webui.settings.agent.unsupported_provider"))
 		return
 	}
 	if apiKey == "" {
-		s.renderSettings(w, r, "", "API key 不能为空。")
+		s.renderSettings(w, r, types.Message{}, types.Msg("webui.settings.agent.empty_key"))
 		return
 	}
 	if label == "" {
-		// i18n.DefaultLang (Chinese) for now, matching this app's current
-		// Chinese-only behavior exactly -- see render.go's msg template func
-		// doc comment for why, and the plan's Phase 4 for the per-request fix.
-		label = i18n.Render(i18n.DefaultLang, provider.Label())
+		label = i18n.Render(lang, provider.Label())
 	}
 
 	// Timeout/MaxRetries 沿用环境变量里的基准配置（TF_AGENT_TIMEOUT、
@@ -126,7 +127,7 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 	llm, err := agent.NewLLM(provider, apiKey, model, baseURL, base)
 	if err != nil {
 		s.setUserAgentError(userID, err.Error())
-		s.renderSettings(w, r, "", "保存失败："+err.Error())
+		s.renderSettings(w, r, types.Message{}, types.Msg("webui.settings.error.save_failed", "err", err.Error()))
 		return
 	}
 
@@ -137,7 +138,7 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 	keyHint := maskAPIKey(apiKey)
 
 	status := agentStatus{Provider: provider, Model: effectiveModel, KeyHint: keyHint}
-	message := "已保存但加密失败，本次仅在进程内存里生效（重启会丢失），请检查服务端日志。"
+	message := types.Msg("webui.settings.agent.saved_memory_only")
 
 	ciphertext, salt, nonce, encErr := encryptProfileSecret(s.masterKey, apiKey)
 	if encErr != nil {
@@ -152,12 +153,12 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 			s.logger.Warn("保存模型配置到数据库失败，本次仅在内存中生效", "err", saveErr)
 		} else {
 			status.ProfileID = profile.ID
-			message = "已保存并加密落库，下次重启会自动恢复。"
+			message = types.Msg("webui.settings.agent.saved_encrypted")
 		}
 	}
 
 	s.setUserAgent(userID, agent.New(llm, modules.NewDefaultRegistry(), base.MaxRetries), status)
-	s.renderSettings(w, r, message, "")
+	s.renderSettings(w, r, message, types.Message{})
 }
 
 // handleSettingsActivateProfile 切换到某一份已保存的配置：解密它的 API key、构造 LLM、
@@ -167,12 +168,12 @@ func (s *Server) handleSettingsActivateProfile(w http.ResponseWriter, r *http.Re
 	id := r.PathValue("id")
 	profile, err := s.store.GetAgentProfile(r.Context(), userID, id)
 	if err != nil {
-		s.renderSettings(w, r, "", "找不到这份配置："+err.Error())
+		s.renderSettings(w, r, types.Message{}, types.Msg("webui.settings.error.profile_not_found", "err", err.Error()))
 		return
 	}
 	apiKey, err := decryptProfileSecret(s.masterKey, profile.EncryptedAPIKey, profile.KeySalt, profile.KeyNonce)
 	if err != nil {
-		s.renderSettings(w, r, "", "启用失败："+err.Error())
+		s.renderSettings(w, r, types.Message{}, types.Msg("webui.settings.error.activate_failed", "err", err.Error()))
 		return
 	}
 
@@ -180,11 +181,11 @@ func (s *Server) handleSettingsActivateProfile(w http.ResponseWriter, r *http.Re
 	provider := agent.Provider(profile.Provider)
 	llm, err := agent.NewLLM(provider, apiKey, profile.Model, profile.BaseURL, base)
 	if err != nil {
-		s.renderSettings(w, r, "", "启用失败："+err.Error())
+		s.renderSettings(w, r, types.Message{}, types.Msg("webui.settings.error.activate_failed", "err", err.Error()))
 		return
 	}
 	if err := s.store.ActivateAgentProfile(r.Context(), userID, id); err != nil {
-		s.renderSettings(w, r, "", "启用失败："+err.Error())
+		s.renderSettings(w, r, types.Message{}, types.Msg("webui.settings.error.activate_failed", "err", err.Error()))
 		return
 	}
 
@@ -195,7 +196,7 @@ func (s *Server) handleSettingsActivateProfile(w http.ResponseWriter, r *http.Re
 	s.setUserAgent(userID, agent.New(llm, modules.NewDefaultRegistry(), base.MaxRetries), agentStatus{
 		Provider: provider, Model: effectiveModel, KeyHint: profile.KeyHint, ProfileID: profile.ID,
 	})
-	s.renderSettings(w, r, "已切换到「"+profile.Label+"」。", "")
+	s.renderSettings(w, r, types.Msg("webui.settings.switched_to", "label", profile.Label), types.Message{})
 }
 
 // handleSettingsDeleteProfile 删除一份保存的配置。删除的如果正是当前生效的那份，
@@ -206,13 +207,13 @@ func (s *Server) handleSettingsDeleteProfile(w http.ResponseWriter, r *http.Requ
 	id := r.PathValue("id")
 	_, status := s.userAgent(r.Context(), userID)
 	if err := s.store.DeleteAgentProfile(r.Context(), userID, id); err != nil {
-		s.renderSettings(w, r, "", "删除失败："+err.Error())
+		s.renderSettings(w, r, types.Message{}, types.Msg("webui.settings.error.delete_failed", "err", err.Error()))
 		return
 	}
 	if status.ProfileID == id {
 		s.setUserAgent(userID, nil, agentStatus{})
 	}
-	s.renderSettings(w, r, "已删除。", "")
+	s.renderSettings(w, r, types.Msg("webui.settings.deleted"), types.Message{})
 }
 
 // loadUserAgentFromDB 尝试从数据库恢复某个用户当前生效的模型配置，供 userAgent

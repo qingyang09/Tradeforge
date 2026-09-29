@@ -3,7 +3,6 @@ package webui
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -12,6 +11,7 @@ import (
 	"tradeforge/internal/secretcrypto"
 	"tradeforge/internal/storage"
 	"tradeforge/pkg/idgen"
+	"tradeforge/pkg/types"
 )
 
 // brokerCredentials 是打包进 broker_profiles.encrypted_credentials 密文里的明文结构。
@@ -36,6 +36,7 @@ type brokerCredentials struct {
 // 决定"当前用户"是谁）。
 func (s *Server) handleSettingsSaveBroker(w http.ResponseWriter, r *http.Request) {
 	userID, _ := currentUserID(r)
+	lang := resolveLang(r)
 	kind := execution.BrokerKind(strings.TrimSpace(r.FormValue("broker")))
 	apiKey := strings.TrimSpace(r.FormValue("api_key"))
 	apiSecret := strings.TrimSpace(r.FormValue("api_secret"))
@@ -43,35 +44,32 @@ func (s *Server) handleSettingsSaveBroker(w http.ResponseWriter, r *http.Request
 	label := strings.TrimSpace(r.FormValue("label"))
 
 	if !kind.Valid() || kind == execution.BrokerKindPaper {
-		s.renderSettings(w, r, "", "不支持的下单通道。")
+		s.renderSettings(w, r, types.Message{}, types.Msg("webui.settings.broker.unsupported_kind"))
 		return
 	}
 	if label == "" {
-		// i18n.DefaultLang (Chinese) for now, matching this app's current
-		// Chinese-only behavior exactly -- see render.go's msg template func
-		// doc comment for why, and the plan's Phase 4 for the per-request fix.
-		label = i18n.Render(i18n.DefaultLang, kind.Label())
+		label = i18n.Render(lang, kind.Label())
 	}
 
 	if _, err := execution.NewBroker(kind, apiKey, apiSecret, passphrase); err != nil {
 		reason := err.Error()
 		var cfgErr *execution.BrokerConfigError
 		if errors.As(err, &cfgErr) {
-			reason = i18n.Render(i18n.DefaultLang, cfgErr.Reason)
+			reason = i18n.Render(lang, cfgErr.Reason)
 		}
-		s.renderSettings(w, r, "", "保存失败："+reason)
+		s.renderSettings(w, r, types.Message{}, types.Msg("webui.settings.error.save_failed", "err", reason))
 		return
 	}
 
 	creds := brokerCredentials{APIKey: apiKey, APISecret: apiSecret, Passphrase: passphrase}
 	plaintext, err := json.Marshal(creds)
 	if err != nil {
-		s.renderSettings(w, r, "", "保存失败："+err.Error())
+		s.renderSettings(w, r, types.Message{}, types.Msg("webui.settings.error.save_failed", "err", err.Error()))
 		return
 	}
 	ciphertext, salt, nonce, err := secretcrypto.Encrypt(s.masterKey, string(plaintext))
 	if err != nil {
-		s.renderSettings(w, r, "", "加密失败："+err.Error())
+		s.renderSettings(w, r, types.Message{}, types.Msg("webui.settings.error.encrypt_failed", "err", err.Error()))
 		return
 	}
 
@@ -81,10 +79,10 @@ func (s *Server) handleSettingsSaveBroker(w http.ResponseWriter, r *http.Request
 		EncryptedCredentials: ciphertext, KeySalt: salt, KeyNonce: nonce,
 	}
 	if err := s.store.SaveBrokerProfile(r.Context(), profile, true); err != nil {
-		s.renderSettings(w, r, "", "保存到数据库失败："+err.Error())
+		s.renderSettings(w, r, types.Message{}, types.Msg("webui.settings.error.db_save_failed", "err", err.Error()))
 		return
 	}
-	s.renderSettings(w, r, fmt.Sprintf("已保存并启用「%s」，下次启动 cmd/executor -broker %s 时会自动读取。", label, kind), "")
+	s.renderSettings(w, r, types.Msg("webui.settings.broker.saved", "label", label, "broker", string(kind)), types.Message{})
 }
 
 // handleSettingsActivateBrokerProfile 把某一份已保存的交易所配置切换成它所属 broker
@@ -95,14 +93,14 @@ func (s *Server) handleSettingsActivateBrokerProfile(w http.ResponseWriter, r *h
 	id := r.PathValue("id")
 	profile, err := s.store.GetBrokerProfile(r.Context(), userID, id)
 	if err != nil {
-		s.renderSettings(w, r, "", "找不到这份配置："+err.Error())
+		s.renderSettings(w, r, types.Message{}, types.Msg("webui.settings.error.profile_not_found", "err", err.Error()))
 		return
 	}
 	if err := s.store.ActivateBrokerProfile(r.Context(), userID, id); err != nil {
-		s.renderSettings(w, r, "", "启用失败："+err.Error())
+		s.renderSettings(w, r, types.Message{}, types.Msg("webui.settings.error.activate_failed", "err", err.Error()))
 		return
 	}
-	s.renderSettings(w, r, "已切换到「"+profile.Label+"」。", "")
+	s.renderSettings(w, r, types.Msg("webui.settings.switched_to", "label", profile.Label), types.Message{})
 }
 
 // handleSettingsDeleteBrokerProfile 删除一份保存的交易所配置。
@@ -110,8 +108,8 @@ func (s *Server) handleSettingsDeleteBrokerProfile(w http.ResponseWriter, r *htt
 	userID, _ := currentUserID(r)
 	id := r.PathValue("id")
 	if err := s.store.DeleteBrokerProfile(r.Context(), userID, id); err != nil {
-		s.renderSettings(w, r, "", "删除失败："+err.Error())
+		s.renderSettings(w, r, types.Message{}, types.Msg("webui.settings.error.delete_failed", "err", err.Error()))
 		return
 	}
-	s.renderSettings(w, r, "已删除。", "")
+	s.renderSettings(w, r, types.Msg("webui.settings.deleted"), types.Message{})
 }
