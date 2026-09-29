@@ -472,8 +472,8 @@ func TestDailyLossLimitSuspendsSymbol(t *testing.T) {
 	if !w.Suspended() {
 		t.Fatal("this symbol should be suspended once the daily-loss cap triggered")
 	}
-	if !strings.Contains(w.Stats().SuspendReason, "上限") {
-		t.Errorf("suspend reason should state which rule triggered: %q", w.Stats().SuspendReason)
+	if w.Stats().SuspendReason.Key != "execution.risk.max_daily_loss_force_close" {
+		t.Errorf("suspend reason should state which rule triggered: %+v", w.Stats().SuspendReason)
 	}
 
 	// No new positions after being suspended.

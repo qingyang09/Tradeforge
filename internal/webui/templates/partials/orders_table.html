@@ -30,7 +30,7 @@
     {{.Combine}}{{if gt .Threshold 0.0}}（阈值 {{printf "%.2f" .Threshold}}）{{end}} · 强度 {{printf "%.2f" .Score}}
   </summary>
   <div class="provenance">
-    {{if .Note}}<p class="note">{{.Note}}</p>{{end}}
+    {{if not .Note.IsZero}}<p class="note">{{msg .Note}}</p>{{end}}
     <table class="provenance-signals">
       <tr><th>模块</th><th>方向</th><th>置信度</th><th>原因</th><th>生效参数</th></tr>
       {{range .Signals}}

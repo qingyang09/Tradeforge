@@ -114,7 +114,7 @@ type OrderProvenance struct {
 	// strategy config, because the config may be edited afterward.
 	ModuleParams map[string]map[string]any `json:"module_params"`
 	// Note is a purely factual annotation (e.g. "forced close triggered by risk control").
-	Note string `json:"note,omitempty"`
+	Note Message `json:"note,omitempty"`
 }
 
 // Position is the current holding on a given symbol.

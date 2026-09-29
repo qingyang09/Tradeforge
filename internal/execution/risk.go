@@ -40,7 +40,7 @@ type RiskDecision struct {
 	// Rule is the name of the triggered rule; empty when Verdict is RiskAllow.
 	Rule string
 	// Reason is a human-readable explanation.
-	Reason string
+	Reason types.Message
 	// Detail is a snapshot of the data at trigger time, written to the audit log.
 	Detail map[string]any
 }
@@ -88,15 +88,15 @@ func (r *RiskManager) CheckOpen(now time.Time, notional decimal.Decimal) RiskDec
 	if r.halted {
 		return RiskDecision{
 			Verdict: RiskReject, Rule: r.haltRule,
-			Reason: fmt.Sprintf("标的 %s 已被风控暂停（规则 %s），不再开新仓", r.symbol, r.haltRule),
+			Reason: types.Msg("execution.risk.halted", "symbol", r.symbol, "rule", r.haltRule),
 		}
 	}
 
 	if r.cfg.MaxPositionSizeQuote.IsPositive() && notional.GreaterThan(r.cfg.MaxPositionSizeQuote) {
 		return RiskDecision{
 			Verdict: RiskReject, Rule: "max_position_size",
-			Reason: fmt.Sprintf("拟开仓名义金额 %s 超过单笔上限 %s",
-				notional, r.cfg.MaxPositionSizeQuote),
+			Reason: types.Msg("execution.risk.max_position_size",
+				"notional", notional.String(), "limit", r.cfg.MaxPositionSizeQuote.String()),
 			Detail: map[string]any{
 				"requested_notional": notional.String(),
 				"limit":              r.cfg.MaxPositionSizeQuote.String(),
@@ -110,8 +110,8 @@ func (r *RiskManager) CheckOpen(now time.Time, notional decimal.Decimal) RiskDec
 	if r.dailyLossBreached() {
 		return RiskDecision{
 			Verdict: RiskReject, Rule: "max_daily_loss",
-			Reason: fmt.Sprintf("当日已实现亏损 %s 达到上限 %s，当日不再开新仓",
-				r.dayRealizedLoss, r.cfg.MaxDailyLossQuote),
+			Reason: types.Msg("execution.risk.max_daily_loss_open",
+				"loss", r.dayRealizedLoss.String(), "limit", r.cfg.MaxDailyLossQuote.String()),
 			Detail: map[string]any{
 				"day_realized_loss": r.dayRealizedLoss.String(),
 				"limit":             r.cfg.MaxDailyLossQuote.String(),
@@ -147,8 +147,8 @@ func (r *RiskManager) CheckPosition(
 		if projected.GreaterThanOrEqual(r.cfg.MaxDailyLossQuote) {
 			return RiskDecision{
 				Verdict: RiskForceClose, Rule: "max_daily_loss",
-				Reason: fmt.Sprintf("当日亏损（已实现 %s + 浮亏 %s）达到上限 %s，强制平仓并暂停该标的",
-					r.dayRealizedLoss, unrealized.Neg(), r.cfg.MaxDailyLossQuote),
+				Reason: types.Msg("execution.risk.max_daily_loss_force_close",
+					"realized", r.dayRealizedLoss.String(), "unrealized", unrealized.Neg().String(), "limit", r.cfg.MaxDailyLossQuote.String()),
 				Detail: map[string]any{
 					"day_realized_loss": r.dayRealizedLoss.String(),
 					"unrealized_pnl":    unrealized.String(),
@@ -173,8 +173,8 @@ func (r *RiskManager) CheckPosition(
 		if triggered {
 			return RiskDecision{
 				Verdict: RiskForceClose, Rule: "stop_loss",
-				Reason: fmt.Sprintf("触发止损：入场 %s，当前 %s，止损价 %s",
-					pos.EntryPrice, price, pos.StopLossPrice),
+				Reason: types.Msg("execution.risk.stop_loss_triggered",
+					"entry", pos.EntryPrice.String(), "price", price.String(), "stop_loss_price", pos.StopLossPrice.String()),
 				Detail: map[string]any{
 					"entry_price":     pos.EntryPrice.String(),
 					"price":           price.String(),
@@ -192,8 +192,8 @@ func (r *RiskManager) CheckPosition(
 		if triggered {
 			return RiskDecision{
 				Verdict: RiskForceClose, Rule: "take_profit",
-				Reason: fmt.Sprintf("触发止盈：入场 %s，当前 %s，止盈价 %s",
-					pos.EntryPrice, price, pos.TakeProfitPrice),
+				Reason: types.Msg("execution.risk.take_profit_triggered",
+					"entry", pos.EntryPrice.String(), "price", price.String(), "take_profit_price", pos.TakeProfitPrice.String()),
 				Detail: map[string]any{
 					"entry_price":       pos.EntryPrice.String(),
 					"price":             price.String(),
@@ -208,8 +208,8 @@ func (r *RiskManager) CheckPosition(
 		if held >= r.cfg.MaxHoldingPeriod.Std() {
 			return RiskDecision{
 				Verdict: RiskForceClose, Rule: "max_holding",
-				Reason: fmt.Sprintf("持仓已达 %s，超过上限 %s，强制平仓",
-					held.Truncate(time.Second), r.cfg.MaxHoldingPeriod),
+				Reason: types.Msg("execution.risk.max_holding_triggered",
+					"held", held.Truncate(time.Second).String(), "limit", r.cfg.MaxHoldingPeriod.String()),
 				Detail: map[string]any{
 					"held":  held.String(),
 					"limit": r.cfg.MaxHoldingPeriod.String(),
@@ -257,6 +257,17 @@ func (r *RiskManager) dailyLossBreached() bool {
 		r.dayRealizedLoss.GreaterThanOrEqual(r.cfg.MaxDailyLossQuote)
 }
 
+// ResolveStopLossPrice, ResolveTakeProfitPrice, ResolvePositionSizeQuote, and
+// their level-lookup helpers below deliberately still return plain Chinese
+// error text (not a types.Message) -- unlike RiskDecision.Reason above, these
+// errors are not currently displayed anywhere in the webui (a rejected-open
+// caused by one of them ends with the order simply not being placed; there is
+// no order/risk-event page rendering this text today). Worker wraps them as
+// types.Message{Literal: err.Error()} at the point they become a
+// RiskDecision.Reason, the same legacy-literal path used for pre-migration
+// audit rows, so nothing is lost -- just not yet worth the added catalog
+// surface for text nobody currently sees rendered.
+//
 // ResolveStopLossPrice computes the absolute stop-loss price threshold at the
 // moment a position is opened; it returns the zero value with no error when
 // pct is 0 (stop-loss not set). In support_resistance mode it errors when no

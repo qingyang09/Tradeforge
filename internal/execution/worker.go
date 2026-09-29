@@ -9,6 +9,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
+	"tradeforge/internal/i18n"
 	"tradeforge/internal/strategy"
 	"tradeforge/pkg/types"
 )
@@ -45,7 +46,7 @@ type Stats struct {
 	Errors         int
 	RealizedPnL    decimal.Decimal
 	Suspended      bool
-	SuspendReason  string
+	SuspendReason  types.Message
 }
 
 // WorkerOption configures a Worker.
@@ -144,7 +145,7 @@ func (w *Worker) Resume() {
 	defer w.mu.Unlock()
 	w.risk.Resume()
 	w.stats.Suspended = false
-	w.stats.SuspendReason = ""
+	w.stats.SuspendReason = types.Message{}
 }
 
 // Handle processes a single decision.
@@ -236,7 +237,7 @@ func (w *Worker) openPosition(ctx context.Context, d types.Decision, now time.Ti
 		w.stats.OrdersRejected++
 		w.logger.Info("open rejected by stop-loss condition", "symbol", w.cfg.Symbol, "err", err)
 		w.recordRiskEvent(ctx, RiskDecision{
-			Verdict: RiskReject, Rule: "unresolved_stop_loss", Reason: err.Error(),
+			Verdict: RiskReject, Rule: "unresolved_stop_loss", Reason: types.Message{Literal: err.Error()},
 		}, "reject_open", now)
 		return nil
 	}
@@ -246,7 +247,7 @@ func (w *Worker) openPosition(ctx context.Context, d types.Decision, now time.Ti
 		w.stats.OrdersRejected++
 		w.logger.Info("open rejected by position-size calculation", "symbol", w.cfg.Symbol, "err", err)
 		w.recordRiskEvent(ctx, RiskDecision{
-			Verdict: RiskReject, Rule: "unresolved_position_size", Reason: err.Error(),
+			Verdict: RiskReject, Rule: "unresolved_position_size", Reason: types.Message{Literal: err.Error()},
 		}, "reject_open", now)
 		return nil
 	}
@@ -255,7 +256,7 @@ func (w *Worker) openPosition(ctx context.Context, d types.Decision, now time.Ti
 	if !verdict.Allowed() {
 		w.stats.OrdersRejected++
 		w.logger.Info("open rejected by risk control",
-			"symbol", w.cfg.Symbol, "rule", verdict.Rule, "reason", verdict.Reason)
+			"symbol", w.cfg.Symbol, "rule", verdict.Rule, "reason", i18n.Render(i18n.LangEN, verdict.Reason))
 		w.recordRiskEvent(ctx, verdict, "reject_open", now)
 		return nil
 	}
@@ -283,7 +284,7 @@ func (w *Worker) openPosition(ctx context.Context, d types.Decision, now time.Ti
 		Side:       side,
 		Quantity:   notional.Div(d.Price),
 		RefPrice:   d.Price,
-		Provenance: w.provenance(d, "开仓"),
+		Provenance: w.provenance(d, types.Msg("execution.provenance.open")),
 	})
 	if err != nil {
 		w.stats.Errors++
@@ -323,7 +324,7 @@ func (w *Worker) closePosition(ctx context.Context, d types.Decision, reason str
 	}
 	side, _ := types.SideFor(pos.Direction.Opposite())
 
-	prov := w.provenance(d, "平仓："+reason)
+	prov := w.provenance(d, closeReasonMessage(reason))
 	order, err := w.broker.PlaceOrder(ctx, OrderRequest{
 		StrategyID: w.cfg.ID,
 		Symbol:     w.cfg.Symbol,
@@ -356,7 +357,7 @@ func (w *Worker) forceClose(
 ) error {
 	w.stats.RiskEvents++
 	w.logger.Warn("risk control triggered a forced close",
-		"symbol", w.cfg.Symbol, "rule", verdict.Rule, "reason", verdict.Reason)
+		"symbol", w.cfg.Symbol, "rule", verdict.Rule, "reason", i18n.Render(i18n.LangEN, verdict.Reason))
 
 	closeErr := w.closePosition(ctx, d, verdict.Rule, now)
 
@@ -375,12 +376,36 @@ func (w *Worker) forceClose(
 	return closeErr
 }
 
+// closeReasonMessage maps a close reason -- either the literal "signal" or a
+// RiskDecision.Rule value (stop_loss/take_profit/max_daily_loss/max_holding)
+// -- to its catalog message. Kept as a fixed set of complete, translator-owned
+// sentences rather than one generic "close: {reason}" template with the rule
+// name substituted in, since the rule name itself would then need its own
+// per-language rendering -- the same reasoning as aggregate.go's blockerLang
+// tradeoff, avoided here because the rule set is small and fixed.
+func closeReasonMessage(reason string) types.Message {
+	switch reason {
+	case "signal":
+		return types.Msg("execution.provenance.close.signal")
+	case "stop_loss":
+		return types.Msg("execution.provenance.close.stop_loss")
+	case "take_profit":
+		return types.Msg("execution.provenance.close.take_profit")
+	case "max_daily_loss":
+		return types.Msg("execution.provenance.close.max_daily_loss")
+	case "max_holding":
+		return types.Msg("execution.provenance.close.max_holding")
+	default:
+		return types.Msg("execution.provenance.close.other", "rule", reason)
+	}
+}
+
 // provenance assembles the order's provenance information.
 //
 // Every order must be able to answer "which module's which signal, with what
 // parameters, triggered this" — that's the platform's baseline for
 // explainability, and also what gets shown on the user interface.
-func (w *Worker) provenance(d types.Decision, note string) types.OrderProvenance {
+func (w *Worker) provenance(d types.Decision, note types.Message) types.OrderProvenance {
 	params := make(map[string]map[string]any, len(w.cfg.Modules))
 	for _, mc := range w.cfg.Modules {
 		// Store a snapshot of the params rather than a reference to the
