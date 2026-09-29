@@ -1,12 +1,12 @@
 {{define "batch_clarify_fragment"}}
-<p>还需要你补充几点信息：</p>
+<p>{{t "webui.wizard.clarify.intro"}}</p>
 <ul>
   {{range .Questions}}<li>{{.}}</li>{{end}}
 </ul>
 <form hx-post="/wizard/batch/clarify" hx-target="#batch-step" hx-swap="innerHTML">
   <input type="hidden" name="state" value="{{.State}}">
-  <label for="answer">你的回答</label>
+  <label for="answer">{{t "webui.wizard.field.answer"}}</label>
   <textarea id="answer" name="answer" required></textarea>
-  <div style="margin-top:0.75rem;"><button type="submit">继续</button></div>
+  <div style="margin-top:0.75rem;"><button type="submit">{{t "webui.wizard.clarify.submit"}}</button></div>
 </form>
 {{end}}

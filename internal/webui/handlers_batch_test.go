@@ -11,6 +11,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"tradeforge/internal/agent"
+	"tradeforge/internal/i18n"
 	"tradeforge/internal/marketdata/okx"
 	"tradeforge/internal/modules"
 )
@@ -51,27 +52,27 @@ func TestTopSymbolsByVolumeHandlesZeroOrNegativeN(t *testing.T) {
 // ---------- parseBatchCount ----------
 
 func TestParseBatchCountDefaultsWhenEmpty(t *testing.T) {
-	n, err := parseBatchCount("")
+	n, err := parseBatchCount(i18n.LangZH, "")
 	if err != nil || n != defaultBatchScanCount {
 		t.Errorf("空输入应默认 %d，实际 n=%d err=%v", defaultBatchScanCount, n, err)
 	}
 }
 
 func TestParseBatchCountClampsAboveMax(t *testing.T) {
-	n, err := parseBatchCount("500")
+	n, err := parseBatchCount(i18n.LangZH, "500")
 	if err != nil || n != maxBatchScanCount {
 		t.Errorf("超过上限应夹逼到 %d，实际 n=%d err=%v", maxBatchScanCount, n, err)
 	}
 }
 
 func TestParseBatchCountRejectsNonPositive(t *testing.T) {
-	if _, err := parseBatchCount("0"); err == nil {
+	if _, err := parseBatchCount(i18n.LangZH, "0"); err == nil {
 		t.Error("0 应该报错")
 	}
-	if _, err := parseBatchCount("-3"); err == nil {
+	if _, err := parseBatchCount(i18n.LangZH, "-3"); err == nil {
 		t.Error("负数应该报错")
 	}
-	if _, err := parseBatchCount("abc"); err == nil {
+	if _, err := parseBatchCount(i18n.LangZH, "abc"); err == nil {
 		t.Error("非数字应该报错")
 	}
 }

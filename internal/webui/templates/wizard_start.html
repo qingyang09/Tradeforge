@@ -1,32 +1,29 @@
 {{define "wizard_start_content"}}
-<h1>新建策略</h1>
+<h1>{{t "webui.wizard.start.title"}}</h1>
 <p class="note">
-  用一句话描述你想执行的交易规则。系统只负责把这句话翻译成结构化配置并忠实执行，
-  不会对规则本身提出任何建议或修改意见——你确认之前，什么都不会被保存。
+  {{t "webui.wizard.start.intro1"}}
 </p>
 <p class="note">
-  这里是纯文字对话；如果想一边看真实K线图一边拖拽调整止损止盈线、模块参数，
-  或者想同时用真实历史数据跑一次回测，可以试试 <a href="/builder">可视化建策</a>——
-  两条路径最终生成的是同一种策略配置，殊途同归，挑你觉得顺手的用。
+  {{t "webui.wizard.start.intro2_pre"}}<a href="/builder">{{t "webui.wizard.start.intro2_link"}}</a>{{t "webui.wizard.start.intro2_post"}}
 </p>
 
 <div class="card">
-  <p class="note" style="margin:0 0 0.4rem;">点一下直接填进下面的输入框，再按需要改：</p>
+  <p class="note" style="margin:0 0 0.4rem;">{{t "webui.wizard.start.examples_hint"}}</p>
   <div class="example-chips">
-    <button type="button" class="chip" data-example="BTCUSDT 1 小时线，成交量突破 2 倍均量且价格站上阻力位时做多，止损 2%，止盈 5%">放量突破做多</button>
-    <button type="button" class="chip" data-example="ETHUSDT 4 小时线，跌破支撑位时做空，止损设在最近的阻力位">跌破支撑做空</button>
-    <button type="button" class="chip" data-example="BTCUSDT 1 小时判断盘整区假突破，15 分钟判断放量下跌，两个条件都满足时做空，止损 3%，止盈 8%">多周期组合</button>
+    <button type="button" class="chip" data-example="{{t "webui.wizard.start.chip1_example"}}">{{t "webui.wizard.start.chip1_label"}}</button>
+    <button type="button" class="chip" data-example="{{t "webui.wizard.start.chip2_example"}}">{{t "webui.wizard.start.chip2_label"}}</button>
+    <button type="button" class="chip" data-example="{{t "webui.wizard.start.chip3_example"}}">{{t "webui.wizard.start.chip3_label"}}</button>
   </div>
 </div>
 
 <div id="wizard-step" class="card">
   {{if not .AgentReady}}
-    <p class="warn">Agent 翻译层未就绪（通常是没有配置 ANTHROPIC_API_KEY），向导暂不可用。</p>
+    <p class="warn">{{t "webui.wizard.start.agent_not_ready"}}</p>
   {{else}}
     <form hx-post="/wizard/translate" hx-target="#wizard-step" hx-swap="innerHTML">
-      <label for="utterance">交易规则</label>
-      <textarea id="utterance" name="utterance" placeholder="例如：BTCUSDT 1 小时线，成交量突破 2 倍均量且价格站上阻力位时做多" required></textarea>
-      <div style="margin-top:0.75rem;"><button type="submit">翻译</button></div>
+      <label for="utterance">{{t "webui.wizard.field.utterance"}}</label>
+      <textarea id="utterance" name="utterance" placeholder="{{t "webui.wizard.start.utterance_placeholder"}}" required></textarea>
+      <div style="margin-top:0.75rem;"><button type="submit">{{t "webui.wizard.start.submit"}}</button></div>
     </form>
   {{end}}
 </div>

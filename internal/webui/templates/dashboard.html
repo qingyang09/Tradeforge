@@ -1,26 +1,26 @@
 {{define "dashboard_content"}}
-{{if .Banner}}
-  <div class="{{if .BannerErr}}banner-err{{else}}banner-ok{{end}}">{{.Banner}}</div>
+{{if not .Banner.IsZero}}
+  <div class="{{if .BannerErr}}banner-err{{else}}banner-ok{{end}}">{{msg .Banner}}</div>
 {{end}}
 
-<h1>策略状态看板</h1>
-<p class="note">按状态机阶段分组展示全部策略。策略从这里点进去看详情。</p>
+<h1>{{t "webui.dashboard.title"}}</h1>
+<p class="note">{{t "webui.dashboard.subtitle"}}</p>
 
 {{if eq .Total 0}}
-  <div class="card">还没有任何策略。<a href="/wizard">用一句话新建一个</a>。</div>
+  <div class="card">{{t "webui.dashboard.empty_pre"}}<a href="/wizard">{{t "webui.dashboard.empty_link"}}</a>{{t "webui.dashboard.empty_post"}}</div>
 {{end}}
 
 {{range .Groups}}
   {{$isDraft := eq (print .State) "DRAFT"}}
   <div class="card">
-    <h2><span class="badge badge-{{lower (print .State)}}">{{.State}}</span> （{{len .Strategies}}）</h2>
+    <h2><span class="badge badge-{{lower (print .State)}}">{{.State}}</span> {{t "webui.dashboard.group_count" "count" (len .Strategies)}}</h2>
     {{if .Strategies}}
     <form method="post" action="/strategies/bulk-delete"
-      {{if $isDraft}}onsubmit="return confirm('确定要永久删除选中的策略吗？此操作不可撤销，会同时删除关联的回测/订单/决策记录。');"{{end}}>
+      {{if $isDraft}}onsubmit="return confirm('{{t "webui.dashboard.confirm_bulk_delete"}}');"{{end}}>
       <table>
         <tr>
-          {{if $isDraft}}<th style="width:1.5rem;"><input type="checkbox" class="select-all" title="全选/取消全选"></th>{{end}}
-          <th>名称</th><th>标的</th><th>周期</th><th>组合方式</th><th>更新时间</th><th></th>
+          {{if $isDraft}}<th style="width:1.5rem;"><input type="checkbox" class="select-all" title="{{t "webui.dashboard.select_all_title"}}"></th>{{end}}
+          <th>{{t "webui.dashboard.col_name"}}</th><th>{{t "webui.dashboard.col_symbol"}}</th><th>{{t "webui.dashboard.col_timeframe"}}</th><th>{{t "webui.dashboard.col_combine"}}</th><th>{{t "webui.dashboard.col_updated"}}</th><th></th>
         </tr>
         {{range .Strategies}}
         <tr>
@@ -30,16 +30,16 @@
           <td>{{.Timeframe}}</td>
           <td>{{.Combine}}</td>
           <td>{{if .UpdatedAt.IsZero}}—{{else}}{{.UpdatedAt.Format "2006-01-02 15:04"}}{{end}}</td>
-          <td><a href="/strategies/{{.ID}}">详情</a></td>
+          <td><a href="/strategies/{{.ID}}">{{t "webui.dashboard.detail_link"}}</a></td>
         </tr>
         {{end}}
       </table>
       {{if $isDraft}}
-      <button type="submit" class="danger">删除选中</button>
+      <button type="submit" class="danger">{{t "webui.dashboard.delete_selected"}}</button>
       {{end}}
     </form>
     {{else}}
-      <p class="note">暂无。</p>
+      <p class="note">{{t "webui.dashboard.none"}}</p>
     {{end}}
   </div>
 {{end}}

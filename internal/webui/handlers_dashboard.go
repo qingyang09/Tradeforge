@@ -2,9 +2,9 @@ package webui
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 
+	"tradeforge/internal/i18n"
 	"tradeforge/pkg/types"
 )
 
@@ -17,7 +17,7 @@ type dashboardData struct {
 	Groups []dashboardGroup
 	Total  int
 	// Banner 是批量操作（目前只有批量删除）的结果反馈，普通 GET 请求下为空。
-	Banner    string
+	Banner    types.Message
 	BannerErr bool
 }
 
@@ -54,7 +54,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, err)
 		return
 	}
-	s.renderPage(w, r, "状态看板", "dashboard_content", data)
+	s.renderPage(w, r, i18n.T(resolveLang(r), "webui.dashboard.title"), "dashboard_content", data)
 }
 
 // handleBulkDeleteStrategies 批量删除看板上勾选的策略——只在 DRAFT 分组里才有
@@ -67,6 +67,7 @@ func (s *Server) handleBulkDeleteStrategies(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	userID, _ := currentUserID(r)
+	lang := resolveLang(r)
 	ids := r.Form["ids"]
 	ctx := r.Context()
 
@@ -77,14 +78,14 @@ func (s *Server) handleBulkDeleteStrategies(w http.ResponseWriter, r *http.Reque
 		if err != nil {
 			skipped++
 			if firstSkipReason == "" {
-				firstSkipReason = fmt.Sprintf("策略 %s 不存在或已被删除", id)
+				firstSkipReason = i18n.T(lang, "webui.dashboard.skip_reason_not_found", "id", id)
 			}
 			continue
 		}
 		if sc.State != types.StateDraft {
 			skipped++
 			if firstSkipReason == "" {
-				firstSkipReason = fmt.Sprintf("《%s》当前是 %s 状态，不是 DRAFT，跳过", sc.Name, sc.State)
+				firstSkipReason = i18n.T(lang, "webui.dashboard.skip_reason_not_draft", "name", sc.Name, "state", string(sc.State))
 			}
 			continue
 		}
@@ -102,18 +103,17 @@ func (s *Server) handleBulkDeleteStrategies(w http.ResponseWriter, r *http.Reque
 	}
 	switch {
 	case len(ids) == 0:
-		data.Banner, data.BannerErr = "没有选中任何策略。", true
+		data.Banner, data.BannerErr = types.Msg("webui.dashboard.bulk_delete_none_selected"), true
 	case skipped == 0:
-		data.Banner = fmt.Sprintf("已删除 %d 条策略。", deleted)
+		data.Banner = types.Msg("webui.dashboard.bulk_delete_success", "deleted", deleted)
 	default:
-		data.Banner = fmt.Sprintf("已删除 %d 条策略，跳过 %d 条（%s%s）。",
-			deleted, skipped, firstSkipReason, func() string {
-				if skipped > 1 {
-					return "等"
-				}
-				return ""
-			}())
+		etc := ""
+		if skipped > 1 {
+			etc = i18n.T(lang, "webui.dashboard.bulk_delete_etc_suffix")
+		}
+		data.Banner = types.Msg("webui.dashboard.bulk_delete_partial",
+			"deleted", deleted, "skipped", skipped, "reason", firstSkipReason, "etc", etc)
 		data.BannerErr = deleted == 0
 	}
-	s.renderPage(w, r, "状态看板", "dashboard_content", data)
+	s.renderPage(w, r, i18n.T(lang, "webui.dashboard.title"), "dashboard_content", data)
 }
