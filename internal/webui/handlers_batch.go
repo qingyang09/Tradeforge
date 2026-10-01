@@ -3,7 +3,6 @@ package webui
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -17,10 +16,14 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// defaultBatchScanCount/maxBatchScanCount 决定批量扫描一次最多处理多少个标的——
-// 不设上限的话，用户一次填个很大的数字会打一堆没人关心的冷门标的的回测、也会让确认页面
-// 的标的列表长到没法看。50 是一个足够覆盖"成交量前几十名"这个需求、又不至于失控的上限，
-// 仿 internal/marketdata/okx/client.go 的 maxCandlesPerRequest 的 clamp-不报错风格。
+// defaultBatchScanCount/maxBatchScanCount decide how many symbols a single
+// batch scan can process at most -- without a cap, a user entering a huge
+// number would trigger backtests against a pile of nobody-cares-about
+// low-volume symbols, and also make the confirmation page's symbol list
+// unreadably long. 50 is a cap that comfortably covers "top few dozen by
+// volume" without letting things run away, mirroring
+// internal/marketdata/okx/client.go's maxCandlesPerRequest clamp-not-error
+// style.
 const (
 	defaultBatchScanCount = 20
 	maxBatchScanCount     = 50
@@ -66,10 +69,13 @@ type batchResultData struct {
 	Rows       []batchResultRow
 }
 
-// handleBatchScanTranslate 是批量扫描的入口：先按 24 小时成交量圈定一批标的，再把用户
-// 描述的规则翻译成配置模板（只调一次 LLM，不是对每个标的分别问一次）——具体落到每个标的
-// 各自一份 DRAFT，要等用户在确认页面看过完整标的列表、点了"确认"才会发生
-// （handleBatchScanConfirm），翻译这一步本身不写库。
+// handleBatchScanTranslate is the batch-scan entry point: first narrow down
+// a set of symbols by 24-hour volume, then translate the user's described
+// rule into a config template (a single LLM call, not one question per
+// symbol) -- actually materializing a DRAFT for each symbol only happens
+// once the user has reviewed the full symbol list on the confirmation page
+// and clicked "confirm" (handleBatchScanConfirm); this translation step
+// itself writes nothing to the database.
 func (s *Server) handleBatchScanTranslate(w http.ResponseWriter, r *http.Request) {
 	userID, _ := currentUserID(r)
 	ag, _ := s.userAgent(r.Context(), userID)
@@ -99,7 +105,7 @@ func (s *Server) handleBatchScanTranslate(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	p, err := ag.Translate(r.Context(), batchContextualUtterance(len(symbols), utterance), nil, lang)
+	p, err := ag.Translate(r.Context(), batchContextualUtterance(lang, len(symbols), utterance), nil, lang)
 	if err != nil {
 		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: i18n.T(lang, "webui.wizard.err.translate_failed", "err", err.Error())})
 		return
@@ -107,16 +113,15 @@ func (s *Server) handleBatchScanTranslate(w http.ResponseWriter, r *http.Request
 	s.renderBatchProposal(w, r, p, nil, symbols)
 }
 
-// batchContextualUtterance 给用户的原始描述前面拼一句上下文提示，告诉模型这条规则会
-// 套用到多个不同标的、标的字段不用操心——不这样做的话，prompt.go 里"没说清楚交易哪个
-// 标的"这条规则会让模型对着一句故意不提标的的话一直追问。写法照抄
-// handlers_builder.go 的 handleBuilderTranslate 给可视化建策注入画板标的上下文的模式。
-func batchContextualUtterance(symbolCount int, utterance string) string {
-	return fmt.Sprintf(
-		"（这条规则将被套用到扫描出的 %d 个不同标的上，不需要你决定具体是哪个标的，"+
-			"标的字段填一个交易所格式的占位符即可（实际会被替换成每个标的各自的代码）——"+
-			"只需要正常理解其它信息：周期、模块、参数、止损止盈、风控）%s",
-		symbolCount, utterance)
+// batchContextualUtterance prepends a context note to the user's raw
+// description, telling the model that this rule will apply to several
+// different symbols and it doesn't need to worry about the symbol field --
+// without this, prompt.go's "didn't say which symbol to trade" rule would
+// make the model keep asking about a sentence that deliberately omits any
+// symbol. Mirrors the same pattern handlers_builder.go's
+// handleBuilderTranslate uses to inject the builder's chart-symbol context.
+func batchContextualUtterance(lang i18n.Lang, symbolCount int, utterance string) string {
+	return i18n.T(lang, "webui.batch.context_prefix", "count", symbolCount, "utterance", utterance)
 }
 
 func (s *Server) handleBatchScanClarify(w http.ResponseWriter, r *http.Request) {
@@ -153,14 +158,19 @@ func (s *Server) handleBatchScanClarify(w http.ResponseWriter, r *http.Request) 
 		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: i18n.T(lang, "webui.wizard.err.translate_failed", "err", err.Error())})
 		return
 	}
-	// 扫描出的标的列表在整个多轮会话里保持不变，不重新扫描一次——跟 ForceSymbol
-	// 跨澄清轮次不失效是同一个道理（见 wizardState.BatchSymbols 的注释）。
+	// The scanned symbol list stays fixed across the whole multi-round
+	// conversation, never re-scanning -- the same reasoning as ForceSymbol
+	// never expiring across clarification rounds (see
+	// wizardState.BatchSymbols's doc comment).
 	s.renderBatchProposal(w, r, p, newHistory, ws.BatchSymbols)
 }
 
-// renderBatchProposal 是 renderProposal 的批量版本：NeedsClarification 时渲染批量专属的
-// 澄清片段（posts 到 /wizard/batch/clarify），否则渲染带完整标的列表的确认片段，不展示
-// 单个 Config.Symbol——那只是翻译阶段的占位符，在批量场景里没有意义。
+// renderBatchProposal is renderProposal's batch counterpart: when
+// NeedsClarification, it renders the batch-specific clarification fragment
+// (posts to /wizard/batch/clarify); otherwise it renders a confirmation
+// fragment carrying the full symbol list, without showing the single
+// Config.Symbol -- that's just a placeholder from the translation step and
+// has no meaning in a batch context.
 func (s *Server) renderBatchProposal(w http.ResponseWriter, r *http.Request, p *agent.Proposal, history []agent.Turn, symbols []string) {
 	state, err := encodeState(wizardState{History: history, Proposal: p, BatchSymbols: symbols})
 	if err != nil {
@@ -175,10 +185,12 @@ func (s *Server) renderBatchProposal(w http.ResponseWriter, r *http.Request, p *
 		batchConfirmData{Restatement: p.Restatement, Config: *p.Config, Symbols: symbols, State: state})
 }
 
-// handleBatchScanConfirm 把确认过的配置模板分别套用到每个扫描出的标的上，各自生成一份
-// 独立的 DRAFT StrategyConfig——一个标的校验失败不能拖累其它标的（仿
-// handleBulkDeleteStrategies 的隔离+tally 写法），落库之后的路径（回测/模拟盘/推进/
-// 手动解锁实盘）跟手动建的策略完全一样，不做任何特殊处理。
+// handleBatchScanConfirm applies the confirmed config template separately to
+// each scanned symbol, producing an independent DRAFT StrategyConfig for
+// each -- one symbol's validation failure must not take down the others
+// (mirroring handleBulkDeleteStrategies's isolate-and-tally approach). Once
+// saved, each follows the exact same path (backtest/paper trading/advance/
+// manual live unlock) as a manually-built strategy, with no special-casing.
 func (s *Server) handleBatchScanConfirm(w http.ResponseWriter, r *http.Request) {
 	lang := resolveLang(r)
 	ws, err := decodeState(r.FormValue("state"))
@@ -198,8 +210,10 @@ func (s *Server) handleBatchScanConfirm(w http.ResponseWriter, r *http.Request) 
 	var rows []batchResultRow
 	created := 0
 	for _, symbol := range ws.BatchSymbols {
-		// 浅拷贝：Modules 里的 Params 是 map，跟其它 N-1 份克隆共享底层数据，但循环里
-		// 全程只读不写，不会互相污染——不要在这个循环里改 cfg.Modules[i].Params。
+		// Shallow copy: Modules' Params is a map, so it shares underlying
+		// data with the other N-1 clones, but the loop only ever reads it,
+		// never writes, so nothing cross-contaminates -- never mutate
+		// cfg.Modules[i].Params inside this loop.
 		cfg := *ws.Proposal.Config
 		cfg.Symbol = symbol
 		cfg.ID = idgen.NewUUID()
@@ -223,8 +237,9 @@ func (s *Server) handleBatchScanConfirm(w http.ResponseWriter, r *http.Request) 
 				"source_utterance": prepared.SourceUtterance, "batch_size": len(ws.BatchSymbols),
 			},
 		}); err != nil {
-			// 审计记录写入失败不撤销已经保存的策略——理由跟 handleWizardConfirm 一致。
-			s.logger.Error("写入审计记录失败", "strategy_id", prepared.ID, "symbol", symbol, "err", err)
+			// An audit-record write failure doesn't roll back the
+			// already-saved strategy -- same reasoning as handleWizardConfirm.
+			s.logger.Error("failed to write audit record", "strategy_id", prepared.ID, "symbol", symbol, "err", err)
 		}
 		rows = append(rows, batchResultRow{Symbol: symbol, StrategyID: prepared.ID})
 		created++
@@ -237,8 +252,10 @@ func (s *Server) handleBatchScanConfirm(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// parseBatchCount 解析并夹逼用户填的扫描数量——非法输入直接报错，超出上限静默夹逼到
-// 上限（仿 okx 包 FetchCandles 对 limit 的处理方式），不是报错拒绝整个请求。
+// parseBatchCount parses and clamps the scan count the user entered --
+// invalid input is rejected outright, but exceeding the cap is silently
+// clamped down to it (mirroring the okx package's handling of limit in
+// FetchCandles), not rejected as an error.
 func parseBatchCount(lang i18n.Lang, raw string) (int, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -254,7 +271,8 @@ func parseBatchCount(lang i18n.Lang, raw string) (int, error) {
 	return n, nil
 }
 
-// scanTopSymbols 拉取全市场现货行情快照，按 24 小时成交额降序取前 n 个标的。
+// scanTopSymbols fetches a market-wide spot ticker snapshot and takes the top
+// n symbols sorted by 24-hour quote volume, descending.
 func (s *Server) scanTopSymbols(ctx context.Context, n int) ([]string, error) {
 	tickers, err := s.okxClient.ListTickers(ctx)
 	if err != nil {
@@ -263,7 +281,8 @@ func (s *Server) scanTopSymbols(ctx context.Context, n int) ([]string, error) {
 	return topSymbolsByVolume(tickers, n), nil
 }
 
-// topSymbolsByVolume 是纯函数，方便单独测试排序/截断逻辑，不依赖网络。
+// topSymbolsByVolume is a pure function, making the sort/truncate logic easy
+// to test in isolation, with no network dependency.
 func topSymbolsByVolume(tickers []okx.Ticker, n int) []string {
 	if n <= 0 || len(tickers) == 0 {
 		return nil

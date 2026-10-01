@@ -21,26 +21,31 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// BacktestRunnerConfig 配置"运行回测"按钮怎么去拉真实历史数据、去哪找 Python
-// 撮合引擎子进程。
+// BacktestRunnerConfig configures how the "run backtest" button fetches real
+// historical data and where it finds the Python matching-engine subprocess.
 //
-// 默认值假设 cmd/webui 是从项目根目录启动的——这个项目全程都是这么跑的
-// （go run ./cmd/webui），PythonDir 的相对路径因此总能对上 python/backtest。
+// The defaults assume cmd/webui is started from the project root -- that's
+// how this project is run throughout (go run ./cmd/webui), so PythonDir's
+// relative path always resolves to python/backtest.
 type BacktestRunnerConfig struct {
-	// PythonExe 是 python 解释器名字/路径，默认 "python"（某些系统上是 "python3"）。
+	// PythonExe is the Python interpreter's name/path, default "python" (some
+	// systems use "python3").
 	PythonExe string
-	// PythonDir 是 python/backtest 的路径（相对或绝对）——子进程以它为工作目录
-	// 运行 "python -m tradeforge_backtest.cli"，python -m 会把当前工作目录加进
-	// sys.path，不需要先 pip install 这个包。
+	// PythonDir is python/backtest's path (relative or absolute) -- the
+	// subprocess runs "python -m tradeforge_backtest.cli" with this as its
+	// working directory; python -m adds the current working directory to
+	// sys.path, so the package doesn't need to be pip-installed first.
 	PythonDir string
-	// DefaultLookback 是没指定回看根数时，往回拉多少根K线。
+	// DefaultLookback is how many candles to pull when no lookback count is
+	// specified.
 	DefaultLookback int
-	// Timeout 是子进程的最长运行时间，超时视为失败——不能让一次回测卡死整个
-	// webui 进程的某个请求 goroutine 无限期挂着。
+	// Timeout is the subprocess's maximum run time; exceeding it counts as a
+	// failure -- a backtest must never be allowed to hang some request
+	// goroutine in the webui process indefinitely.
 	Timeout time.Duration
 }
 
-// DefaultBacktestRunnerConfig 是开发环境的默认配置。
+// DefaultBacktestRunnerConfig is the development-environment default.
 func DefaultBacktestRunnerConfig() BacktestRunnerConfig {
 	return BacktestRunnerConfig{
 		PythonExe:       "python",
@@ -50,19 +55,22 @@ func DefaultBacktestRunnerConfig() BacktestRunnerConfig {
 	}
 }
 
-// SetBacktestRunnerConfig 覆盖"运行回测"按钮的配置。不调用则使用
-// DefaultBacktestRunnerConfig()。
+// SetBacktestRunnerConfig overrides the "run backtest" button's
+// configuration. If not called, DefaultBacktestRunnerConfig() is used.
 func (s *Server) SetBacktestRunnerConfig(cfg BacktestRunnerConfig) {
 	s.backtestCfg = cfg
 }
 
-// maxCandlesPerOKXRequest 跟 internal/marketdata/okx 的单次请求上限保持一致——
-// 拉取超过这个数量的历史需要翻页，见 fetchCandleHistory。
+// maxCandlesPerOKXRequest matches internal/marketdata/okx's per-request limit
+// -- fetching more history than this needs paging, see fetchCandleHistory.
 const maxCandlesPerOKXRequest = 300
 
-// fetchCandleHistory 拉取最近 limit 根K线，超过单次请求上限时自动翻页——
-// 跟画板页图表左拖到底自动补历史用的是同一套翻页机制（GET /api/candles 的
-// before 参数），这里是服务端内部直接调用 okxClient，不经过那个 HTTP 接口。
+// fetchCandleHistory fetches the most recent limit candles, automatically
+// paging when that exceeds the per-request limit -- the same paging
+// mechanism the builder page's chart uses when dragging left to auto-load
+// more history (GET /api/candles's before param), just called directly
+// against okxClient server-side here instead of going through that HTTP
+// endpoint.
 func (s *Server) fetchCandleHistory(ctx context.Context, symbol string, tf types.Timeframe, limit int) ([]types.Candle, error) {
 	if limit <= 0 {
 		limit = 1
@@ -73,17 +81,17 @@ func (s *Server) fetchCandleHistory(ctx context.Context, symbol string, tf types
 	}
 	candles, err := s.okxClient.FetchCandles(ctx, symbol, tf, page)
 	if err != nil {
-		return nil, fmt.Errorf("拉取 %s 的 %s 周期历史K线失败：%w", symbol, tf, err)
+		return nil, fmt.Errorf("failed to fetch %s historical candles for %s: %w", tf, symbol, err)
 	}
 	for len(candles) < limit {
 		earliest := candles[0].OpenTime
 		more, err := s.okxClient.FetchCandlesBefore(ctx, symbol, tf, maxCandlesPerOKXRequest, earliest)
 		if err != nil {
-			return nil, fmt.Errorf("翻页拉取 %s 的 %s 周期历史K线失败：%w", symbol, tf, err)
+			return nil, fmt.Errorf("failed to page back further %s historical candles for %s: %w", tf, symbol, err)
 		}
 		more = filterBefore(more, earliest)
 		if len(more) == 0 {
-			break // 已经拉到交易所能提供的最早历史，不再是错误
+			break // already reached the earliest history the exchange can provide, not an error
 		}
 		candles = append(more, candles...)
 	}
@@ -103,13 +111,18 @@ func filterBefore(candles []types.Candle, cutoff time.Time) []types.Candle {
 	return out
 }
 
-// handleRunBacktest 是"运行回测"按钮的入口：拉真实历史数据、在内存里跑一遍
-// internal/backtest.Replay、把候选数据交给 Python 撮合引擎子进程算出完整结果并
-// 写库——全程不需要用户去开终端手动跑 CLI 工具。
+// handleRunBacktest is the "run backtest" button's entry point: fetch real
+// historical data, run internal/backtest.Replay in memory, hand the
+// candidate data to the Python matching-engine subprocess to compute the
+// full result and persist it -- all without the user needing to open a
+// terminal and run the CLI tool by hand.
 //
-// 跟 handleConfirmBacktest（DRAFT → BACKTESTED 的状态推进）是两个独立的按钮：
-// 这个按钮只负责"产出一份新的回测结果"，产出后是否要据此推进状态仍然需要用户
-// 另外点"确认回测"——回测结果本身不自动导致状态推进，这个决定本来就该由人做。
+// This is a separate button from handleConfirmBacktest (the DRAFT ->
+// BACKTESTED state advance): this one is only responsible for "producing a
+// new backtest result" -- whether to advance the state based on it still
+// requires the user to separately click "confirm backtest." A backtest
+// result by itself never auto-advances the state; that decision should
+// always be a human's to make.
 func (s *Server) handleRunBacktest(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !looksLikeUUID(id) {
@@ -235,9 +248,11 @@ func (s *Server) doRunBacktest(ctx context.Context, sc types.StrategyConfig, loo
 		"count", len(candles), "timeframe", sc.Timeframe, "triggers", tradeCount), false
 }
 
-// runPythonSubprocess 是 Server.runPython 的默认实现，真的拉起一个 python 子进程。
-// 测试用假实现替换这个字段，不需要真的装 Python 就能测编排逻辑（拉数据、写临时
-// 文件、组装参数、处理错误）。
+// runPythonSubprocess is Server.runPython's default implementation, which
+// really does spawn a Python subprocess. Tests replace this field with a
+// fake implementation so the orchestration logic (fetching data, writing
+// temp files, assembling args, handling errors) can be tested without
+// actually having Python installed.
 func runPythonSubprocess(ctx context.Context, args []string, dir string) (stdout, stderr []byte, err error) {
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Dir = dir
