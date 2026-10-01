@@ -16,13 +16,19 @@ import (
 // separate piece of logic, but the model's translated config silently
 // dropped one of them, letting that module's logic quietly follow the
 // trigger timeframe instead" — it isn't trying for perfect recall.
+//
+// Both language's phrasings are needed regardless of which UI language is
+// selected: a user can type their strategy description in either language
+// (this is natural-language input the user typed, not page chrome that
+// follows the viewer's language toggle), so this backstop has to recognize
+// both to catch the same class of bug for either language's users.
 var timeframePhrases = map[types.Timeframe][]string{
-	types.TF1m:  {"1分钟", "一分钟", "1m"},
-	types.TF5m:  {"5分钟", "五分钟", "5m"},
-	types.TF15m: {"15分钟", "十五分钟", "15m"},
-	types.TF1h:  {"1小时", "一小时", "一个小时", "1个小时", "1h"},
-	types.TF4h:  {"4小时", "四小时", "4h"},
-	types.TF1d:  {"1天", "一天", "日线", "1d"},
+	types.TF1m:  {"1分钟", "一分钟", "1m", "1 minute", "one minute", "1min"},
+	types.TF5m:  {"5分钟", "五分钟", "5m", "5 minute", "5 minutes", "five minutes", "5min"},
+	types.TF15m: {"15分钟", "十五分钟", "15m", "15 minute", "15 minutes", "fifteen minutes", "15min"},
+	types.TF1h:  {"1小时", "一小时", "一个小时", "1个小时", "1h", "1 hour", "one hour", "1hr", "hourly"},
+	types.TF4h:  {"4小时", "四小时", "4h", "4 hour", "4 hours", "four hours", "4hr"},
+	types.TF1d:  {"1天", "一天", "日线", "1d", "1 day", "one day", "daily"},
 }
 
 // mentionedTimeframes returns the set of timeframes explicitly mentioned in

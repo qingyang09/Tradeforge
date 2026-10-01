@@ -25,9 +25,24 @@ var bannedPhrases = []string{
 	// Return / prediction
 	"预期收益", "大概率", "有望", "看好", "看涨预期", "看跌预期",
 	"能赚", "盈利概率", "胜率会",
-	// English fallback: the model occasionally mixes English into its output
-	"I recommend", "I suggest", "you should buy", "you should sell",
-	"better strategy", "more profitable",
+	// English equivalents of every category above -- the model generates
+	// genuine English output now (not just an occasional mixed-in English
+	// word), since the Agent's system prompt has its own full English
+	// variant (see prompt.go's systemPromptEN), so this list needs to be a
+	// real mirror of the Chinese one above, not just a handful of fallback
+	// phrases for stray English words leaking into Chinese output.
+	// Suggestion / recommendation
+	"i recommend", "i suggest", "i'd recommend", "i'd suggest", "you should buy", "you should sell",
+	"you might consider", "you could consider", "consider buying", "consider selling",
+	"worth buying", "worth considering", "you'd better", "it's best to", "it would be best to",
+	// Value judgments
+	"better strategy", "a solid strategy", "a decent strategy", "not a bad strategy",
+	"higher risk", "lower risk", "fairly aggressive", "quite aggressive",
+	"fairly conservative", "quite conservative", "would work better", "would perform better",
+	// Return / prediction
+	"more profitable", "expected return", "expected profit", "likely to rise", "likely to fall",
+	"high probability of", "bullish on", "optimistic about", "bullish outlook", "bearish outlook",
+	"likely to profit", "probability of profit", "win rate will", "win rate would",
 }
 
 // ComplianceError means an output tripped the investment-advice-language check.

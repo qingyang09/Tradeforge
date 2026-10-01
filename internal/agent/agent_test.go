@@ -703,6 +703,9 @@ func TestRejectsInvestmentAdviceLanguage(t *testing.T) {
 		{"restatement talks about returns", reply(OutcomeConfig, "标的 BTCUSDT，预期收益不错。", cfg)},
 		{"advice slipped into a question", reply(OutcomeClarify, "标的 BTCUSDT。", nil, "推荐你设置 1000 USDT 的上限，可以吗？")},
 		{"English advice wording", reply(OutcomeConfig, "Symbol BTCUSDT. I recommend raising the multiplier.", cfg)},
+		{"English restatement evaluates the strategy", reply(OutcomeConfig, "Symbol BTCUSDT. This is a solid strategy with higher risk.", cfg)},
+		{"English restatement talks about returns", reply(OutcomeConfig, "Symbol BTCUSDT. The expected return looks promising.", cfg)},
+		{"English advice slipped into a question", reply(OutcomeClarify, "Symbol BTCUSDT.", nil, "You might consider a 1000 USDT cap -- does that work?")},
 	}
 
 	for _, tc := range cases {
@@ -726,6 +729,9 @@ func TestCompliantRestatementPasses(t *testing.T) {
 		"标的 BTCUSDT，1 小时周期，当成交量达到近期 20 根均量的 3 倍时触发做多信号。单笔最大仓位 1000 USDT。",
 		"标的 ETHUSDT，4 小时周期。需要同时满足：价格突破关键阻力位，且成交量放大 2 倍。",
 		"以下参数由你指定：倍数 3。以下参数使用系统默认值：均量窗口 20、方向判定来源 candle。",
+		"Symbol BTCUSDT, 1-hour timeframe, triggers a long signal when volume reaches 3x the recent 20-candle average. Max position size per trade 1000 USDT.",
+		"Symbol ETHUSDT, 4-hour timeframe. Requires both: price breaks the key resistance level, and volume surges 2x.",
+		"You specified: multiplier 3. The following use system defaults: averaging window 20, direction source candle.",
 	}
 	for _, text := range texts {
 		if err := scanText("restatement", text); err != nil {

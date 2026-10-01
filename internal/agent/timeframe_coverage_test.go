@@ -26,6 +26,26 @@ func TestMentionedTimeframesSingleMention(t *testing.T) {
 	}
 }
 
+// English-described strategies need this same backstop to work, since a
+// user can describe their strategy in either language regardless of which
+// UI language is selected.
+func TestMentionedTimeframesDetectsMultipleEnglish(t *testing.T) {
+	got := mentionedTimeframes("use the 1 hour chart to check for a consolidation fakeout, the 15 minute chart to check for a volume-driven drop")
+	if !got[types.TF1h] || !got[types.TF15m] {
+		t.Errorf("should detect 1h and 15m, got %v", got)
+	}
+	if len(got) != 2 {
+		t.Errorf("should not detect any extra timeframes, got %v", got)
+	}
+}
+
+func TestMentionedTimeframesSingleMentionEnglish(t *testing.T) {
+	got := mentionedTimeframes("BTC on the one hour chart, go long on a volume surge")
+	if len(got) != 1 || !got[types.TF1h] {
+		t.Errorf("should only detect 1h, got %v", got)
+	}
+}
+
 func TestCheckTimeframeCoverageSingleMentionAlwaysPasses(t *testing.T) {
 	cfg := types.StrategyConfig{Timeframe: types.TF1h}
 	if err := checkTimeframeCoverage(cfg, "BTC 一小时线放量做多"); err != nil {
