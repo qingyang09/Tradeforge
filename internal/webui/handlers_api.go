@@ -3,7 +3,6 @@ package webui
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -16,11 +15,14 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// apiCandle 是喂给前端图表库（lightweight-charts）的蜡烛线形状。
+// apiCandle is the candle shape fed to the frontend chart library (lightweight-charts).
 //
-// 价格/成交量在这里转成 float64 是刻意的：这是纯展示用途（像素定位），不参与任何
-// 金额计算或交易决策，跟项目"金融计算禁止用 float64"的铁律不冲突——真正下单、算
-// 手续费、算仓位的地方全部走 decimal.Decimal，一步都没有经过这个接口。
+// Converting price/volume to float64 here is deliberate: this is pure
+// display use (pixel positioning), never feeding into any monetary
+// calculation or trading decision, so it doesn't conflict with the
+// project's "no float64 for financial math" rule -- every place that
+// actually places an order, computes a fee, or sizes a position goes
+// through decimal.Decimal, none of which ever passes through this endpoint.
 type apiCandle struct {
 	Time   int64   `json:"time"`
 	Open   float64 `json:"open"`
@@ -30,10 +32,12 @@ type apiCandle struct {
 	Volume float64 `json:"volume"`
 }
 
-// handleAPICandles 给可视化建策的画板页提供只读的 K 线数据。
+// handleAPICandles provides read-only candle data to the visual strategy builder page.
 //
-// 直接查 OKX：这是公开只读接口，不需要 API key，跟 cmd/signal-engine 的用法一致。
-// 只服务画板的"看图摆模块"这个用途，不是行情源的通用出口。
+// Queries OKX directly: this is a public, read-only endpoint that needs no
+// API key, the same usage pattern as cmd/signal-engine's. It serves only the
+// builder's "look at the chart, place modules" purpose, not a general market
+// data endpoint.
 func (s *Server) handleAPICandles(w http.ResponseWriter, r *http.Request) {
 	symbol := strings.ToUpper(r.PathValue("symbol"))
 	if !looksLikeSymbol(symbol) {
@@ -41,19 +45,23 @@ func (s *Server) handleAPICandles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tf, limit, err := parseTimeframeAndLimit(r)
+	lang := resolveLang(r)
+	tf, limit, err := parseTimeframeAndLimit(r, lang)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	var candles []types.Candle
-	// before：画板图表左拖到已加载数据的最左端时，前端带上当前最早一根K线的时间
-	// 继续往回翻页。留空走原来的"最近 limit 根"这条路径，不影响任何既有调用方。
+	// before: when the builder chart is dragged left to the earliest edge of
+	// already-loaded data, the frontend sends the earliest currently-loaded
+	// candle's time to keep paging backward. Left blank, it falls back to
+	// the original "most recent limit candles" path, unaffected for any
+	// existing caller.
 	if raw := r.URL.Query().Get("before"); raw != "" {
 		beforeSec, parseErr := strconv.ParseInt(raw, 10, 64)
 		if parseErr != nil {
-			http.Error(w, "before 必须是 Unix 秒时间戳", http.StatusBadRequest)
+			http.Error(w, i18n.Render(lang, types.Msg("webui.api.before_must_be_unix_seconds")), http.StatusBadRequest)
 			return
 		}
 		candles, err = s.okxClient.FetchCandlesBefore(r.Context(), symbol, tf, limit, time.Unix(beforeSec, 0))
@@ -79,16 +87,20 @@ func (s *Server) handleAPICandles(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, out)
 }
 
-// symbolSearchDefaultLimit/symbolSearchMaxLimit 界定 GET /api/symbols 一次返回多少条
-// 建议：默认给一个下拉框刚好装得下的数量，limit 参数允许调用方要更多，但设上限防止
-// 恶意/失误传入一个夸张的值把整份缓存列表都吐回去。
+// symbolSearchDefaultLimit/symbolSearchMaxLimit bound how many suggestions
+// GET /api/symbols returns at once: the default is just enough to fill a
+// dropdown, and the limit param lets a caller ask for more, but capped to
+// keep a malicious or mistaken oversized value from dumping the whole
+// cached list back.
 const symbolSearchDefaultLimit = 12
 const symbolSearchMaxLimit = 50
 
-// handleAPISymbolSearch 给"输入标的"的搜索框提供自动补全建议：按用户输入的子串
-// 匹配 OKX 真实存在的现货标的（symbolCache，见 symbols.go），不是本地瞎猜的固定表——
-// 这样建议出来的标的一定能在 /api/candles 上查到数据，不会出现选了建议、下一步又
-// 报"无法推断 OKX instId"的落差。
+// handleAPISymbolSearch provides autocomplete suggestions for the "enter a
+// symbol" search box: matches the user's typed substring against symbols
+// that genuinely exist on OKX spot (symbolCache, see symbols.go), not a
+// local guessed fixed table -- this guarantees a suggested symbol will
+// always have data on /api/candles, avoiding the gap where picking a
+// suggestion leads to a later "can't infer an OKX instId" error.
 func (s *Server) handleAPISymbolSearch(w http.ResponseWriter, r *http.Request) {
 	limit := symbolSearchDefaultLimit
 	if raw := r.URL.Query().Get("limit"); raw != "" {
@@ -107,37 +119,40 @@ func (s *Server) handleAPISymbolSearch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, matches)
 }
 
-func parseTimeframeAndLimit(r *http.Request) (types.Timeframe, int, error) {
+func parseTimeframeAndLimit(r *http.Request, lang i18n.Lang) (types.Timeframe, int, error) {
 	tf := types.Timeframe(r.URL.Query().Get("timeframe"))
 	if tf == "" {
 		tf = types.TF1h
 	}
 	if !tf.Valid() {
-		return "", 0, fmt.Errorf("不支持的周期，可选值为 %s", timeframeList())
+		return "", 0, errors.New(i18n.Render(lang, types.Msg("webui.api.unsupported_timeframe", "timeframes", timeframeList())))
 	}
 
 	limit := 300
 	if raw := r.URL.Query().Get("limit"); raw != "" {
 		n, err := strconv.Atoi(raw)
 		if err != nil || n <= 0 {
-			return "", 0, errors.New("limit 必须是正整数")
+			return "", 0, errors.New(i18n.Render(lang, types.Msg("webui.api.limit_must_be_positive_int")))
 		}
 		limit = n
 	}
 	return tf, limit, nil
 }
 
-// apiLevel 是支撑/阻力位预览返回的一条关键位。
+// apiLevel is one key level returned by the support/resistance preview.
 type apiLevel struct {
 	Price   float64 `json:"price"`
 	Kind    string  `json:"kind"`
 	Touches int     `json:"touches"`
 }
 
-// windowStartUnix 把模块 Raw 里的 "window_start"（RFC3339 字符串）转成
-// lightweight-charts 用的 Unix 秒——跟 apiCandle.Time 是同一种时间表示，画板才能
-// 直接拿它去定位 X 坐标画一条竖线，标出"这次分析用了从这里开始的历史数据"。
-// 解析失败（模块没给、或格式不对）时返回 0，调用方要自己判断是否要用这个值。
+// windowStartUnix converts the module Raw map's "window_start" (an RFC3339
+// string) into the Unix seconds lightweight-charts uses -- the same time
+// representation as apiCandle.Time, so the builder can use it directly to
+// position an X coordinate and draw a vertical line marking "this analysis
+// used history starting from here." Returns 0 on a parse failure (the
+// module didn't provide one, or the format is wrong); the caller must judge
+// for itself whether to use the value.
 func windowStartUnix(raw map[string]any) int64 {
 	s, _ := raw["window_start"].(string)
 	if s == "" {
@@ -150,35 +165,44 @@ func windowStartUnix(raw map[string]any) int64 {
 	return t.Unix()
 }
 
-// apiSupportResistancePreview 是支撑/阻力位预览返回的数据。WindowStart 是本次分析
-// 用到的历史数据起点（Unix 秒，跟 apiCandle.Time 同一种表示），供画板在图上画一条
-// 竖线标出"系统正在看这一段历史"——不管有没有找到关键位都会给，找不到时用户能
-// 从这条线上直接看出"系统看了这么长一段，只是没找到"，而不是误以为它什么都没看。
+// apiSupportResistancePreview is the data returned by the support/resistance
+// preview. WindowStart is the history's starting point for this analysis
+// (Unix seconds, the same representation as apiCandle.Time), letting the
+// builder draw a vertical line marking "the system is looking at this
+// span" -- given regardless of whether any key level was found; when none
+// is found, the user can tell directly from this line that "the system
+// looked over this whole span, it just didn't find one," rather than
+// mistakenly thinking it wasn't looking at all.
 type apiSupportResistancePreview struct {
 	WindowStart int64      `json:"window_start,omitempty"`
 	Levels      []apiLevel `json:"levels"`
 }
 
-// handleAPIPreviewSupportResistance 用当前画板上的参数，跑一遍真实的
-// support_resistance 模块（不是在 JS 里重新实现一遍聚类算法），返回检测到的关键位，
-// 供画板把它们画成参考线。
+// handleAPIPreviewSupportResistance runs the real support_resistance module
+// with the builder's current parameters (not a JS reimplementation of the
+// clustering algorithm), returning the detected key levels for the builder
+// to draw as reference lines.
 //
-// support_resistance 没有"用户手动指定价位"这个参数（用户已确认接受这个限制，
-// 见实现前的确认），所以这里给的是"当前这组参数下，模块实际会检测到什么"——
-// 跟真正跑策略时看到的是同一份逻辑，不会出现预览和实盘对不上的情况。
+// support_resistance has no "user manually specifies a price" parameter
+// (the user already confirmed accepting this limitation, before it was
+// implemented), so what's given here is "what the module actually detects
+// under this exact set of parameters" -- the same logic seen when the
+// strategy actually runs, so the preview and the live behavior never
+// diverge.
 func (s *Server) handleAPIPreviewSupportResistance(w http.ResponseWriter, r *http.Request) {
 	symbol := strings.ToUpper(r.PathValue("symbol"))
 	if !looksLikeSymbol(symbol) {
 		http.NotFound(w, r)
 		return
 	}
-	tf, limit, err := parseTimeframeAndLimit(r)
+	lang := resolveLang(r)
+	tf, limit, err := parseTimeframeAndLimit(r, lang)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	params, err := parseModuleParams(r, supportresistance.New().RequiredParams())
+	params, err := parseModuleParams(r, supportresistance.New().RequiredParams(), lang)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -193,7 +217,7 @@ func (s *Server) handleAPIPreviewSupportResistance(w http.ResponseWriter, r *htt
 	sig, err := supportresistance.New().Evaluate(r.Context(),
 		types.MarketData{Symbol: symbol, Timeframe: tf, Candles: candles}, params)
 	if err != nil {
-		http.Error(w, "参数非法："+err.Error(), http.StatusBadRequest)
+		http.Error(w, i18n.Render(lang, types.Msg("webui.api.invalid_params", "error", err.Error())), http.StatusBadRequest)
 		return
 	}
 
@@ -208,11 +232,16 @@ func (s *Server) handleAPIPreviewSupportResistance(w http.ResponseWriter, r *htt
 	writeJSON(w, out)
 }
 
-// apiFakeoutPreview 是假突破预览返回的数据：range_found 为 true 时给出当前识别出的
-// 盘整区间高/低点（不论有没有触发假突破都会给出，画板拿它画"系统正在盯着哪个区间"
-// 的常规参考线，只有一高一低两条，不是一堆细碎关键位）；event 非 "none" 时表示当前
-// 最新这根 K 线上真的检测到了假突破，附带突破的是哪一侧、突破价、收回价——画板据此
-// 单独画一条更醒目的线，直观回答"系统是不是真的理解了用户说的假突破"这个问题。
+// apiFakeoutPreview is the data returned by the fakeout preview: when
+// range_found is true, it gives the currently identified consolidation
+// range's high/low (given regardless of whether a fakeout actually
+// triggered -- the builder uses it to draw the routine reference lines for
+// "which range the system is watching," just one high and one low, not a
+// pile of small key levels); when event is not "none," the latest candle
+// genuinely triggered a fakeout, with which side broke, the breakout price,
+// and the reclaim price -- the builder uses this to draw one extra, more
+// prominent line, a direct, visual answer to "did the system really
+// understand the fakeout the user described."
 type apiFakeoutPreview struct {
 	RangeFound    bool    `json:"range_found"`
 	RangeHigh     float64 `json:"range_high,omitempty"`
@@ -226,22 +255,24 @@ type apiFakeoutPreview struct {
 	ReclaimClose  float64 `json:"reclaim_close,omitempty"`
 }
 
-// handleAPIPreviewFakeout 跑一遍真实的 fakeout 模块（不是在 JS 里重新实现一遍），
-// 返回本次识别出的盘整区间，以及当前是否真的检测到了假突破。
+// handleAPIPreviewFakeout runs the real fakeout module (not a
+// reimplementation in JS), returning this analysis's identified
+// consolidation range and whether a fakeout was genuinely detected right now.
 func (s *Server) handleAPIPreviewFakeout(w http.ResponseWriter, r *http.Request) {
 	symbol := strings.ToUpper(r.PathValue("symbol"))
 	if !looksLikeSymbol(symbol) {
 		http.NotFound(w, r)
 		return
 	}
-	tf, limit, err := parseTimeframeAndLimit(r)
+	lang := resolveLang(r)
+	tf, limit, err := parseTimeframeAndLimit(r, lang)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	fm := fakeout.New()
-	params, err := parseModuleParams(r, fm.RequiredParams())
+	params, err := parseModuleParams(r, fm.RequiredParams(), lang)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -256,7 +287,7 @@ func (s *Server) handleAPIPreviewFakeout(w http.ResponseWriter, r *http.Request)
 	sig, err := fm.Evaluate(r.Context(),
 		types.MarketData{Symbol: symbol, Timeframe: tf, Candles: candles}, params)
 	if err != nil {
-		http.Error(w, "参数非法："+err.Error(), http.StatusBadRequest)
+		http.Error(w, i18n.Render(lang, types.Msg("webui.api.invalid_params", "error", err.Error())), http.StatusBadRequest)
 		return
 	}
 
@@ -291,8 +322,10 @@ func (s *Server) handleAPIPreviewFakeout(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, out)
 }
 
-// apiPOCPreview 是 POC 预览返回的数据。Available 为 false 表示算不出来（比如回看
-// 窗口内价格完全没有波动），画板据此决定要不要画线，而不是画一条价格为零的假线。
+// apiPOCPreview is the data returned by the POC preview. Available being
+// false means it couldn't be computed (e.g. price barely moved within the
+// lookback window), letting the builder decide not to draw a line, rather
+// than drawing a misleading one at price zero.
 type apiPOCPreview struct {
 	Available     bool    `json:"available"`
 	Price         float64 `json:"price,omitempty"`
@@ -301,21 +334,23 @@ type apiPOCPreview struct {
 	WindowStart   int64   `json:"window_start,omitempty"`
 }
 
-// handleAPIPreviewPOC 跑一遍真实的 poc 模块，返回当前参数下算出的成交量分布重心。
+// handleAPIPreviewPOC runs the real poc module, returning the volume point
+// of control computed under the current parameters.
 func (s *Server) handleAPIPreviewPOC(w http.ResponseWriter, r *http.Request) {
 	symbol := strings.ToUpper(r.PathValue("symbol"))
 	if !looksLikeSymbol(symbol) {
 		http.NotFound(w, r)
 		return
 	}
-	tf, limit, err := parseTimeframeAndLimit(r)
+	lang := resolveLang(r)
+	tf, limit, err := parseTimeframeAndLimit(r, lang)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	pm := poc.New()
-	params, err := parseModuleParams(r, pm.RequiredParams())
+	params, err := parseModuleParams(r, pm.RequiredParams(), lang)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -330,7 +365,7 @@ func (s *Server) handleAPIPreviewPOC(w http.ResponseWriter, r *http.Request) {
 	sig, err := pm.Evaluate(r.Context(),
 		types.MarketData{Symbol: symbol, Timeframe: tf, Candles: candles}, params)
 	if err != nil {
-		http.Error(w, "参数非法："+err.Error(), http.StatusBadRequest)
+		http.Error(w, i18n.Render(lang, types.Msg("webui.api.invalid_params", "error", err.Error())), http.StatusBadRequest)
 		return
 	}
 
@@ -350,9 +385,10 @@ func (s *Server) handleAPIPreviewPOC(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// parseModuleParams 把请求里跟某个模块的 ParamSpec 同名的 query 参数解析出来，
-// 缺省的直接跳过（Evaluate 内部的 ResolveParams 会补默认值）。
-func parseModuleParams(r *http.Request, specs []types.ParamSpec) (map[string]any, error) {
+// parseModuleParams parses out the query params in the request that share a
+// name with one of a module's ParamSpecs; a missing one is simply skipped
+// (Evaluate's internal ResolveParams fills in the default).
+func parseModuleParams(r *http.Request, specs []types.ParamSpec, lang i18n.Lang) (map[string]any, error) {
 	params := make(map[string]any, len(specs))
 	for _, spec := range specs {
 		raw := r.URL.Query().Get(spec.Name)
@@ -363,13 +399,13 @@ func parseModuleParams(r *http.Request, specs []types.ParamSpec) (map[string]any
 		case types.ParamInt:
 			n, err := strconv.Atoi(raw)
 			if err != nil {
-				return nil, fmt.Errorf("参数 %s 必须是整数：%q", spec.Name, raw)
+				return nil, errors.New(i18n.Render(lang, types.Msg("webui.api.param_must_be_int", "name", spec.Name, "value", raw)))
 			}
 			params[spec.Name] = n
 		case types.ParamFloat:
 			f, err := strconv.ParseFloat(raw, 64)
 			if err != nil {
-				return nil, fmt.Errorf("参数 %s 必须是数字：%q", spec.Name, raw)
+				return nil, errors.New(i18n.Render(lang, types.Msg("webui.api.param_must_be_number", "name", spec.Name, "value", raw)))
 			}
 			params[spec.Name] = f
 		default:
@@ -392,12 +428,15 @@ func timeframeList() string {
 	return strings.Join(parts, ", ")
 }
 
-// apiModule 是模块目录里的一条记录，字段跟 ParamSpec（pkg/types/params.go，
-// "模块自解释"的唯一事实来源）基本一一对应，前端用它生成通用参数表单，不需要为
-// 每个模块单独维护一份表单定义——区别只在于 Description 字段：ParamSpec.Description
-// 现在是可翻译的 types.Message，不能直接原样吐给前端（前端没有目录可查），这里在
-// 发送前先用 i18n.Render 渲染成一段现成文字。lang 目前固定用 i18n.DefaultLang
-// （中文），跟这一轮其它 webui 改动一样，是给 Phase 4 接上按请求语言渲染留的位置。
+// apiModule is one entry in the module catalog; its fields correspond
+// roughly one-to-one with ParamSpec (pkg/types/params.go, the single source
+// of truth for "a module explaining itself"), letting the frontend generate
+// a generic parameter form without maintaining a separate form definition
+// per module -- the one difference is the Description field: ParamSpec.
+// Description is now a translatable types.Message, which can't be handed
+// to the frontend as-is (the frontend has no catalog to look it up in), so
+// it's rendered into a ready-made string via i18n.Render in the request's
+// language (resolveLang) before being sent.
 type apiModule struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description"`
@@ -417,12 +456,9 @@ type apiParamSpec struct {
 	Enum        []string        `json:"enum,omitempty"`
 }
 
-// handleAPIModules 列出全部已注册模块，供可视化建策的"添加模块"选择器使用。
+// handleAPIModules lists every registered module, for the visual builder's "add module" selector.
 func (s *Server) handleAPIModules(w http.ResponseWriter, r *http.Request) {
-	// i18n.DefaultLang (Chinese) for now, matching this app's current
-	// Chinese-only behavior exactly -- see render.go's msg template func doc
-	// comment for why, and the plan's Phase 4 for the per-request fix.
-	lang := i18n.DefaultLang
+	lang := resolveLang(r)
 	all := s.registry.All()
 	out := make([]apiModule, len(all))
 	for i, m := range all {

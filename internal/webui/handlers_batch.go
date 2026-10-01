@@ -218,7 +218,7 @@ func (s *Server) handleBatchScanConfirm(w http.ResponseWriter, r *http.Request) 
 		if err := s.store.RecordTransition(ctx, storage.Transition{
 			StrategyID: prepared.ID, From: "", To: types.StateDraft,
 			Actor:  "user:web",
-			Reason: fmt.Sprintf("批量扫描确认（本批共 %d 个标的）", len(ws.BatchSymbols)),
+			Reason: i18n.T(lang, "webui.batch.transition.batch_confirmed", "count", len(ws.BatchSymbols)),
 			Evidence: map[string]any{
 				"source_utterance": prepared.SourceUtterance, "batch_size": len(ws.BatchSymbols),
 			},

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"regexp"
@@ -18,8 +17,9 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// symbolPattern 粗略校验路径参数是不是标的写法（如 "BTCUSDT"），拒绝明显不合理的
-// 输入（空、太长、带特殊字符）。
+// symbolPattern roughly validates that a path param looks like a symbol
+// (e.g. "BTCUSDT"), rejecting obviously unreasonable input (empty, too long,
+// special characters).
 var symbolPattern = regexp.MustCompile(`^[A-Za-z0-9]{2,20}$`)
 
 func looksLikeSymbol(s string) bool { return symbolPattern.MatchString(s) }
@@ -28,8 +28,9 @@ type builderListData struct {
 	Symbols []string
 }
 
-// handleBuilderList 跟 handleChartList 是同一个模式：挑一个已有策略用过的标的，
-// 或者直接手输标的跳到画板页。
+// handleBuilderList follows the same pattern as handleChartList: pick a
+// symbol already used by an existing strategy, or type one in directly to
+// jump to the builder page.
 func (s *Server) handleBuilderList(w http.ResponseWriter, r *http.Request) {
 	if symbol := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("symbol"))); symbol != "" {
 		http.Redirect(w, r, "/builder/"+symbol, http.StatusFound)
@@ -52,36 +53,54 @@ func (s *Server) handleBuilderList(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Strings(symbols)
 
-	s.renderPage(w, r, "可视化建策", "builder_list_content", builderListData{Symbols: symbols})
+	s.renderPage(w, r, i18n.T(resolveLang(r), "webui.builder.list.title"), "builder_list_content", builderListData{Symbols: symbols})
 }
 
 type builderViewData struct {
 	Symbol string
-	// Timeframe 是画板初始加载时选中的主周期。支持 ?timeframe= 深链（策略详情页
-	// "去画板查看"带着该策略的周期跳过来时，画板要一打开就显示同一个周期的图，
-	// 而不是永远落回写死的默认值）。
+	// Timeframe is the main timeframe selected when the builder first loads.
+	// Supports a ?timeframe= deep link (when the strategy detail page's
+	// "view in builder" link carries that strategy's timeframe, the builder
+	// should show a chart on the same timeframe the moment it opens, not
+	// always fall back to a hardcoded default).
 	Timeframe string
-	// AgentReady 控制"用自己的话描述交易计划"这个自然语言入口是否显示——它是模块/
-	// 拖拽这条不依赖 LLM 的主路径之外的增强，未配置模型时隐藏，不影响画板本身可用。
+	// AgentReady controls whether the "describe your trading plan in your
+	// own words" natural-language entry point is shown -- it's an
+	// enhancement on top of the main module/drag path that needs no LLM,
+	// hidden when no model is configured, without affecting the builder's
+	// own usability.
 	AgentReady bool
-	// InitialConfigJSON 支持 ?strategy=<id> 深链（策略详情页"去画板查看"带着策略 ID
-	// 跳过来）：非空时是那条策略当前配置的线格式 JSON，形状跟 wizardConfirmData.
-	// ConfigJSON 完全一样，画板页的 JS 用同一个 applyStrategyConfig 把它画到图上——
-	// 模块变成卡片、止损止盈变成可拖拽的线、support_resistance 这类没有固定点位的
-	// 模块会用它保存的参数重新触发一次实时预览。查不到（策略不存在/不属于当前用户/
-	// 没带这个参数）时留空，画板照旧退回空白画布，不阻塞"单纯看图"这个用途。
+	// InitialConfigJSON supports a ?strategy=<id> deep link (jumping here
+	// from the strategy detail page's "view in builder" link, carrying a
+	// strategy ID): when non-empty, it's that strategy's current config as
+	// wire-format JSON, the exact same shape as wizardConfirmData.
+	// ConfigJSON -- the builder page's JS uses the same applyStrategyConfig
+	// to draw it onto the chart, turning modules into cards, stop-loss/
+	// take-profit into draggable lines, and triggering a fresh live preview
+	// for modules like support_resistance that have no fixed point using
+	// its saved parameters. Left empty when not found (the strategy doesn't
+	// exist / doesn't belong to the current user / the param wasn't given),
+	// and the builder falls back to a blank canvas as usual, not blocking
+	// the "just look at the chart" use case.
 	InitialConfigJSON string
 	Lang              i18n.Lang
 }
 
-// handleBuilderView 渲染画板页：独立深色沉浸式文档。画板同时承担"单纯看图"和
-// "建策"两个用途——不加任何模块、不描述任何规则，落地页就是一张能拖拽缩放的
-// 真实 K 线图（历史上这曾经是 /chart 页单独用 TradingView 组件做的事，两个页面
-// 各自维护一份"输入标的看图"的入口没有意义，已合并成画板一个入口）。
+// handleBuilderView renders the builder page: an independent, dark,
+// immersive document. The builder serves both "just look at the chart" and
+// "build a strategy" at once -- with no modules added and no rule
+// described, the landing page is simply a real, draggable/zoomable candle
+// chart (historically this was /chart's separate job using the TradingView
+// widget on its own; having each page maintain its own "enter a symbol,
+// look at the chart" entry point made no sense, so they've been merged into
+// one builder entry point).
 //
-// ?strategy=<id> 打破"不加任何模块"这条默认规则，但只在明确带着这个参数、且这个
-// 策略确实属于当前用户时才生效——策略详情页"去画板查看"从阶段 7 起一直只带
-// timeframe，用户点进去看不到当初画出来的线，是个体验缺口而不是有意为之。
+// ?strategy=<id> breaks the "no modules added" default, but only takes
+// effect when that param is explicitly present and the strategy genuinely
+// belongs to the current user -- the strategy detail page's "view in
+// builder" link has only ever carried timeframe since Stage 7, so the user
+// clicking it couldn't see the lines they originally drew; that's an
+// experience gap, not something intentional.
 func (s *Server) handleBuilderView(w http.ResponseWriter, r *http.Request) {
 	symbol := strings.ToUpper(r.PathValue("symbol"))
 	if !looksLikeSymbol(symbol) {
@@ -102,14 +121,17 @@ func (s *Server) handleBuilderView(w http.ResponseWriter, r *http.Request) {
 			if b, err := json.Marshal(sc); err == nil {
 				initialConfigJSON = string(b)
 			} else {
-				s.logger.Warn("序列化策略配置失败，画板退回空白画布", "strategy_id", id, "err", err)
+				s.logger.Warn("failed to serialize the strategy config, builder falling back to a blank canvas", "strategy_id", id, "err", err)
 			}
 		case errors.Is(err, storage.ErrNotFound):
-			// 策略不存在，或者不属于当前用户（两者返回同一个 ErrNotFound）：
-			// 链接可能是别人分享的、也可能策略已被删除，静默退回空白画布，
-			// 不是真正的错误，不值得报错打断"至少还能看图"这个体验。
+			// The strategy doesn't exist, or doesn't belong to the current
+			// user (both return the same ErrNotFound): the link may have
+			// been shared by someone else, or the strategy may have been
+			// deleted -- silently falling back to a blank canvas, not a
+			// genuine error worth interrupting the "at least you can still
+			// look at the chart" experience for.
 		default:
-			s.logger.Warn("查询画板初始配置失败，退回空白画布", "strategy_id", id, "err", err)
+			s.logger.Warn("failed to query the builder's initial config, falling back to a blank canvas", "strategy_id", id, "err", err)
 		}
 	}
 
@@ -122,64 +144,80 @@ func (s *Server) handleBuilderView(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-const maxBuilderConfigBytes = 1 << 20 // 1MiB，画板配置不可能真的这么大，纯粹是防呆
+const maxBuilderConfigBytes = 1 << 20 // 1MiB -- a builder config could never genuinely be this large, purely a sanity guard
 
-// handleBuilderDescribe 把画板拖拽/调参后组装出的 JSON 转成 StrategyConfig，校验，
-// 生成复述文字，然后渲染跟文字向导完全相同的确认片段——两条建策路径殊途同归，
-// 从这一步开始复用同一套保存/审计逻辑（见 handlers_wizard.go 的 confirmProposal
-// 与 handleWizardConfirm）。
+// handleBuilderDescribe turns the JSON assembled after dragging/tuning
+// params on the builder into a StrategyConfig, validates it, generates the
+// restatement text, and then renders the exact same confirmation fragment
+// as the text wizard -- the two strategy-building paths converge here,
+// reusing the same save/audit logic from this step onward (see
+// handlers_wizard.go's confirmProposal and handleWizardConfirm).
 func (s *Server) handleBuilderDescribe(w http.ResponseWriter, r *http.Request) {
+	lang := resolveLang(r)
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBuilderConfigBytes+1))
 	if err != nil {
-		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "读取请求体失败：" + err.Error()})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: i18n.T(lang, "webui.builder.err.read_body_failed", "error", err.Error())})
 		return
 	}
 	if len(body) > maxBuilderConfigBytes {
-		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "配置体积超出限制。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: i18n.T(lang, "webui.builder.err.config_too_large")})
 		return
 	}
 
 	cfg, err := agent.DecodeStrategyConfigJSON(body)
 	if err != nil {
-		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "配置格式有误：" + err.Error()})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: i18n.T(lang, "webui.builder.err.bad_config_format", "error", err.Error())})
 		return
 	}
 
-	// 跟 confirmProposal 用的是同一份注册表——用户在这一步能看到的错误，
-	// 跟真正保存时会跑的校验完全一致，不会出现"这里过了、保存时又被拒"的落差。
+	// Uses the exact same registry as confirmProposal -- the error the user
+	// can see at this step is identical to the validation that actually
+	// runs on save, so there's never a gap where "it passed here, but got
+	// rejected on save."
 	if _, err := strategy.Validate(cfg, s.registry); err != nil {
-		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "配置未通过校验：" + err.Error()})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: i18n.T(lang, "webui.builder.err.validation_failed", "error", err.Error())})
 		return
 	}
 
 	userID, _ := currentUserID(r)
-	restatement := s.describeConfig(r.Context(), userID, cfg, resolveLang(r))
+	restatement := s.describeConfig(r.Context(), userID, cfg, lang)
 
 	p := &agent.Proposal{
 		Outcome:         agent.OutcomeConfig,
 		Restatement:     restatement,
 		Config:          &cfg,
-		SourceUtterance: "可视化建策",
+		SourceUtterance: i18n.T(lang, "webui.builder.source_utterance_label"),
 	}
 	s.renderProposal(w, r, p, nil, "")
 }
 
-// handleBuilderTranslate 是可视化建策接入自然语言翻译层的入口：用户不需要理解
-// "volume_breakout"、"WEIGHTED" 这些术语，直接用大白话描述交易计划。Agent 翻译出配置后，
-// 走的是跟文字向导完全相同的确认链路（renderProposal 复用 wizard_confirm_fragment /
-// wizard_clarify_fragment，歧义时一样会追问而不是替用户瞎猜），唯一区别是确认片段里嵌了
-// 一份配置的 JSON（wizardConfirmData.ConfigJSON），画板页的 JS 读到它之后会把模块、参数、
-// 止损止盈实际画到图上——用户要的是"不要停留在抽象文字，尽量体现在图表上"，靠的就是这份
-// JSON，不是新写一套翻译逻辑。
+// handleBuilderTranslate is the entry point where the visual builder plugs
+// into the natural-language translation layer: the user doesn't need to
+// understand terms like "volume_breakout" or "WEIGHTED," just describe the
+// trading plan in plain language. Once the Agent translates it into a
+// config, it goes through exactly the same confirmation chain as the text
+// wizard (renderProposal reuses wizard_confirm_fragment/
+// wizard_clarify_fragment, asking a follow-up question on ambiguity just
+// the same, rather than guessing on the user's behalf) -- the only
+// difference is that the confirmation fragment embeds a config as JSON
+// (wizardConfirmData.ConfigJSON), which the builder page's JS reads and
+// uses to actually draw the modules, parameters, and stop-loss/take-profit
+// onto the chart. What the user wants is "don't just leave it as abstract
+// text, show it on the chart as much as possible," and that JSON is what
+// delivers it -- not a newly written translation path.
 //
-// 标的强制锁定成画板当前的 SYMBOL（ForceSymbol，见 wizardState），不依赖 LLM 从用户描述里
-// 猜对：用户在这个标的的画板上说话，规则就该落在这个标的上，这个约束会跟着可能出现的
-// 澄清轮次一起传递下去，不会因为多问一轮就失效。
+// The symbol is force-locked to the builder's current SYMBOL (ForceSymbol,
+// see wizardState), rather than relying on the LLM to correctly guess it
+// from the user's description: the user is talking on this symbol's
+// builder page, so the rule should land on this symbol -- this constraint
+// carries through any clarification rounds that follow, never expiring
+// just because one more question got asked.
 func (s *Server) handleBuilderTranslate(w http.ResponseWriter, r *http.Request) {
+	lang := resolveLang(r)
 	userID, _ := currentUserID(r)
 	ag, _ := s.userAgent(r.Context(), userID)
 	if ag == nil {
-		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "Agent 翻译层未就绪，请先在设置页面配置模型。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: i18n.T(lang, "webui.wizard.err.agent_not_ready")})
 		return
 	}
 	symbol := strings.ToUpper(r.PathValue("symbol"))
@@ -189,34 +227,44 @@ func (s *Server) handleBuilderTranslate(w http.ResponseWriter, r *http.Request) 
 	}
 	utterance := strings.TrimSpace(r.FormValue("utterance"))
 	if utterance == "" {
-		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "交易计划描述不能为空。"})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: i18n.T(lang, "webui.builder.err.empty_plan")})
 		return
 	}
 
-	// 把标的context 交代给模型，不是为了约束它（Config.Symbol 会在 renderProposal 里
-	// 被强制覆盖），而是让复述文字读起来跟画板实际生效的标的一致——不这样做的话，
-	// 用户完全没提标的时模型可能编一个不相关的标的写进复述里，跟画板强制生效的标的对不上。
-	contextualUtterance := fmt.Sprintf(
-		"（当前正在 %s 的可视化建策画板上操作，除非用户明确说了别的标的，否则这条规则默认就是针对 %s 的）%s",
-		symbol, symbol, utterance)
+	// The symbol context is given to the model not to constrain it
+	// (Config.Symbol gets force-overridden in renderProposal anyway), but
+	// so the restatement text reads consistently with the symbol the
+	// builder actually enforces -- without this, when the user never
+	// mentions a symbol at all, the model might make up an unrelated one in
+	// the restatement that doesn't match what the builder force-applies.
+	contextualUtterance := i18n.T(lang, "webui.builder.context_prefix", "symbol", symbol, "utterance", utterance)
 
-	p, err := ag.Translate(r.Context(), contextualUtterance, nil, resolveLang(r))
+	p, err := ag.Translate(r.Context(), contextualUtterance, nil, lang)
 	if err != nil {
-		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: "翻译失败：" + err.Error()})
+		s.renderFragment(w, r, "wizard_error_fragment", wizardErrorData{Message: i18n.T(lang, "webui.wizard.err.translate_failed", "err", err.Error())})
 		return
 	}
-	// 这里刻意不去掉注入的标的上下文前缀（跟早期版本不一样）：p.SourceUtterance 不只是
-	// 拿来显示的，handleWizardClarify 重建对话历史时会把它当成"用户说的第一轮话"重新
-	// 回灌给模型（见那边的 newHistory 拼接）。之前在这里把前缀去掉、只留用户原话，
-	// 结果是澄清问答一旦进入第二轮，模型就不再知道"标的已经定死是这个"，
-	// 于是每一轮都重新追问一遍标的——真实用 DeepSeek 复现过这个循环。
-	// 代价是最终存库的 source_utterance 会带上这段注入文字，但这如实反映了送给模型的
-	// 完整输入，审计意义上不算坏事。
+	// Deliberately not stripping the injected symbol-context prefix here
+	// (unlike an earlier version): p.SourceUtterance isn't just for
+	// display -- when handleWizardClarify rebuilds the conversation
+	// history, it feeds this back to the model as "what the user said in
+	// the first turn" (see that function's newHistory concatenation).
+	// Stripping the prefix here before, leaving only the user's original
+	// words, meant that once the clarification Q&A reached a second round,
+	// the model no longer knew "the symbol is already locked to this one,"
+	// so it kept re-asking about the symbol every round -- a loop actually
+	// reproduced with DeepSeek. The cost is that the source_utterance
+	// ultimately stored in the database carries this injected text, but
+	// that honestly reflects the complete input actually sent to the
+	// model, which isn't a bad thing from an audit standpoint.
 	s.renderProposal(w, r, p, nil, symbol)
 }
 
-// describeConfig 优先用 Agent 生成复述；Agent 未就绪（没配 LLM key）时退回确定性
-// 兜底复述——可视化建策的配置本来就没有需要模型理解的歧义，兜底版本一样能用。
+// describeConfig prefers the Agent to generate the restatement; when the
+// Agent isn't ready (no LLM key configured), it falls back to a
+// deterministic restatement -- the visual builder's config has no
+// ambiguity that needs a model to understand in the first place, so the
+// fallback works just as well.
 func (s *Server) describeConfig(ctx context.Context, userID string, cfg types.StrategyConfig, lang i18n.Lang) string {
 	ag, _ := s.userAgent(ctx, userID)
 	if ag == nil {
@@ -224,7 +272,7 @@ func (s *Server) describeConfig(ctx context.Context, userID string, cfg types.St
 	}
 	text, err := ag.Describe(ctx, cfg, lang)
 	if err != nil {
-		s.logger.Warn("Agent 复述失败，改用确定性兜底复述", "err", err)
+		s.logger.Warn("Agent restatement failed, falling back to the deterministic restatement", "err", err)
 		return describePlain(lang, cfg)
 	}
 	return text

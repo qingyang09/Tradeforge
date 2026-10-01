@@ -54,9 +54,12 @@
   <button type="submit" name="decision" value="confirm">{{t "webui.wizard.confirm.submit"}}</button>
   <button type="submit" name="decision" value="cancel" class="secondary">{{t "webui.wizard.confirm.cancel"}}</button>
 </form>
-{{/* 可视化建策的画板页会找这个元素、把这份还没入库的配置实际画到图上（见
-     builder.html 的 applyStrategyConfig）；文字向导页面不读它，多出来的隐藏元素
-     对它没有任何影响。用 data 属性而不是 <script> 标签装 JSON，是为了让
-     html/template 走普通的 HTML 属性转义，不用操心 <script> 上下文里转义规则的差异。 */}}
+{{/* The visual builder page looks for this element and actually draws this
+     not-yet-saved config onto the chart (see builder.html's
+     applyStrategyConfig); the text wizard page never reads it, so this
+     extra hidden element has no effect there. JSON is carried in a data
+     attribute rather than a <script> tag so html/template goes through
+     ordinary HTML attribute escaping, with no need to worry about the
+     different escaping rules inside a <script> context. */}}
 <div id="wizard-proposal-config" style="display:none" data-config="{{.ConfigJSON}}"></div>
 {{end}}

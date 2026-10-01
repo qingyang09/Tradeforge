@@ -9,38 +9,50 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// segmentOutOfSample 匹配 python/backtest 端 Segment.OUT_OF_SAMPLE.value 与
-// pkg/types.BacktestTrade.Segment 的取值约定（该字段只在注释里说明取值，未定义常量）。
+// segmentOutOfSample matches python/backtest's Segment.OUT_OF_SAMPLE.value
+// and pkg/types.BacktestTrade.Segment's value convention (that field only
+// documents its values in a comment, with no defined constant).
 const segmentOutOfSample = "out_of_sample"
 
-// equityChart 是权益曲线图要用到的预计算数据。
+// equityChart holds the precomputed data the equity-curve chart needs.
 //
-// SVG 是标记语言，坐标点计算放在 Go 里更好测试；模板只管把现成的点字符串
-// 套进 <polyline>/<polygon>，不做任何算术。
+// SVG is a markup language; coordinate-point math is easier to test in Go,
+// and the template just drops the ready-made point strings into
+// <polyline>/<polygon>, doing no arithmetic of its own.
 type equityChart struct {
 	Width, Height int
-	// EquityInSamplePoints/EquityOutOfSamplePoints：真实权益曲线（IsRealEquityCurve
-	// 为 true 时）或近似的累计盈亏曲线（为 false 时，旧记录没有逐根权益数据）。
+	// EquityInSamplePoints/EquityOutOfSamplePoints: the real equity curve
+	// (when IsRealEquityCurve is true) or an approximate cumulative P&L
+	// curve (when false, for old records with no per-candle equity data).
 	InSamplePoints    string
 	OutOfSamplePoints string
-	// PeakPoints 是权益曲线的历史新高包络线（只在 IsRealEquityCurve 时有意义）——
-	// 配合 DrawdownAreaPoints 一起看，两条线之间的阴影就是回撤区间。
+	// PeakPoints is the equity curve's running-high envelope (only
+	// meaningful when IsRealEquityCurve) -- viewed together with
+	// DrawdownAreaPoints, the shaded area between the two lines is the
+	// drawdown region.
 	PeakPoints string
-	// DrawdownAreaPoints 是 peak 线与 equity 线围成的闭合多边形，画成半透明填充，
-	// 直观标出"这段时间账户在水下多深"——逐笔已实现盈亏的累加曲线看不出这个，
-	// 一笔中途深度浮亏、最后小亏离场的交易在那种曲线上完全不可见。
+	// DrawdownAreaPoints is the closed polygon enclosed by the peak line
+	// and the equity line, filled semi-transparent to visually mark "how
+	// far underwater the account was during this span" -- a cumulative
+	// realized-P&L curve can't show this: a trade with a deep unrealized
+	// loss mid-trade that exits at a small loss is completely invisible on
+	// that kind of curve.
 	DrawdownAreaPoints string
 	MinLabel, MaxLabel string
 	HasTrades          bool
-	// IsRealEquityCurve 为 true 表示用的是逐根K线的真实权益（含浮动盈亏），
-	// 为 false 表示退回用逐笔已实现盈亏累加近似——2026-09 之前的回测记录没有
-	// 持久化真实权益曲线，界面对这些旧记录只能用近似值，需要如实告知用户区别。
+	// IsRealEquityCurve true means this uses the real per-candle equity
+	// (including unrealized P&L); false means it fell back to an
+	// approximation built from cumulative realized P&L per trade --
+	// backtest records from before 2026-09 never persisted a real equity
+	// curve, so the UI can only use an approximation for those old records
+	// and must honestly disclose the difference to the user.
 	IsRealEquityCurve bool
 }
 
-// buildEquityChart 优先用 BacktestResult.EquityCurve（逐根K线的真实权益，含浮动
-// 盈亏）画图；没有这份数据的旧记录退回用 Trades 的累计已实现盈亏近似——参见
-// equityChart.IsRealEquityCurve 的注释。
+// buildEquityChart prefers BacktestResult.EquityCurve (the real per-candle
+// equity, including unrealized P&L) for the chart; an old record lacking
+// that data falls back to an approximation built from Trades' cumulative
+// realized P&L -- see equityChart.IsRealEquityCurve's comment.
 func buildEquityChart(result types.BacktestResult) equityChart {
 	if len(result.EquityCurve) >= 2 {
 		return buildRealEquityChart(result)
@@ -48,9 +60,11 @@ func buildEquityChart(result types.BacktestResult) equityChart {
 	return buildApproxEquityChart(result.Trades)
 }
 
-// splitAtFromSegments 从 Segments 里取样本内/样本外的分界时间点——
-// Segments[0]（in_sample）的 End 就是 python 端 split_at。数据缺失或形状不对时
-// 返回零值，调用方据此把整条曲线都当作样本内处理（保守：不确定就不分色）。
+// splitAtFromSegments pulls the in-sample/out-of-sample split time from
+// Segments -- Segments[0] (in_sample)'s End is exactly the Python side's
+// split_at. Returns the zero value when the data is missing or malformed,
+// so the caller treats the whole curve as in-sample (conservative: when
+// unsure, don't color-split it).
 func splitAtFromSegments(segments []types.BacktestSegment) time.Time {
 	for _, seg := range segments {
 		if seg.Label == "in_sample" {
@@ -86,7 +100,7 @@ func buildRealEquityChart(result types.BacktestResult) equityChart {
 	}
 	span := maxV - minV
 	if span == 0 {
-		span = 1 // 全程权益不变时画一条水平线，避免除零
+		span = 1 // draws a flat horizontal line when equity never moves, avoiding a division by zero
 	}
 
 	n := len(curve)
@@ -101,7 +115,7 @@ func buildRealEquityChart(result types.BacktestResult) equityChart {
 		pt := point(i, values[i])
 		if isOOS {
 			if !lastWasOutOfSample && len(inPts) > 0 {
-				outPts = append(outPts, inPts[len(inPts)-1]) // 接上样本内终点，视觉不断开
+				outPts = append(outPts, inPts[len(inPts)-1]) // connects to the in-sample segment's endpoint so the line doesn't visually break
 			}
 			outPts = append(outPts, pt)
 			lastWasOutOfSample = true
@@ -115,8 +129,10 @@ func buildRealEquityChart(result types.BacktestResult) equityChart {
 	c.OutOfSamplePoints = strings.Join(outPts, " ")
 	c.PeakPoints = strings.Join(peakPts, " ")
 
-	// 回撤阴影：沿 peak 线正向走一遍，再沿 equity 线反向走回来，首尾相接围成一个
-	// 闭合多边形——中间夹住的正是"权益比历史新高低多少"这块区域。
+	// Drawdown shading: walk forward along the peak line, then backward
+	// along the equity line, meeting end to end to enclose a closed
+	// polygon -- the area sandwiched in between is exactly "how far below
+	// the running high equity currently sits."
 	forward := make([]string, n)
 	backward := make([]string, n)
 	for i := 0; i < n; i++ {
@@ -130,8 +146,10 @@ func buildRealEquityChart(result types.BacktestResult) equityChart {
 	return c
 }
 
-// buildApproxEquityChart 用 Trades（按开仓时间排序、累计已实现盈亏）重建一条近似
-// 权益曲线——只在 EquityCurve 数据缺失时使用（2026-09 之前的历史回测记录）。
+// buildApproxEquityChart rebuilds an approximate equity curve from Trades
+// (sorted by entry time, cumulative realized P&L) -- used only when
+// EquityCurve data is missing (historical backtest records from before
+// 2026-09).
 func buildApproxEquityChart(trades []types.BacktestTrade) equityChart {
 	const width, height = 640, 200
 	c := equityChart{Width: width, Height: height}
@@ -144,7 +162,7 @@ func buildApproxEquityChart(trades []types.BacktestTrade) equityChart {
 	copy(sorted, trades)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].EntryTime.Before(sorted[j].EntryTime) })
 
-	cumulative := make([]float64, len(sorted)+1) // cumulative[0] 是起点 0
+	cumulative := make([]float64, len(sorted)+1) // cumulative[0] is the starting point, 0
 	for i, t := range sorted {
 		cumulative[i+1] = cumulative[i] + t.PnL.InexactFloat64()
 	}
@@ -160,7 +178,7 @@ func buildApproxEquityChart(trades []types.BacktestTrade) equityChart {
 	}
 	span := maxV - minV
 	if span == 0 {
-		span = 1 // 全程零盈亏时画一条水平线，避免除零
+		span = 1 // draws a flat horizontal line when P&L is zero throughout, avoiding a division by zero
 	}
 
 	x := func(i int) float64 { return float64(i) / float64(len(cumulative)-1) * float64(width) }
@@ -180,7 +198,7 @@ func buildApproxEquityChart(trades []types.BacktestTrade) equityChart {
 		}
 		pt := point(i+1, cumulative[i+1])
 		if t.Segment == segmentOutOfSample {
-			// 从样本内切到样本外的第一笔：把上一段的终点接过来，两条折线视觉上不断开。
+			// The first trade switching from in-sample to out-of-sample: carries over the previous segment's endpoint, so the two polylines don't visually break.
 			if !lastWasOutOfSample && len(inPts) > 0 {
 				outPts = append(outPts, inPts[len(inPts)-1])
 			}
@@ -199,16 +217,20 @@ func buildApproxEquityChart(trades []types.BacktestTrade) equityChart {
 	return c
 }
 
-// monthlyReturn 是权益曲线按自然月切分后，某个月的收益率。
+// monthlyReturn is one calendar month's return, after bucketing the equity curve by month.
 type monthlyReturn struct {
 	Month  string // "2025-01"
 	Return float64
 }
 
-// buildMonthlyReturns 把真实权益曲线按自然月分桶，算出每个月的收益率
-// （月末权益 / 上个月月末权益 - 1；第一个月用曲线起点权益当分母）。
-// 只有 IsRealEquityCurve 数据可用时才有意义——近似曲线是逐笔盈亏累加，
-// 强行按自然月切分会把"这个月到底赚了多少"算错（漏掉月中持仓的浮动部分）。
+// buildMonthlyReturns buckets the real equity curve by calendar month and
+// computes each month's return (month-end equity / previous month-end
+// equity - 1; the first month uses the curve's starting equity as the
+// denominator). Only meaningful when IsRealEquityCurve data is available --
+// the approximate curve is a cumulative sum of per-trade P&L, and forcing a
+// calendar-month split on it would miscompute "how much was actually made
+// this month" (missing the floating portion of a position still open
+// mid-month).
 func buildMonthlyReturns(curve []types.EquityPoint) []monthlyReturn {
 	if len(curve) < 2 {
 		return nil
@@ -244,8 +266,9 @@ func buildMonthlyReturns(curve []types.EquityPoint) []monthlyReturn {
 	return out
 }
 
-// holdingDuration 格式化一笔交易的持仓时长，供模板里的逐笔交易表格使用——
-// html/template 不能做时间减法，算术必须放在 Go 这边。
+// holdingDuration formats a trade's holding period, for the per-trade table
+// in the template -- html/template can't do time subtraction, so the
+// arithmetic has to live on the Go side.
 func holdingDuration(entry, exit time.Time) string {
 	d := exit.Sub(entry)
 	if d < 0 {

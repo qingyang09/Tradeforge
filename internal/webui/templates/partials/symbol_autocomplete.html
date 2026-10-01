@@ -1,7 +1,11 @@
-{{/* symbol_autocomplete_style/_script 给一个标的输入框接上"输入即搜索"下拉建议。
-     两个 define 分别包一层 <style>/<script>，方便页面各自决定往哪塞（列表页是嵌进
-     后台布局的内容片段，图表/画板页是独立深色文档），互不依赖对方的 CSS 上下文——
-     下拉框的颜色是写死的浅色卡片，不管套在哪个主题里都能看清。 */}}
+{{/* symbol_autocomplete_style/_script attach a "search as you type" dropdown
+     of suggestions to a symbol input field. The two defines each wrap a
+     <style>/<script> separately, so each page can decide where to embed them
+     (the list page is a content fragment embedded in the backend layout, the
+     chart/builder page is an independent dark-themed document) without
+     depending on each other's CSS context -- the dropdown's colors are a
+     fixed light-card look, readable regardless of which theme it's embedded
+     in. */}}
 
 {{define "symbol_autocomplete_style"}}
 <style>
@@ -24,9 +28,12 @@
 {{define "symbol_autocomplete_script"}}
 <script>
 (function () {
-  // initSymbolAutocomplete 把一个 <input> 包一层容器、挂一个下拉建议列表，数据来自
-  // GET /api/symbols（真实的 OKX 现货标的，不是本地瞎猜）。接口暂时不通或者用户
-  // 不选建议、直接原样提交，都不影响输入框原有的提交路径——这是增强，不是替代。
+  // initSymbolAutocomplete wraps an <input> in a container and attaches a
+  // dropdown suggestion list, sourced from GET /api/symbols (real OKX spot
+  // symbols, not a local guess). Whether the endpoint is temporarily
+  // unreachable or the user just types and submits without picking a
+  // suggestion, the input's original submit path is unaffected either way --
+  // this is a pure enhancement, not a replacement.
   window.initSymbolAutocomplete = function (input) {
     if (!input || input.dataset.acBound) return;
     input.dataset.acBound = "1";
@@ -75,8 +82,10 @@
         var el = document.createElement("div");
         el.className = "symbol-ac-item";
         el.textContent = sym;
-        // mousedown（而不是 click）是故意的：input 的 blur 关闭下拉也是监听 blur，
-        // click 会晚于 blur 触发，那时下拉已经被清空，选项点了等于没点。
+        // mousedown (not click) is deliberate: the input's blur handler also
+        // closes the dropdown, and click fires after blur, by which point
+        // the dropdown has already been cleared -- clicking the option would
+        // be a no-op.
         el.addEventListener("mousedown", function (e) {
           e.preventDefault();
           selectItem(sym);
@@ -91,10 +100,10 @@
       fetch("/api/symbols?q=" + encodeURIComponent(q))
         .then(function (r) { return r.ok ? r.json() : []; })
         .then(function (data) {
-          if (seq !== requestSeq) return; // 过期响应：用户已经又输入了新内容
+          if (seq !== requestSeq) return; // stale response: the user has already typed something new
           render(data);
         })
-        .catch(function () { /* 建议拉取失败不影响手动输入正常提交 */ });
+        .catch(function () { /* a failed suggestion fetch doesn't affect normal manual submission */ });
     }
 
     input.addEventListener("input", function () {

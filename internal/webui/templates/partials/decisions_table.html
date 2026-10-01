@@ -18,10 +18,13 @@
 {{end}}
 {{end}}
 
-{{/* decision_signals_detail 展开这条决策当时每个模块各自给出的信号——方向、置信度、
-     原因，降级的单独标出。跟订单那边的 provenance_detail 是同一件事的两个视角：
-     决策记录的是"引擎聚合时看到了什么"，订单的 provenance 额外多了下单那一刻的
-     模块参数快照。 */}}
+{{/* decision_signals_detail expands this decision's signal from each
+     participating module at the time -- direction, confidence, reason,
+     with a degraded one flagged separately. Two views of the same thing as
+     orders_table.html's provenance_detail: a decision record is "what the
+     engine saw while aggregating," while an order's provenance additionally
+     captures a snapshot of each module's parameters at the moment the order
+     was placed. */}}
 {{define "decision_signals_detail"}}
 {{if not .}}
   <span class="note">—</span>

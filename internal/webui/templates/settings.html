@@ -181,7 +181,7 @@
   <h2>{{t "webui.settings.notif.webpush_title"}}</h2>
   <p class="note">{{t "webui.settings.notif.webpush_note"}}</p>
   <button id="webpush-subscribe-btn" type="button">{{t "webui.settings.notif.webpush_enable_btn"}}</button>
-  <!-- 唯一需要原生 JS 的地方：Web Push 订阅是浏览器 API，htmx 覆盖不了。 -->
+  <!-- The one spot that needs native JS: Web Push subscription is a browser API, which htmx can't cover. -->
   <script>
     function urlBase64ToUint8Array(base64String) {
       const padding = '='.repeat((4 - base64String.length % 4) % 4);

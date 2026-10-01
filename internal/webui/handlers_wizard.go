@@ -185,7 +185,7 @@ func (s *Server) handleWizardConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.store.RecordTransition(ctx, storage.Transition{
 		StrategyID: cfg.ID, From: "", To: types.StateDraft,
-		Actor: "user:web", Reason: "用户确认了策略配置",
+		Actor: "user:web", Reason: i18n.T(lang, "webui.wizard.transition.user_confirmed"),
 		Evidence: map[string]any{"source_utterance": cfg.SourceUtterance, "attempts": ws.Proposal.Attempts},
 	}); err != nil {
 		// 审计记录写入失败不撤销已经保存的策略——策略本身是权威数据，

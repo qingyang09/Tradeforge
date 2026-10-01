@@ -21,9 +21,12 @@
 {{end}}
 {{end}}
 
-{{/* provenance_detail 展开一笔订单/决策背后的完整触发依据：聚合方式、强度、
-     每个参与模块的信号（方向/置信度/原因，降级的单独标出），以及当时生效的模块参数
-     快照。这是阶段 6 明确要求的"哪个模块的哪个信号、什么参数触发的"落到界面上。 */}}
+{{/* provenance_detail expands the full basis behind an order/decision:
+     the combination mode, score, each participating module's signal
+     (direction/confidence/reason, with a degraded one flagged separately),
+     and the module parameter snapshot in effect at the time. This is Stage
+     6's explicit requirement for "which module's which signal, with what
+     parameters, triggered this" landing on the UI. */}}
 {{define "provenance_detail"}}
 <details>
   <summary class="note">

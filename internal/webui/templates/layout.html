@@ -14,11 +14,13 @@
   </script>
   <script src="{{htmxSrc}}"></script>
   <style>
-    /* 深色主题，跟画板/看盘页（builder.html）用同一套色板——之前这里是单独一套浅色
-       后台管理风格，在导航栏"K 线图 / 建策"和其它任何一项之间切换，观感上像换了
-       个应用。统一成一套之后，画板页仍然是自己独立的文档（有自己的 <style>，
-       不吃这份布局），这里只覆盖套了 layout 的几个页面：状态看板、新建策略、
-       设置、策略详情。*/
+    /* Dark theme, the same palette as the builder/watch page (builder.html)
+       -- this used to be a separate light admin-panel look, so switching
+       between "Chart / Builder" and anything else in the nav felt like
+       switching apps. Now unified into one palette; the builder page is
+       still its own independent document (it has its own <style>, doesn't
+       inherit this layout), so this only covers the handful of pages
+       wrapped in layout: dashboard, new strategy, settings, strategy detail. */
     :root { color-scheme: dark; }
     body { font-family: -apple-system, "Segoe UI", "PingFang SC", sans-serif; margin: 0; background: #0d1117; color: #d1d4dc; }
     header { background: #131722; color: #fff; padding: 0.9rem 1.5rem; display: flex; align-items: center; gap: 1.5rem; border-bottom: 1px solid #1e222d; }
@@ -39,10 +41,13 @@
     h1, h2, h3 { font-weight: 600; color: #fff; }
     table { border-collapse: collapse; width: 100%; margin: 0.75rem 0; }
     th, td { text-align: left; padding: 0.45rem 0.6rem; border-bottom: 1px solid #1e222d; font-size: 0.92rem; }
-    /* 列多、单元格内容本身不换行的表格（逐笔交易时间戳/价格、按月份铺开的收益表）
-       撑宽度会超出 980px 的容器，之前没有兜底，整个页面被撑出水平滚动条、
-       右侧内容被裁切。改成表格自己在一个能横向滚动的盒子里，页面本身不受影响，
-       宽表格照样能看全，只是要在这个盒子内部左右滑。 */
+    /* A table with many columns and non-wrapping cell content (per-trade
+       timestamps/prices, a monthly-returns table laid out wide) can exceed
+       the 980px container's width -- previously with no fallback, the whole
+       page got stretched out with a horizontal scrollbar and content on the
+       right clipped. Wrapping the table in its own horizontally-scrollable
+       box leaves the page itself unaffected; a wide table is still fully
+       viewable, just by scrolling within that box. */
     .table-scroll { overflow-x: auto; margin: 0.75rem 0; }
     .table-scroll table { margin: 0; white-space: nowrap; }
     th { color: #787b86; font-weight: 500; }
@@ -59,8 +64,9 @@
     .note { color: #787b86; font-size: 0.88rem; }
     details summary { cursor: pointer; }
     details summary:hover { color: #fff; }
-    /* 策略详情页这次加了不少内容，页面变得很长——加一条粘性小导航，滚动时能
-       快速跳到某个板块，不用一路滚下去找。*/
+    /* The strategy detail page picked up a lot of content and got quite
+       long -- a small sticky nav lets you jump to a section quickly while
+       scrolling, instead of hunting all the way down. */
     .page-nav {
       position: sticky; top: 0; z-index: 10;
       display: flex; gap: 0.4rem; flex-wrap: wrap;
