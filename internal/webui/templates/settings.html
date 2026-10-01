@@ -11,7 +11,7 @@
     <p>
       {{t "webui.settings.agent.configured_prefix"}}{{if .Status.Provider}}{{msg .Status.Provider.Label}}{{else}}{{t "webui.settings.agent.unknown_provider"}}{{end}}
       {{if .Status.Model}} · {{t "webui.settings.field.model"}} {{.Status.Model}}{{end}}
-      · key {{.Status.KeyHint}}
+      · key {{if .Status.EnvConfigured}}{{t "webui.settings.agent.key_hint_env"}}{{else}}{{.Status.KeyHint}}{{end}}
       {{if .Status.ProfileID}} · {{t "webui.settings.agent.from_saved_profile"}}{{else}} · {{t "webui.settings.agent.memory_only"}}{{end}}
     </p>
   {{else}}
