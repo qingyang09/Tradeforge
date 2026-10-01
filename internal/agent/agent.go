@@ -111,7 +111,7 @@ func (a *Agent) Translate(ctx context.Context, utterance string, history []Turn,
 
 	var lastErr error
 	for attempt := 1; attempt <= a.maxRetries+1; attempt++ {
-		raw, err := a.llm.Complete(ctx, system, schema, turns)
+		raw, err := a.llm.Complete(ctx, system, schema, turns, lang)
 		if err != nil {
 			// A call failure is an infrastructure problem, not a model-output
 			// problem, so it doesn't go through the retry logic.

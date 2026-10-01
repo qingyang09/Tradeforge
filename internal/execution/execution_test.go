@@ -583,7 +583,7 @@ func TestWorkerRejectsForeignSymbol(t *testing.T) {
 	if err == nil {
 		t.Fatal("a decision with a mismatched symbol must be rejected")
 	}
-	if !strings.Contains(err.Error(), "隔离") {
+	if !strings.Contains(err.Error(), "isolated") {
 		t.Errorf("error message should call out the symbol-isolation requirement: %v", err)
 	}
 }

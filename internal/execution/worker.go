@@ -173,7 +173,7 @@ func (w *Worker) Handle(ctx context.Context, d types.Decision) (err error) {
 			d.StrategyID, w.cfg.ID)
 	}
 	if d.Symbol != "" && d.Symbol != w.cfg.Symbol {
-		return fmt.Errorf("决策标的 %s 与本执行实例的 %s 不一致；标的必须严格隔离",
+		return fmt.Errorf("decision symbol %s does not match this execution instance's symbol %s; symbols must be strictly isolated",
 			d.Symbol, w.cfg.Symbol)
 	}
 

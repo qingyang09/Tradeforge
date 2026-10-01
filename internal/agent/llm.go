@@ -10,6 +10,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 
 	"tradeforge/internal/config"
+	"tradeforge/internal/i18n"
 )
 
 // Turn is one turn of the conversation.
@@ -28,8 +29,14 @@ type Turn struct {
 // ever calling an external service.
 type LLM interface {
 	// Complete makes one schema-constrained generation call and returns the
-	// model's raw JSON output text.
-	Complete(ctx context.Context, system string, schema Schema, turns []Turn) (string, error)
+	// model's raw JSON output text. lang selects the language of any
+	// LLM-facing text this call builds itself (e.g. the tool description),
+	// matching the language system/schema were already built in by the
+	// caller -- see prompt.go/schema.go for why this matters: a model
+	// given a fully English conversation except for one stray Chinese
+	// instruction is exactly the kind of inconsistency this project's
+	// bilingual work set out to eliminate.
+	Complete(ctx context.Context, system string, schema Schema, turns []Turn, lang i18n.Lang) (string, error)
 }
 
 // ErrNoAPIKey indicates no API key is configured.
@@ -75,8 +82,19 @@ const DefaultModel = "claude-opus-5"
 // execution chain directly.
 const toolName = "emit_strategy_translation"
 
+// toolDescription is the structured-output tool's description, shared by
+// both LLM backends (llm.go, llm_openai.go) -- in lang, matching whatever
+// language the system prompt and schema were already built in, so nothing
+// in the model's view of the conversation is left in a different language.
+func toolDescription(lang i18n.Lang) string {
+	if lang == i18n.LangEN {
+		return "Submit the translation result. This is the only permitted output channel."
+	}
+	return "提交翻译结果。这是唯一允许的输出通道。"
+}
+
 // Complete implements LLM.
-func (a *AnthropicLLM) Complete(ctx context.Context, system string, schema Schema, turns []Turn) (string, error) {
+func (a *AnthropicLLM) Complete(ctx context.Context, system string, schema Schema, turns []Turn, lang i18n.Lang) (string, error) {
 	if len(turns) == 0 {
 		return "", errors.New("conversation has no turns")
 	}
@@ -94,7 +112,7 @@ func (a *AnthropicLLM) Complete(ctx context.Context, system string, schema Schem
 
 	tool := anthropic.ToolParam{
 		Name:        toolName,
-		Description: anthropic.String("提交翻译结果。这是唯一允许的输出通道。"),
+		Description: anthropic.String(toolDescription(lang)),
 		InputSchema: anthropic.ToolInputSchemaParam{
 			Properties: schema["properties"],
 			ExtraFields: map[string]any{
@@ -148,7 +166,7 @@ type StubLLM struct {
 }
 
 // Complete implements LLM.
-func (s *StubLLM) Complete(_ context.Context, _ string, _ Schema, turns []Turn) (string, error) {
+func (s *StubLLM) Complete(_ context.Context, _ string, _ Schema, turns []Turn, _ i18n.Lang) (string, error) {
 	s.Calls = append(s.Calls, turns)
 	if s.Err != nil {
 		return "", s.Err

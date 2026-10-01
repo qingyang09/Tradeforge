@@ -10,6 +10,7 @@ import (
 	"github.com/openai/openai-go/shared"
 
 	"tradeforge/internal/config"
+	"tradeforge/internal/i18n"
 )
 
 // DefaultOpenAIModel is the model the OpenAI provider uses when no model is
@@ -58,7 +59,7 @@ func NewOpenAILLM(cfg config.AgentConfig) (*OpenAILLM, error) {
 }
 
 // Complete implements LLM.
-func (a *OpenAILLM) Complete(ctx context.Context, system string, schema Schema, turns []Turn) (string, error) {
+func (a *OpenAILLM) Complete(ctx context.Context, system string, schema Schema, turns []Turn, lang i18n.Lang) (string, error) {
 	if len(turns) == 0 {
 		return "", errors.New("conversation has no turns")
 	}
@@ -77,7 +78,7 @@ func (a *OpenAILLM) Complete(ctx context.Context, system string, schema Schema, 
 	tool := openai.ChatCompletionToolParam{
 		Function: shared.FunctionDefinitionParam{
 			Name:        toolName,
-			Description: openai.String("提交翻译结果。这是唯一允许的输出通道。"),
+			Description: openai.String(toolDescription(lang)),
 			Parameters:  shared.FunctionParameters(schema),
 			// strict makes the API guarantee the arguments strictly conform to
 			// the schema, semantically equivalent to AnthropicLLM's Strict: true

@@ -110,7 +110,7 @@ func (a *Agent) Describe(ctx context.Context, cfg types.StrategyConfig, lang i18
 	if err != nil {
 		return "", err
 	}
-	raw, err := a.llm.Complete(ctx, DescribeSystemPrompt(lang), descSchema(lang), []Turn{{Role: "user", Text: prompt}})
+	raw, err := a.llm.Complete(ctx, DescribeSystemPrompt(lang), descSchema(lang), []Turn{{Role: "user", Text: prompt}}, lang)
 	if err != nil {
 		return "", fmt.Errorf("restatement request failed: %w", err)
 	}
