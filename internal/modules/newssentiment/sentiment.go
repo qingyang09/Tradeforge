@@ -4,8 +4,36 @@ import (
 	"context"
 	"strings"
 
+	"tradeforge/internal/i18n"
 	"tradeforge/pkg/types"
 )
+
+// ScoringError indicates a SentimentProvider could not score a news item.
+// Its Reason is a translatable types.Message rather than a pre-rendered
+// string, for the same reason as cvdorderflow.DataSourceError: the module's
+// Evaluate runs headlessly, with no idea what language whoever eventually
+// sees this error prefers.
+type ScoringError struct {
+	reason types.Message
+	// wrapped is the underlying error this one was built from, kept so
+	// errors.Is/errors.As can still reach it (a sentinel error check, for
+	// instance) even though the message shown to a viewer goes through
+	// reason instead of this error's own text.
+	wrapped error
+}
+
+// Error implements the error interface, rendering in English for logs and
+// Go error-handling code. Callers that want a bilingual render should use
+// Reason directly instead.
+func (e *ScoringError) Error() string {
+	return i18n.Render(i18n.LangEN, e.reason)
+}
+
+// Reason returns this error's translatable message.
+func (e *ScoringError) Reason() types.Message { return e.reason }
+
+// Unwrap exposes the underlying error, if any, for errors.Is/errors.As.
+func (e *ScoringError) Unwrap() error { return e.wrapped }
 
 // SentimentProvider abstracts the source of news sentiment scoring.
 //

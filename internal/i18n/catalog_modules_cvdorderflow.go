@@ -23,6 +23,8 @@ func init() {
 		"modules.cvd_orderflow.reason.imbalance_sell":       "CVD imbalance: net aggressive selling within the window is {pct}% of total volume (threshold {threshold_pct}%)",
 
 		"modules.cvd_orderflow.error.missing_taker_volume": "Market data has no taker-buy-volume field ({count} candles); CVD cannot be computed",
+		"modules.cvd_orderflow.error.fetch_failed":         "{module}: failed to read order-flow data: {error}",
+		"modules.cvd_orderflow.error.length_mismatch":      "{module}: the order-flow data source returned {got} entries, which doesn't match {want} candles",
 	})
 	register(LangZH, map[string]string{
 		"modules.cvd_orderflow.description": "计算累计成交量差（CVD），检测窗口内的主动买卖失衡，以及价格与 CVD 之间的背离。",
@@ -42,5 +44,7 @@ func init() {
 		"modules.cvd_orderflow.reason.imbalance_sell":       "CVD 失衡：窗口内主动卖出净占总成交量的 {pct}%（阈值 {threshold_pct}%）",
 
 		"modules.cvd_orderflow.error.missing_taker_volume": "行情数据缺少主动买入量字段（{count} 根 K 线），无法计算 CVD",
+		"modules.cvd_orderflow.error.fetch_failed":         "{module}：读取订单流数据失败：{error}",
+		"modules.cvd_orderflow.error.length_mismatch":      "{module}：订单流数据源返回 {got} 条，与 {want} 根 K 线不匹配",
 	})
 }

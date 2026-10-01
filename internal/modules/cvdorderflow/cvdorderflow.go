@@ -124,11 +124,21 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 
 	deltas, err := m.provider.Deltas(ctx, md)
 	if err != nil {
-		return types.Signal{}, fmt.Errorf("%s：读取订单流数据失败：%w", ModuleName, err)
+		// A provider that already returns a structured error (e.g.
+		// CandleFlowProvider's own *DataSourceError) is propagated as-is,
+		// not re-wrapped into a generic "fetch failed" message that would
+		// discard its real reason (and its Key, which tests assert on).
+		if _, ok := err.(messageReasoner); ok {
+			return types.Signal{}, err
+		}
+		return types.Signal{}, &DataSourceError{
+			reason:  types.Msg("modules.cvd_orderflow.error.fetch_failed", "module", ModuleName, "error", err.Error()),
+			wrapped: err,
+		}
 	}
 	if len(deltas) != len(md.Candles) {
-		return types.Signal{}, fmt.Errorf("%s：订单流数据源返回 %d 条，与 %d 根 K 线不匹配",
-			ModuleName, len(deltas), len(md.Candles))
+		return types.Signal{}, &DataSourceError{reason: types.Msg("modules.cvd_orderflow.error.length_mismatch",
+			"module", ModuleName, "got", len(deltas), "want", len(md.Candles))}
 	}
 
 	win := md.Candles[len(md.Candles)-window:]

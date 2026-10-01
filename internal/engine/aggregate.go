@@ -58,7 +58,7 @@ func aggregateAll(signals []types.Signal) (types.Direction, float64, bool, types
 	for _, s := range signals {
 		switch {
 		case s.Degraded:
-			blockers = append(blockers, i18n.T(blockerLang, "engine.decision.blocker.degraded", "module", s.Module, "err", s.Err))
+			blockers = append(blockers, i18n.T(blockerLang, "engine.decision.blocker.degraded", "module", s.Module, "err", i18n.Render(blockerLang, s.Err)))
 		case s.Direction == types.DirectionNeutral:
 			blockers = append(blockers, i18n.T(blockerLang, "engine.decision.blocker.neutral", "module", s.Module))
 		case dir == types.DirectionNeutral:

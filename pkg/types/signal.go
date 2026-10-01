@@ -82,7 +82,11 @@ type Signal struct {
 	// aggregation and audit.
 	Degraded bool `json:"degraded,omitempty"`
 	// Err records the reason for degradation; only set when Degraded is true.
-	Err string `json:"err,omitempty"`
+	//
+	// A Message, for the same reason as Reason above: this gets displayed
+	// much later, by a viewer whose language DegradedSignal has no way to
+	// know at construction time.
+	Err Message `json:"err,omitempty"`
 }
 
 // NeutralSignal builds a neutral signal for a module to return when data is insufficient.
@@ -97,6 +101,17 @@ func NeutralSignal(module, symbol string, reason Message, ts time.Time) Signal {
 	}
 }
 
+// messageReasoner is implemented by error types that already carry a
+// translatable types.Message (ComplianceError, TransitionError,
+// *cvdorderflow.DataSourceError, and others following the same convention
+// established across this codebase) -- DegradedSignal prefers this over the
+// error's own Error() string so the degradation reason stays bilingual
+// instead of freezing into whatever language the error happened to be built
+// in.
+type messageReasoner interface {
+	Reason() Message
+}
+
 // DegradedSignal builds a degraded signal for the combination engine to fill in
 // when a module times out or errors.
 func DegradedSignal(module, symbol string, err error, ts time.Time) Signal {
@@ -104,7 +119,17 @@ func DegradedSignal(module, symbol string, err error, ts time.Time) Signal {
 		MsgF("types.signal.degraded", "module produced no signal; degraded to neutral"), ts)
 	s.Degraded = true
 	if err != nil {
-		s.Err = err.Error()
+		if mr, ok := err.(messageReasoner); ok {
+			s.Err = mr.Reason()
+		} else {
+			// Legacy/boundary case: a plain error with no structured
+			// reason (most commonly a stdlib context error, which is
+			// already English, or a not-yet-converted module error) --
+			// frozen in whatever language it was built in, the same
+			// honest fallback used throughout this project for
+			// not-yet-structured text.
+			s.Err = Message{Literal: err.Error()}
+		}
 	}
 	return s
 }

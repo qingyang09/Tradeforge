@@ -187,7 +187,7 @@ func TestHandleStrategyDetailMarksDegradedSignalInProvenance(t *testing.T) {
 			Provenance: types.OrderProvenance{
 				Combine: types.CombineAll, Score: 0.5,
 				Signals: []types.Signal{
-					{Module: "cvd_orderflow", Direction: types.DirectionNeutral, Degraded: true, Err: "模块超时"},
+					{Module: "cvd_orderflow", Direction: types.DirectionNeutral, Degraded: true, Err: types.Message{Literal: "模块超时"}},
 				},
 			},
 		},

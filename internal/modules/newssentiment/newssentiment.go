@@ -123,7 +123,10 @@ func (m *Module) Evaluate(ctx context.Context, md types.MarketData, params map[s
 		}
 		score, err := m.provider.Score(ctx, n)
 		if err != nil {
-			return types.Signal{}, fmt.Errorf("%s：情绪打分失败：%w", ModuleName, err)
+			return types.Signal{}, &ScoringError{
+				reason:  types.Msg("modules.news_sentiment.error.scoring_failed", "module", ModuleName, "error", err.Error()),
+				wrapped: err,
+			}
 		}
 		weight := 1 - now.Sub(n.PublishedAt).Hours()/window.Hours()
 		if weight < 0 {

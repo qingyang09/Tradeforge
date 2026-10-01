@@ -299,8 +299,8 @@ func TestModuleErrorDegradesGracefully(t *testing.T) {
 	if !bad.Degraded {
 		t.Error("an erroring module should be marked Degraded")
 	}
-	if !strings.Contains(bad.Err, "数据源炸了") {
-		t.Errorf("degraded signal should retain the original error, got: %q", bad.Err)
+	if !strings.Contains(bad.Err.Literal, "数据源炸了") {
+		t.Errorf("degraded signal should retain the original error, got: %+v", bad.Err)
 	}
 	// ALL combine should not trigger when a module is degraded.
 	if d.Triggered {
@@ -327,8 +327,8 @@ func TestModulePanicIsIsolated(t *testing.T) {
 	if !boom.Degraded {
 		t.Error("a panicking module should be marked Degraded")
 	}
-	if !strings.Contains(boom.Err, "panic") {
-		t.Errorf("degraded signal should mention it was a panic, got: %q", boom.Err)
+	if !strings.Contains(boom.Err.Literal, "panic") {
+		t.Errorf("degraded signal should mention it was a panic, got: %+v", boom.Err)
 	}
 	if signalsByModule(d.Signals)["ok"].Direction != types.DirectionLong {
 		t.Error("a panicking module should not affect other modules' results")

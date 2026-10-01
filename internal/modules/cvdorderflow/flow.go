@@ -18,6 +18,15 @@ type Delta struct {
 	Total decimal.Decimal
 }
 
+// messageReasoner is implemented by an error that already carries a
+// translatable types.Message -- used to detect a FlowProvider error that's
+// already structured (like DataSourceError itself), so it can be propagated
+// unchanged instead of being flattened and re-wrapped into a new, more
+// generic message.
+type messageReasoner interface {
+	Reason() types.Message
+}
+
 // DataSourceError indicates a FlowProvider could not produce order-flow data
 // at all (as opposed to a normal "insufficient data" case, which the module
 // reports as a neutral Signal instead). Its Reason is a translatable
@@ -26,6 +35,12 @@ type Delta struct {
 // prefers -- see types.Message's doc comment.
 type DataSourceError struct {
 	reason types.Message
+	// wrapped is the underlying error this one was built from, if any
+	// (e.g. a FlowProvider's own error) -- kept so errors.Is/errors.As can
+	// still reach it (a sentinel error check, for instance) even though the
+	// message shown to a viewer goes through reason instead of this
+	// error's own text.
+	wrapped error
 }
 
 // Error implements the error interface, rendering in English for logs and Go
@@ -38,6 +53,9 @@ func (e *DataSourceError) Error() string {
 
 // Reason returns this error's translatable message.
 func (e *DataSourceError) Reason() types.Message { return e.reason }
+
+// Unwrap exposes the underlying error, if any, for errors.Is/errors.As.
+func (e *DataSourceError) Unwrap() error { return e.wrapped }
 
 // FlowProvider abstracts the source of order-flow data.
 //

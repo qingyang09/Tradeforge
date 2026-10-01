@@ -16,6 +16,8 @@ func init() {
 		"modules.news_sentiment.reason.positive_threshold_exceeded": "{count} relevant news item(s) in the past {hours} hours; weighted sentiment score {score} exceeds the threshold of {threshold}.",
 		"modules.news_sentiment.reason.negative_threshold_exceeded": "{count} relevant news item(s) in the past {hours} hours; weighted sentiment score {score} is below the threshold of -{threshold}.",
 		"modules.news_sentiment.reason.below_threshold":             "{count} relevant news item(s) in the window; weighted sentiment score {score} did not reach the threshold of {threshold}.",
+
+		"modules.news_sentiment.error.scoring_failed": "{module}: sentiment scoring failed: {error}",
 	})
 	register(LangZH, map[string]string{
 		"modules.news_sentiment.description": "对回看窗口内与该标的相关的新闻标题打分，按新近程度加权聚合成情绪得分，得分越过阈值时输出方向信号。",
@@ -29,5 +31,7 @@ func init() {
 		"modules.news_sentiment.reason.positive_threshold_exceeded": "过去 {hours} 小时内 {count} 条相关新闻，加权情绪得分 {score}，超过 {threshold} 的阈值",
 		"modules.news_sentiment.reason.negative_threshold_exceeded": "过去 {hours} 小时内 {count} 条相关新闻，加权情绪得分 {score}，低于 -{threshold} 的阈值",
 		"modules.news_sentiment.reason.below_threshold":             "窗口内 {count} 条相关新闻，加权情绪得分 {score}，未达到 {threshold} 的阈值",
+
+		"modules.news_sentiment.error.scoring_failed": "{module}：情绪打分失败：{error}",
 	})
 }
