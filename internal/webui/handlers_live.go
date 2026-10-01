@@ -12,11 +12,13 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// handleUnlockLive 是界面上唯一的手动流转入口：LIVE_ELIGIBLE → LIVE。
+// handleUnlockLive is the UI's one and only manual transition entry point: LIVE_ELIGIBLE → LIVE.
 //
-// 结构上直接照抄 cmd/executor/promote.go 的 checkPromotions：重新从库里取当前状态
-// （不信任表单可能携带的任何"当前状态"），校验通过才落库，任何失败都回显成
-// 页面上的事实性提示，不是 500——错误状态、缺操作者标识都是正常的用户输入问题。
+// Structurally a direct copy of cmd/executor/promote.go's checkPromotions:
+// re-fetch the current state from the database (never trust any "current
+// state" the form might carry), write only once validation passes, and
+// every failure echoes back as a factual on-page notice, not a 500 -- a
+// wrong state or a missing operator ID are ordinary user-input problems.
 func (s *Server) handleUnlockLive(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !looksLikeUUID(id) {
@@ -32,7 +34,7 @@ func (s *Server) handleUnlockLive(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, i18n.T(resolveLang(r), "webui.strategy_detail.not_found"), http.StatusNotFound)
 			return
 		}
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 
@@ -43,7 +45,7 @@ func (s *Server) handleUnlockLive(w http.ResponseWriter, r *http.Request) {
 
 	data, err := s.loadStrategyDetail(ctx, userID, id)
 	if err != nil {
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 	data.Banner, data.BannerErr = banner, bannerErr

@@ -48,7 +48,7 @@ func (s *Server) handleStrategyDetail(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, i18n.T(resolveLang(r), "webui.strategy_detail.not_found"), http.StatusNotFound)
 			return
 		}
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 	s.renderPage(w, r, data.Strategy.Name, "strategy_detail_content", data)

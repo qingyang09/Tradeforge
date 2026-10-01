@@ -125,7 +125,7 @@ func (s *Server) handleRunBacktest(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, i18n.T(resolveLang(r), "webui.strategy_detail.not_found"), http.StatusNotFound)
 			return
 		}
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 
@@ -140,7 +140,7 @@ func (s *Server) handleRunBacktest(w http.ResponseWriter, r *http.Request) {
 
 	data, err := s.loadStrategyDetail(ctx, userID, id)
 	if err != nil {
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 	data.Banner, data.BannerErr = banner, bannerErr

@@ -164,7 +164,7 @@ func (s *Server) handleBatchScanClarify(w http.ResponseWriter, r *http.Request) 
 func (s *Server) renderBatchProposal(w http.ResponseWriter, r *http.Request, p *agent.Proposal, history []agent.Turn, symbols []string) {
 	state, err := encodeState(wizardState{History: history, Proposal: p, BatchSymbols: symbols})
 	if err != nil {
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 	if p.NeedsClarification() {

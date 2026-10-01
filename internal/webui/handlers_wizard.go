@@ -127,7 +127,7 @@ func (s *Server) renderProposal(w http.ResponseWriter, r *http.Request, p *agent
 	}
 	state, err := encodeState(wizardState{History: history, Proposal: p, ForceSymbol: forceSymbol})
 	if err != nil {
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 	if p.NeedsClarification() {
@@ -136,7 +136,7 @@ func (s *Server) renderProposal(w http.ResponseWriter, r *http.Request, p *agent
 	}
 	configJSON, err := json.Marshal(p.Config)
 	if err != nil {
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 	s.renderFragment(w, r, "wizard_confirm_fragment",

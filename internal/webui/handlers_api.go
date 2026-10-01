@@ -69,7 +69,7 @@ func (s *Server) handleAPICandles(w http.ResponseWriter, r *http.Request) {
 		candles, err = s.okxClient.FetchCandles(r.Context(), symbol, tf, limit)
 	}
 	if err != nil {
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 
@@ -110,7 +110,7 @@ func (s *Server) handleAPISymbolSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	matches, err := s.symbolCache.search(r.Context(), r.URL.Query().Get("q"), limit)
 	if err != nil {
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 	if matches == nil {
@@ -210,7 +210,7 @@ func (s *Server) handleAPIPreviewSupportResistance(w http.ResponseWriter, r *htt
 
 	candles, err := s.okxClient.FetchCandles(r.Context(), symbol, tf, limit)
 	if err != nil {
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 
@@ -280,7 +280,7 @@ func (s *Server) handleAPIPreviewFakeout(w http.ResponseWriter, r *http.Request)
 
 	candles, err := s.okxClient.FetchCandles(r.Context(), symbol, tf, limit)
 	if err != nil {
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 
@@ -358,7 +358,7 @@ func (s *Server) handleAPIPreviewPOC(w http.ResponseWriter, r *http.Request) {
 
 	candles, err := s.okxClient.FetchCandles(r.Context(), symbol, tf, limit)
 	if err != nil {
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 

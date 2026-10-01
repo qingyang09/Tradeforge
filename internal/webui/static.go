@@ -6,10 +6,13 @@ import (
 	"net/http"
 )
 
-// staticFS 是 PWA 需要的固定路径静态资源（manifest.json/sw.js/图标）——一个独立于
-// templatesFS 的 embed.FS，不并进去：templatesFS 专门服务于 html/template.ParseFS，
-// 把非 HTML 的原始字节文件混进去既别扭又容易踩坑（要么被误当模板解析，要么要在
-// glob 模式上做取舍），两个各司其职的 embed.FS 更符合这个项目一贯"小而专一"的风格。
+// staticFS holds the PWA's fixed-path static assets (manifest.json/sw.js/
+// icons) -- an embed.FS separate from templatesFS, not merged into it:
+// templatesFS exists specifically to feed html/template.ParseFS, and mixing
+// raw non-HTML byte files into it is both awkward and easy to get wrong
+// (either mistakenly parsed as a template, or forcing a compromise on the
+// glob pattern). Two single-purpose embed.FS values matches this project's
+// consistent "small and focused" style better.
 //
 //go:embed static
 var staticFS embed.FS

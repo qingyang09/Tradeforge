@@ -40,7 +40,7 @@ func (s *Server) handleBuilderList(w http.ResponseWriter, r *http.Request) {
 	userID, _ := currentUserID(r)
 	all, err := s.store.ListStrategies(r.Context(), userID)
 	if err != nil {
-		s.serverError(w, err)
+		s.serverError(w, r, err)
 		return
 	}
 	seen := make(map[string]bool)

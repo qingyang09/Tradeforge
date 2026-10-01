@@ -15,8 +15,10 @@ import (
 //go:embed templates
 var templatesFS embed.FS
 
-// htmxCDN 是 htmx 的公开 CDN 地址。项目一贯"能用标准库就不引第三方依赖"，
-// 但这里没有本地依赖可言——不引入构建步骤/前端框架的唯一代价就是这一行 <script>。
+// htmxCDN is htmx's public CDN address. This project consistently follows
+// "no third-party dependency if the standard library will do," but there's
+// no local dependency option here -- avoiding a build step/frontend
+// framework costs nothing more than this one <script> line.
 const htmxCDN = "https://unpkg.com/htmx.org@2.0.4"
 
 // staticFuncs are the template funcs whose behavior never depends on the
@@ -77,11 +79,13 @@ func parseTemplatesByLang() (map[i18n.Lang]*template.Template, error) {
 func formatPercent(f float64) string       { return fmt.Sprintf("%.2f%%", f*100) }
 func formatSignedPercent(f float64) string { return fmt.Sprintf("%+.2f%%", f*100) }
 
-// formatFeeDragRatio 显示"手续费占毛利润的比例"。
+// formatFeeDragRatio displays "fees as a share of gross profit."
 //
-// 毛利润非正（还没扣手续费就已经在亏钱，或者压根没有交易）时这个比例没有明确
-// 含义，展示成"—"而不是硬凑一个误导性的数字——跟 types.PerformanceMetrics.
-// FeeDragRatio 的 ok=false 是同一个判断，这里只是把它转成界面文案。
+// When gross profit isn't positive (already losing money before fees, or
+// there were no trades at all), this ratio has no well-defined meaning, so
+// it's shown as "—" rather than forcing a misleading number -- the same
+// judgment as types.PerformanceMetrics.FeeDragRatio's ok=false; this just
+// turns that into page text.
 func formatFeeDragRatio(m types.PerformanceMetrics) string {
 	ratio, ok := m.FeeDragRatio()
 	if !ok {
@@ -90,8 +94,10 @@ func formatFeeDragRatio(m types.PerformanceMetrics) string {
 	return fmt.Sprintf("%.1f%%", ratio*100)
 }
 
-// pageData 是套进 layout 的公共外壳：内容页先各自渲染成 HTML 片段，
-// 再由 layout 统一包一层导航/样式，避免每个页面模板重复整套 <html> 骨架。
+// pageData is the common shell wrapped in layout: a content page first
+// renders itself into an HTML fragment, then layout wraps it once in a
+// shared nav/style layer, so every page template doesn't have to repeat
+// the whole <html> skeleton.
 type pageData struct {
 	Title     string
 	Body      template.HTML
@@ -110,46 +116,52 @@ func (s *Server) tmplFor(lang i18n.Lang) *template.Template {
 	return s.tmplByLang[i18n.DefaultLang]
 }
 
-// renderPage 先渲染 contentName 对应的内容模板，再套进 layout 输出整页。
+// renderPage first renders the content template named contentName, then
+// wraps it in layout to output the whole page.
 //
-// 需要 r 是因为 layout 的导航栏要显示当前登录用户的邮箱（多用户 SaaS 改造新增）——
-// 邮箱在登录时已经缓存进 session（见 auth.go 的 sessionData），这里直接从 context
-// 里取，不需要额外查一次数据库；同样也是从 r 上的 tf_lang cookie 解析出这次请求
-// 该用哪种语言渲染。
+// r is needed because layout's nav bar shows the current logged-in user's
+// email (added for the multi-tenant SaaS rework) -- the email is already
+// cached in the session at login time (see auth.go's sessionData), read
+// straight from the context here with no extra database query; r is also
+// where this request's tf_lang cookie gets resolved to decide which
+// language to render in.
 func (s *Server) renderPage(w http.ResponseWriter, r *http.Request, title, contentName string, data any) {
 	lang := resolveLang(r)
 	tmpl := s.tmplFor(lang)
 	var buf bytes.Buffer
 	if err := tmpl.ExecuteTemplate(&buf, contentName, data); err != nil {
-		s.serverError(w, fmt.Errorf("渲染内容 %s 失败：%w", contentName, err))
+		s.serverError(w, r, fmt.Errorf("failed to render content %s: %w", contentName, err))
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	pd := pageData{Title: title, Body: template.HTML(buf.String()), UserEmail: currentUserEmail(r), Lang: lang}
 	if err := tmpl.ExecuteTemplate(w, "layout", pd); err != nil {
-		s.logger.Error("渲染布局失败", "err", err)
+		s.logger.Error("failed to render layout", "err", err)
 	}
 }
 
-// renderFragment 直接渲染一个 htmx 片段，不套 layout。
+// renderFragment renders an htmx fragment directly, without wrapping it in layout.
 func (s *Server) renderFragment(w http.ResponseWriter, r *http.Request, name string, data any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmplFor(resolveLang(r)).ExecuteTemplate(w, name, data); err != nil {
-		s.logger.Error("渲染片段失败", "name", name, "err", err)
+		s.logger.Error("failed to render fragment", "name", name, "err", err)
 	}
 }
 
-// renderStandalone 渲染一个完整独立的页面，不套用共享的 layout（没有统一导航栏/浅色
-// 后台配色）。给需要完全自主控制视觉呈现的页面用——比如全屏沉浸式的 K 线图，
-// 套进后台仪表盘那套 max-width 980px 的卡片布局里只会显得局促，不像在看真实盘口。
+// renderStandalone renders a fully independent page, not wrapped in the
+// shared layout (no unified nav bar/light admin-panel colors). For pages
+// that need full control over their own visual presentation -- a
+// full-screen immersive candle chart, say, would feel cramped squeezed into
+// the backend dashboard's max-width-980px card layout, not like looking at
+// a real trading terminal.
 func (s *Server) renderStandalone(w http.ResponseWriter, r *http.Request, name string, data any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmplFor(resolveLang(r)).ExecuteTemplate(w, name, data); err != nil {
-		s.logger.Error("渲染独立页面失败", "name", name, "err", err)
+		s.logger.Error("failed to render standalone page", "name", name, "err", err)
 	}
 }
 
-func (s *Server) serverError(w http.ResponseWriter, err error) {
-	s.logger.Error("处理请求失败", "err", err)
-	http.Error(w, "内部错误："+err.Error(), http.StatusInternalServerError)
+func (s *Server) serverError(w http.ResponseWriter, r *http.Request, err error) {
+	s.logger.Error("request handling failed", "err", err)
+	http.Error(w, i18n.T(resolveLang(r), "webui.render.internal_error", "error", err.Error()), http.StatusInternalServerError)
 }

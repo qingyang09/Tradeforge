@@ -10,20 +10,25 @@ import (
 	"tradeforge/internal/marketdata/okx"
 )
 
-// symbolCacheTTL 决定标的列表缓存多久刷新一次。OKX 现货标的列表一天内几乎不变，
-// 没必要每次搜索请求都打一次真实 OKX 接口。
+// symbolCacheTTL decides how often the symbol list cache refreshes. OKX's
+// spot symbol list barely changes within a day, so there's no need to hit
+// the real OKX endpoint on every single search request.
 const symbolCacheTTL = 1 * time.Hour
 
-// symbolLister 是 symbolCache 依赖的最小接口，真实实现是 okx.Client.ListInstruments；
-// 测试可以注入假实现，不用打真实 OKX。
+// symbolLister is the minimal interface symbolCache depends on; the real
+// implementation is okx.Client.ListInstruments. Tests can inject a fake
+// implementation instead of hitting real OKX.
 type symbolLister interface {
 	ListInstruments(ctx context.Context) ([]okx.Instrument, error)
 }
 
-// preferredQuoteOrder 决定同一相关度档次内，常见计价货币排在前面——跟
-// internal/marketdata/okx/symbol.go 的 knownQuoteCurrencies 保持同一优先序。用户搜
-// "ETH" 时最想看到的是 ETHUSDT/ETHUSDC 这类主流计价对，不是排在后面的长尾法币对
-// （ETHAED、ETHBRL……），纯字母序会把这些冷门对排到前 N 个结果里，挤掉真正常用的。
+// preferredQuoteOrder puts common quote currencies first within the same
+// relevance tier -- kept in the same priority order as
+// internal/marketdata/okx/symbol.go's knownQuoteCurrencies. When a user
+// searches "ETH," what they most want to see is a mainstream quote pair
+// like ETHUSDT/ETHUSDC, not a long-tail fiat pair further down the list
+// (ETHAED, ETHBRL, ...) -- plain alphabetical order would let these obscure
+// pairs crowd into the top N results, pushing out the ones people actually use.
 var preferredQuoteOrder = []string{"USDT", "USDC", "BTC", "ETH", "USD"}
 
 func quoteRank(quote string) int {
@@ -36,8 +41,9 @@ func quoteRank(quote string) int {
 	return len(preferredQuoteOrder)
 }
 
-// symbolCache 是进程内的标的列表缓存：懒加载 + 定期过期，不需要外部存储——
-// 跟 sessionStore、agent 配置一样，重启后重新拉一次即可。
+// symbolCache is an in-process cache of the symbol list: lazy-loaded with
+// periodic expiry, needing no external storage -- same as sessionStore and
+// the Agent config, it just re-fetches once after a restart.
 type symbolCache struct {
 	lister symbolLister
 
@@ -50,17 +56,20 @@ func newSymbolCache(lister symbolLister) *symbolCache {
 	return &symbolCache{lister: lister}
 }
 
-// searchMatch 记录一次候选命中及其排序依据，只在 search 内部使用。
+// searchMatch records one candidate match and its sort basis; used only inside search.
 type searchMatch struct {
 	symbol    string
-	tier      int // 0 = 基础货币精确匹配，1 = 基础货币前缀匹配，2 = 标的字符串里包含
+	tier      int // 0 = exact base-currency match, 1 = base-currency prefix match, 2 = substring match anywhere in the symbol
 	quoteRank int
 }
 
-// search 返回匹配 query 的标的，最多 limit 个。排序按相关度分档：基础货币精确等于
-// query 的排最前，其次是基础货币以 query 开头的，最后是随便哪里包含 query 子串的；
-// 同档内按计价货币的常见程度（preferredQuoteOrder）再排一次。query 为空返回空
-// 列表——用户还没打字时不需要吐一整页标的。
+// search returns symbols matching query, up to limit of them. Sorted by
+// relevance tier: an exact base-currency match to query ranks first, then
+// a base currency starting with query, then anything containing query as
+// a substring anywhere; within the same tier, sorted again by quote
+// currency commonness (preferredQuoteOrder). An empty query returns an
+// empty list -- no need to spit out a whole page of symbols before the
+// user has typed anything.
 func (c *symbolCache) search(ctx context.Context, query string, limit int) ([]string, error) {
 	query = strings.ToUpper(strings.TrimSpace(query))
 	if query == "" || limit <= 0 {
@@ -117,8 +126,10 @@ func (c *symbolCache) all(ctx context.Context) ([]okx.Instrument, error) {
 
 	fetched, err := c.lister.ListInstruments(ctx)
 	if err != nil {
-		// 拉取失败时如果还有旧缓存，宁可返回过期数据也不让搜索框直接报错——
-		// 标的列表变化很慢，一次网络抖动不该让自动补全整个消失。
+		// If the fetch fails but an old cache still exists, it's better to
+		// return stale data than to let the search box error out outright --
+		// the symbol list changes slowly, and a single network blip
+		// shouldn't make autocomplete disappear entirely.
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		if len(c.instruments) > 0 {

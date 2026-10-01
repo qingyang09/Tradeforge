@@ -2,10 +2,14 @@ package webui
 
 import "tradeforge/internal/secretcrypto"
 
-// 保存到数据库的 LLM API key / 交易所凭据都用管理员登录密码加密，不是明文落库。
-// 实际的 AES-256-GCM + scrypt 实现在 internal/secretcrypto 里——那个包不依赖
-// webui 或 storage，cmd/executor 读取交易所配置时也复用同一份实现，不重新发明
-// 一套加密逻辑。这里只是保留跟历史调用点一致的函数名，避免大范围改动调用方。
+// LLM API keys / exchange credentials saved to the database are encrypted
+// with the admin's login password, never stored as plaintext. The actual
+// AES-256-GCM + scrypt implementation lives in internal/secretcrypto -- that
+// package depends on neither webui nor storage, and cmd/executor reuses the
+// exact same implementation when reading exchange configs, rather than
+// reinventing a separate encryption path. This file just keeps function
+// names consistent with historical call sites, to avoid a wide-reaching
+// rename across every caller.
 const scryptSaltLen = 16
 
 func encryptProfileSecret(password, plaintext string) (ciphertext, salt, nonce []byte, err error) {
