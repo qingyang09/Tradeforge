@@ -28,13 +28,16 @@ func transitionErrorMessage(err error) types.Message {
 	return types.Msg("webui.strategy_detail.banner.transition_rejected", "err", err.Error())
 }
 
-// handleConfirmBacktest 是 DRAFT → BACKTESTED 的手动触发入口。
+// handleConfirmBacktest is the manual trigger for DRAFT -> BACKTESTED.
 //
-// 回测结果本身由 python/backtest 的 CLI 写库（Go 侧没有写路径，见
-// internal/storage/backtests.go 顶部注释），但落库之后没有任何东西会自动把
-// 策略状态往前推——阶段 5 要求的"强制流程"如果没有这一步，新策略会永远卡在
-// DRAFT，模拟盘/实盘门槛形同虚设。这里补上这个手动确认动作：读取最新回测结果，
-// 过一遍 strategy.CheckTransition 的样本外门槛，通过才落库。
+// The backtest result itself is written by python/backtest's CLI (there's no
+// write path on the Go side, see internal/storage/backtests.go's top-of-file
+// comment), but nothing automatically advances the strategy's state once
+// that's persisted -- without this step, Stage 5's required "mandatory
+// pipeline" would leave every new strategy stuck in DRAFT forever, making the
+// paper/live gates meaningless. This supplies that manual confirmation
+// action: read the latest backtest result, run it through
+// strategy.CheckTransition's out-of-sample gate, and only persist on a pass.
 func (s *Server) handleConfirmBacktest(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !looksLikeUUID(id) {
@@ -95,11 +98,14 @@ func (s *Server) doConfirmBacktest(ctx context.Context, userID string, sc types.
 	return types.Msg("webui.strategy_detail.banner.confirm_backtest_success"), false
 }
 
-// handleStartPaperTrading 是 BACKTESTED → PAPER_TRADING 的手动触发入口。
+// handleStartPaperTrading is the manual trigger for BACKTESTED ->
+// PAPER_TRADING.
 //
-// 这一步状态机本身没有数据门槛（见 statemachine.go 的默认分支），但同样需要
-// 一个真实存在的触发动作——cmd/executor 只会去加载已经处于 PAPER_TRADING 的
-// 策略，如果没有东西把策略从 BACKTESTED 推过去，执行层永远看不到它。
+// This step has no data gate in the state machine itself (see
+// statemachine.go's default branch), but still needs a real, actual trigger
+// action -- cmd/executor only loads strategies already in PAPER_TRADING, so
+// without something to push a strategy from BACKTESTED across, the execution
+// layer would never see it.
 func (s *Server) handleStartPaperTrading(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !looksLikeUUID(id) {
@@ -151,16 +157,23 @@ func (s *Server) doStartPaperTrading(ctx context.Context, userID string, sc type
 	return types.Msg("webui.strategy_detail.banner.start_paper_success"), false
 }
 
-// handleDeleteStrategy 永久删除一条策略。
+// handleDeleteStrategy permanently deletes a strategy.
 //
-// 刻意只允许 DRAFT 状态：一旦进入 BACKTESTED 及以后，策略就带上了真实的回测/
-// 模拟盘/实盘历史，删除会级联删掉这些记录（schema 里的 ON DELETE CASCADE），
-// 而"任何一笔决策都要能追溯"是这个平台的一贯要求，不能因为一次误删就断掉审计链。
-// DRAFT 阶段还没有这些历史，删掉的只是一份"还没定稿的草稿"。
+// Deliberately only allowed in the DRAFT state: once a strategy reaches
+// BACKTESTED or beyond, it carries real backtest/paper/live history, and
+// deleting it would cascade-delete those records (ON DELETE CASCADE in the
+// schema) -- "every decision must stay traceable" is a standing requirement
+// of this platform, and a single accidental delete must never be able to
+// break that audit chain. DRAFT hasn't accumulated any of this history yet,
+// so deleting it only removes a "draft that was never finalized."
 //
-// 没有走 actor_id/reason 这套审计字段——那套是给"状态推进"这种事后还查得到记录
-// 的操作用的，删除之后连这条策略本身都不存在了，记一个理由没有地方能查，纯粹是
-// 走个形式；真正的防误删手段是确认按钮本身要求一次浏览器原生确认（见模板）。
+// This doesn't go through the actor_id/reason audit fields -- those exist for
+// operations like "state advance" where a record is still there to look up
+// afterward; once deleted, the strategy itself no longer exists, so recording
+// a reason would have nowhere to be looked up and would be purely
+// decorative. The real protection against accidental deletion is that the
+// confirm button itself requires a native browser confirmation (see the
+// template).
 func (s *Server) handleDeleteStrategy(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !looksLikeUUID(id) {

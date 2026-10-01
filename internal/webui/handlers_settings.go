@@ -15,23 +15,28 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// settingsData 是设置页面的渲染数据。
+// settingsData is the settings page's render data.
 type settingsData struct {
 	Providers []agent.Provider
 	Status    agentStatus
-	// Profiles 是当前用户已加密保存的模型配置，供切换/删除。
+	// Profiles are the current user's already-encrypted, saved model
+	// configurations, for switching/deleting.
 	Profiles []storage.AgentProfile
 
-	// BrokerKinds 是设置页面"新增交易所配置"下拉框的选项（不含 paper，见
-	// execution.CredentialedKinds 的注释）。BrokerProfiles 是当前用户已加密保存的
-	// 交易所凭据，供切换/删除，语义跟 Profiles 对 LLM 配置的关系完全对称。
+	// BrokerKinds are the options for the settings page's "add exchange
+	// configuration" dropdown (excludes paper, see execution.CredentialedKinds's
+	// doc comment). BrokerProfiles are the current user's already-encrypted,
+	// saved exchange credentials, for switching/deleting -- the same
+	// relationship Profiles has to LLM configuration, fully symmetric.
 	BrokerKinds    []execution.BrokerKind
 	BrokerProfiles []storage.BrokerProfile
 
-	// NotificationChannels 是当前用户已保存的提醒渠道，供设置页面展示/切换/删除，
-	// 跟 BrokerProfiles 对 BrokerKinds 的关系类似，但没有"生效中的一份"概念——见
-	// storage.NotificationChannel 的注释。VAPIDPublicKey 是给"浏览器推送"卡片里的
-	// 原生 JS 调用 PushManager.subscribe() 用的公钥，不是秘密。
+	// NotificationChannels are the current user's saved notification
+	// channels, for the settings page to display/toggle/delete -- similar to
+	// BrokerProfiles' relationship to BrokerKinds, but with no "currently
+	// active one" concept -- see storage.NotificationChannel's doc comment.
+	// VAPIDPublicKey is the public key the "browser push" card's native JS
+	// uses to call PushManager.subscribe(); it isn't a secret.
 	NotificationChannels []storage.NotificationChannel
 	VAPIDPublicKey       string
 
@@ -44,15 +49,15 @@ func (s *Server) handleSettingsShow(w http.ResponseWriter, r *http.Request) {
 	lang := resolveLang(r)
 	profiles, err := s.store.ListAgentProfiles(r.Context(), userID)
 	if err != nil {
-		s.logger.Warn("读取已保存的模型配置失败", "err", err)
+		s.logger.Warn("failed to read saved model configuration", "err", err)
 	}
 	brokerProfiles, err := s.store.ListBrokerProfiles(r.Context(), userID)
 	if err != nil {
-		s.logger.Warn("读取已保存的交易所配置失败", "err", err)
+		s.logger.Warn("failed to read saved exchange configuration", "err", err)
 	}
 	notificationChannels, err := s.store.ListNotificationChannels(r.Context(), userID)
 	if err != nil {
-		s.logger.Warn("读取已保存的提醒渠道失败", "err", err)
+		s.logger.Warn("failed to read saved notification channels", "err", err)
 	}
 	_, status := s.userAgent(r.Context(), userID)
 	s.renderPage(w, r, i18n.T(lang, "webui.settings.title_tag"), "settings_content", settingsData{
@@ -67,15 +72,15 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, message,
 	lang := resolveLang(r)
 	profiles, err := s.store.ListAgentProfiles(r.Context(), userID)
 	if err != nil {
-		s.logger.Warn("读取已保存的模型配置失败", "err", err)
+		s.logger.Warn("failed to read saved model configuration", "err", err)
 	}
 	brokerProfiles, err := s.store.ListBrokerProfiles(r.Context(), userID)
 	if err != nil {
-		s.logger.Warn("读取已保存的交易所配置失败", "err", err)
+		s.logger.Warn("failed to read saved exchange configuration", "err", err)
 	}
 	notificationChannels, err := s.store.ListNotificationChannels(r.Context(), userID)
 	if err != nil {
-		s.logger.Warn("读取已保存的提醒渠道失败", "err", err)
+		s.logger.Warn("failed to read saved notification channels", "err", err)
 	}
 	_, status := s.userAgent(r.Context(), userID)
 	s.renderPage(w, r, i18n.T(lang, "webui.settings.title_tag"), "settings_content", settingsData{
@@ -86,12 +91,15 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, message,
 	})
 }
 
-// handleSettingsSave 让用户直接在页面上配置 Agent 翻译层用哪个供应商、哪把 key，
-// 不必再改环境变量重启进程。
+// handleSettingsSave lets the user configure which provider/key the Agent
+// translation layer uses directly on the page, without having to change an
+// environment variable and restart the process.
 //
-// 多用户 SaaS 改造之后 masterKey 总是存在（cmd/webui/main.go 的生产启动路径没配
-// TF_MASTER_KEY 直接拒绝启动，不再有"没有登录密码就退回内存态"这条降级路径了——
-// 加密落库是唯一的行为，不是可选项。
+// After the multi-tenant SaaS rework, masterKey always exists (the
+// production startup path in cmd/webui/main.go refuses to start without
+// TF_MASTER_KEY configured, so there's no longer a "fall back to in-memory
+// only" degraded path for a missing login password) -- encrypted persistence
+// is the only behavior now, not an option.
 func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 	userID, _ := currentUserID(r)
 	lang := resolveLang(r)
@@ -120,9 +128,11 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 		label = i18n.Render(lang, provider.Label())
 	}
 
-	// Timeout/MaxRetries 沿用环境变量里的基准配置（TF_AGENT_TIMEOUT、
-	// TF_AGENT_MAX_RETRIES 仍然生效）；BaseURL/APIKey/Model 由 agent.NewLLM
-	// 按所选供应商重新决定，不沿用某一家的默认值。
+	// Timeout/MaxRetries keep using the baseline configuration from
+	// environment variables (TF_AGENT_TIMEOUT/TF_AGENT_MAX_RETRIES still take
+	// effect); BaseURL/APIKey/Model are redecided by agent.NewLLM based on
+	// the selected provider, not carried over from any particular provider's
+	// defaults.
 	base := config.Load().Agent
 	llm, err := agent.NewLLM(provider, apiKey, model, baseURL, base)
 	if err != nil {
@@ -142,7 +152,7 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 
 	ciphertext, salt, nonce, encErr := encryptProfileSecret(s.masterKey, apiKey)
 	if encErr != nil {
-		s.logger.Warn("加密模型配置失败，本次仅在内存中生效", "err", encErr)
+		s.logger.Warn("failed to encrypt the model configuration; this one only takes effect in memory", "err", encErr)
 	} else {
 		profile := storage.AgentProfile{
 			ID: idgen.NewUUID(), UserID: userID, Label: label, Provider: string(provider),
@@ -150,7 +160,7 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 			EncryptedAPIKey: ciphertext, KeySalt: salt, KeyNonce: nonce,
 		}
 		if saveErr := s.store.SaveAgentProfile(r.Context(), profile, true); saveErr != nil {
-			s.logger.Warn("保存模型配置到数据库失败，本次仅在内存中生效", "err", saveErr)
+			s.logger.Warn("failed to save the model configuration to the database; this one only takes effect in memory", "err", saveErr)
 		} else {
 			status.ProfileID = profile.ID
 			message = types.Msg("webui.settings.agent.saved_encrypted")
@@ -161,8 +171,9 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 	s.renderSettings(w, r, message, types.Message{})
 }
 
-// handleSettingsActivateProfile 切换到某一份已保存的配置：解密它的 API key、构造 LLM、
-// 立即生效，同时在数据库里把它标记成当前生效的一份。
+// handleSettingsActivateProfile switches to one of the saved configurations:
+// decrypts its API key, constructs the LLM, makes it effective immediately,
+// and marks it as the currently-active one in the database.
 func (s *Server) handleSettingsActivateProfile(w http.ResponseWriter, r *http.Request) {
 	userID, _ := currentUserID(r)
 	id := r.PathValue("id")
@@ -199,9 +210,11 @@ func (s *Server) handleSettingsActivateProfile(w http.ResponseWriter, r *http.Re
 	s.renderSettings(w, r, types.Msg("webui.settings.switched_to", "label", profile.Label), types.Message{})
 }
 
-// handleSettingsDeleteProfile 删除一份保存的配置。删除的如果正是当前生效的那份，
-// 会同时清掉内存里生效的 Agent——不这样做的话，界面显示"已配置"，但数据库里那份
-// 支撑它的配置其实已经被删了，状态会对不上。
+// handleSettingsDeleteProfile deletes a saved configuration. If the one being
+// deleted is the currently-active one, it also clears the in-memory
+// effective Agent -- otherwise the interface would still show "configured"
+// while the database row backing it had already been deleted, leaving the
+// displayed state out of sync with reality.
 func (s *Server) handleSettingsDeleteProfile(w http.ResponseWriter, r *http.Request) {
 	userID, _ := currentUserID(r)
 	id := r.PathValue("id")
@@ -216,10 +229,13 @@ func (s *Server) handleSettingsDeleteProfile(w http.ResponseWriter, r *http.Requ
 	s.renderSettings(w, r, types.Msg("webui.settings.deleted"), types.Message{})
 }
 
-// loadUserAgentFromDB 尝试从数据库恢复某个用户当前生效的模型配置，供 userAgent
-// 在缓存未命中时调用（见 server.go）。找不到已保存的配置、或者解密失败，都不是
-// 致命错误：只返回 nil agent，调用方会视情况退回环境变量配置的团队默认值，
-// 或者干脆保持"未就绪"，用户可以在设置页面重新配置。
+// loadUserAgentFromDB tries to restore a given user's currently-effective
+// model configuration from the database, called by userAgent on a cache miss
+// (see server.go). Finding no saved configuration, or a decryption failure,
+// are both non-fatal: it just returns a nil agent, and the caller falls back
+// to the team default configured via an environment variable as
+// appropriate, or simply stays "not ready" -- the user can reconfigure on
+// the settings page.
 func (s *Server) loadUserAgentFromDB(ctx context.Context, userID string) (*agent.Agent, agentStatus) {
 	profile, err := s.store.ActiveAgentProfile(ctx, userID)
 	if err != nil {

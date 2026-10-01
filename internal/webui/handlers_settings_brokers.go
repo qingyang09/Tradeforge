@@ -14,26 +14,35 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// brokerCredentials 是打包进 broker_profiles.encrypted_credentials 密文里的明文结构。
-// 不同交易所需要的字段数不一样（币安两件套，OKX 三件套 Passphrase 才用得上），
-// 打包成一段 JSON 整体加密，不用为每家交易所各开一组密文列（见
-// migrations/004_broker_profiles.sql 的注释）。
+// brokerCredentials is the plaintext structure packed into
+// broker_profiles.encrypted_credentials' ciphertext. Different exchanges need
+// different numbers of fields (Binance needs two, OKX needs three including
+// Passphrase) -- packed as one JSON blob and encrypted as a whole, rather
+// than opening a separate ciphertext column per exchange (see
+// migrations/004_broker_profiles.sql's doc comment).
 type brokerCredentials struct {
 	APIKey     string `json:"api_key"`
 	APISecret  string `json:"api_secret"`
 	Passphrase string `json:"passphrase,omitempty"`
 }
 
-// handleSettingsSaveBroker 让用户直接在设置页面配置交易所下单通道的凭据，不用再
-// 靠环境变量传给 cmd/executor。逻辑跟 handleSettingsSave（LLM 配置）是同一个模式：
-// 先用 execution.NewBroker 校验凭据能不能构造出对应的 Broker（复用它已有的必填项
-// 检查，不重新发明一套校验规则），校验通过后用服务端主密钥加密落库，归属当前
-// 登录用户——不同用户各自的凭据完全隔离（见 broker_profiles 表 user_id 列）。
+// handleSettingsSaveBroker lets the user configure exchange order-routing
+// credentials directly on the settings page, instead of relying on
+// environment variables passed to cmd/executor. The logic follows the same
+// pattern as handleSettingsSave (LLM configuration): first validate the
+// credentials by letting execution.NewBroker try to construct the
+// corresponding Broker (reusing its existing required-field checks rather
+// than reinventing a validation ruleset), then on success encrypt with the
+// server-side master key and persist, owned by the currently logged-in user
+// -- each user's credentials are fully isolated from every other user's (see
+// the broker_profiles table's user_id column).
 //
-// 这里存的只是凭据本身，不会立即让某个正在运行的 cmd/executor 进程生效——那是一个
-// 独立的进程，设置页面负责的是"把凭据准备好、加密存起来"，cmd/executor 启动时自己
-// 去读当前用户当前生效的一份（见 cmd/executor/main.go 的 buildBroker，-owner-email
-// 决定"当前用户"是谁）。
+// Saving here only stores the credentials -- it doesn't immediately take
+// effect in any already-running cmd/executor process, which is a separate
+// process; the settings page's job is "prepare and encrypt-store the
+// credentials," and cmd/executor reads the currently-active one for the
+// current user itself at startup (see cmd/executor/main.go's buildBroker,
+// where -owner-email decides who "the current user" is).
 func (s *Server) handleSettingsSaveBroker(w http.ResponseWriter, r *http.Request) {
 	userID, _ := currentUserID(r)
 	lang := resolveLang(r)
@@ -85,9 +94,11 @@ func (s *Server) handleSettingsSaveBroker(w http.ResponseWriter, r *http.Request
 	s.renderSettings(w, r, types.Msg("webui.settings.broker.saved", "label", label, "broker", string(kind)), types.Message{})
 }
 
-// handleSettingsActivateBrokerProfile 把某一份已保存的交易所配置切换成它所属 broker
-// 当前生效的一份——只是切数据库里的标记，不解密（不需要，也不该在设置页面把交易所
-// secret 解出来展示或使用）。
+// handleSettingsActivateBrokerProfile switches one saved exchange
+// configuration to be the active one for its broker -- this just flips a
+// marker in the database, it never decrypts anything (there's no need to,
+// and the settings page should never decrypt and display or use an exchange
+// secret).
 func (s *Server) handleSettingsActivateBrokerProfile(w http.ResponseWriter, r *http.Request) {
 	userID, _ := currentUserID(r)
 	id := r.PathValue("id")
@@ -103,7 +114,7 @@ func (s *Server) handleSettingsActivateBrokerProfile(w http.ResponseWriter, r *h
 	s.renderSettings(w, r, types.Msg("webui.settings.switched_to", "label", profile.Label), types.Message{})
 }
 
-// handleSettingsDeleteBrokerProfile 删除一份保存的交易所配置。
+// handleSettingsDeleteBrokerProfile deletes a saved exchange configuration.
 func (s *Server) handleSettingsDeleteBrokerProfile(w http.ResponseWriter, r *http.Request) {
 	userID, _ := currentUserID(r)
 	id := r.PathValue("id")
