@@ -15,8 +15,9 @@ import (
 	"tradeforge/pkg/types"
 )
 
-// maxClarificationRounds 镜像 cmd/agent-service 的 CLI 向导：澄清轮次太多说明
-// 描述本身不够完整，与其无限循环不如提示用户重新描述。
+// maxClarificationRounds mirrors cmd/agent-service's CLI wizard: too many
+// clarification rounds means the description itself just isn't complete
+// enough -- better to prompt the user to re-describe than loop forever.
 const maxClarificationRounds = 5
 
 type wizardStartData struct {
@@ -37,10 +38,14 @@ type wizardClarifyData struct {
 type wizardConfirmData struct {
 	Restatement string
 	Config      types.StrategyConfig
-	// ConfigJSON 是 Config 的线格式 JSON（跟 DecodeStrategyConfigJSON 认得的形状一样），
-	// 嵌进确认片段供画板页的 JS 读取（见 wizard_confirm.html），把这份还没入库的配置
-	// 实际画到图上——模块参数变成可拖拽的线、止损止盈变成价位，而不是停留在这张表格里
-	// 的抽象文字。文字向导页面不读这个字段，多出来的内容对它没有影响。
+	// ConfigJSON is Config as wire-format JSON (the same shape
+	// DecodeStrategyConfigJSON understands), embedded in the confirmation
+	// fragment for the builder page's JS to read (see wizard_confirm.html) --
+	// it draws this not-yet-persisted config actually onto the chart: module
+	// parameters become draggable lines, stop-loss/take-profit become price
+	// levels, instead of staying abstract text in this table. The text
+	// wizard page never reads this field, so the extra content has no effect
+	// on it.
 	ConfigJSON string
 	State      string
 }
@@ -97,8 +102,9 @@ func (s *Server) handleWizardClarify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 把上一轮的问题当成"assistant 说的话"接回对话历史，跟 CLI 的 runClarificationLoop
-	// 拼历史的方式完全一致。
+	// Feed the previous round's questions back into the conversation history
+	// as "what the assistant said," exactly the same way the CLI's
+	// runClarificationLoop assembles history.
 	newHistory := append(append([]agent.Turn{}, ws.History...),
 		agent.Turn{Role: "user", Text: ws.Proposal.SourceUtterance},
 		agent.Turn{Role: "assistant", Text: strings.Join(ws.Proposal.Questions, "\n")})
@@ -117,10 +123,14 @@ func (s *Server) handleWizardClarify(w http.ResponseWriter, r *http.Request) {
 	s.renderProposal(w, r, p, newHistory, ws.ForceSymbol)
 }
 
-// renderProposal 按 Outcome 分支渲染澄清问题或复述确认，translate/clarify 两个 handler 共用。
+// renderProposal branches on Outcome to render either a clarification
+// question or the restatement confirmation; shared by the translate/clarify
+// handlers.
 //
-// forceSymbol 非空时会覆盖提案里的标的（见 wizardState.ForceSymbol 的注释），
-// 文字向导传空字符串，行为不变；可视化建策传当前画板的标的。
+// When forceSymbol is non-empty it overrides the proposal's symbol (see
+// wizardState.ForceSymbol's doc comment) -- the text wizard passes an empty
+// string, leaving its behavior unchanged; the visual builder passes its
+// current chart's symbol.
 func (s *Server) renderProposal(w http.ResponseWriter, r *http.Request, p *agent.Proposal, history []agent.Turn, forceSymbol string) {
 	if forceSymbol != "" && p.Outcome == agent.OutcomeConfig && p.Config != nil {
 		p.Config.Symbol = forceSymbol
@@ -149,11 +159,15 @@ type wizardResultData struct {
 	StrategyID string
 }
 
-// handleWizardConfirm 是两条建策路径（文字向导 + 可视化建策，见 handlers_builder.go）
-// 共用的保存入口：只要拿到一个 Outcome 为 config 的 Proposal，就能走完"重新校验一遍 →
-// 落库 → 记审计"这一步，不需要 Agent/LLM 参与。之前这里是通过 ag.Confirm 间接拿到
-// 模块注册表来校验的，导致这个本不需要 LLM 的保存步骤，被"Agent 是否就绪"卡住——
-// 可视化建策要求不依赖 LLM key 也能用，所以把这里改成直接用 s.registry 校验。
+// handleWizardConfirm is the shared save entry point for both
+// strategy-building paths (the text wizard + the visual builder, see
+// handlers_builder.go): given any Proposal whose Outcome is config, it can
+// complete the "re-validate -> persist -> record audit" step without any
+// Agent/LLM involvement. This used to reach the module registry indirectly
+// through ag.Confirm, which meant this save step -- which never actually
+// needed an LLM -- got blocked on whether the Agent was ready. Since the
+// visual builder is required to work without an LLM key, this was changed to
+// validate directly against s.registry instead.
 func (s *Server) handleWizardConfirm(w http.ResponseWriter, r *http.Request) {
 	lang := resolveLang(r)
 	ws, err := decodeState(r.FormValue("state"))
@@ -188,17 +202,20 @@ func (s *Server) handleWizardConfirm(w http.ResponseWriter, r *http.Request) {
 		Actor: "user:web", Reason: i18n.T(lang, "webui.wizard.transition.user_confirmed"),
 		Evidence: map[string]any{"source_utterance": cfg.SourceUtterance, "attempts": ws.Proposal.Attempts},
 	}); err != nil {
-		// 审计记录写入失败不撤销已经保存的策略——策略本身是权威数据，
-		// 缺一条审计记录好过丢一个用户已确认的策略。
-		s.logger.Error("写入审计记录失败", "strategy_id", cfg.ID, "err", err)
+		// An audit-record write failure doesn't roll back the already-saved
+		// strategy -- the strategy itself is the authoritative data; missing
+		// one audit record is better than losing a strategy the user already
+		// confirmed.
+		s.logger.Error("failed to write audit record", "strategy_id", cfg.ID, "err", err)
 	}
 
 	s.renderFragment(w, r, "wizard_result_fragment", wizardResultData{Success: true, StrategyID: cfg.ID})
 }
 
-// confirmProposal 重新校验一份提案并把它标记为可入库的状态。逻辑照抄
-// agent.Confirm（internal/agent/agent.go），唯一区别是用 s.registry 而不是通过
-// *agent.Agent 拿校验用的模块注册表——这样这一步就不需要 LLM 参与。
+// confirmProposal re-validates a proposal and marks it as ready to persist.
+// The logic mirrors agent.Confirm (internal/agent/agent.go); the only
+// difference is using s.registry instead of reaching the validation module
+// registry through *agent.Agent -- so this step needs no LLM involvement.
 func (s *Server) confirmProposal(lang i18n.Lang, p *agent.Proposal) (types.StrategyConfig, error) {
 	if p == nil {
 		return types.StrategyConfig{}, errors.New(i18n.T(lang, "webui.wizard.err.proposal_empty"))
@@ -212,12 +229,15 @@ func (s *Server) confirmProposal(lang i18n.Lang, p *agent.Proposal) (types.Strat
 	return s.prepareDraftConfig(lang, *p.Config, p.SourceUtterance)
 }
 
-// prepareDraftConfig 把一份配置整理成可以直接落库的 DRAFT 状态：重新校验、盖时间戳。
-// 单个策略确认（confirmProposal）和批量扫描确认（handlers_batch.go 的
-// handleBatchScanConfirm，一次循环里对每个标的的副本分别调用）共用这段逻辑，不维护
-// 两份"校验+状态+时间戳"的代码。
+// prepareDraftConfig prepares a config into a ready-to-persist DRAFT state:
+// re-validate, stamp timestamps. Shared logic between single-strategy
+// confirmation (confirmProposal) and batch-scan confirmation
+// (handlers_batch.go's handleBatchScanConfirm, called separately for each
+// symbol's copy within one loop), so there's only one "validate + state +
+// timestamp" implementation to maintain.
 //
-// 隐藏字段哪怕被篡改，重新校验最多导致这里被拒绝，不会绕过 schema 或合规检查。
+// Even if the hidden field were tampered with, re-validation can at most get
+// this step rejected -- it can never bypass schema or compliance checks.
 func (s *Server) prepareDraftConfig(lang i18n.Lang, cfg types.StrategyConfig, sourceUtterance string) (types.StrategyConfig, error) {
 	if _, err := strategy.Validate(cfg, s.registry); err != nil {
 		return types.StrategyConfig{}, errors.New(i18n.T(lang, "webui.wizard.err.validation_failed", "err", err.Error()))
