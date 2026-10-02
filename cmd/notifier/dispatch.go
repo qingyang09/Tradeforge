@@ -24,6 +24,11 @@ type notifierStore interface {
 	AlreadyDelivered(ctx context.Context, decisionID, channelID string) (bool, error)
 	RecordDelivery(ctx context.Context, decisionID, channelID, status, errMsg string) error
 	DeleteNotificationChannel(ctx context.Context, userID, id string) error
+	// GetUser is used to read the strategy owner's preferred_lang (see
+	// handleDecision) -- a background process has no per-request cookie to
+	// resolve a language from, so the alert's language has to come from each
+	// recipient's own stored account preference instead.
+	GetUser(ctx context.Context, id string) (storage.User, error)
 }
 
 // consume is the decision consumption loop, structured directly after
@@ -102,10 +107,17 @@ func handleDecision(
 		return
 	}
 
-	// i18n.DefaultLang (Chinese) for now -- this is the exact spot a future
-	// per-user language preference (see the plan) plugs in: look up
-	// sc.UserID's stored preferred_lang instead of hardcoding this.
+	// Each recipient gets alerted in their own stored language preference
+	// (migrations/011_users_preferred_lang.sql), not a hardcoded default --
+	// a failed lookup (deleted account, transient DB error) just falls back
+	// to i18n.DefaultLang rather than dropping the alert entirely.
 	lang := i18n.DefaultLang
+	if u, err := store.GetUser(ctx, sc.UserID); err == nil {
+		lang = i18n.ParseLang(u.PreferredLang)
+	} else {
+		logger.Warn("failed to look up the recipient's language preference, defaulting",
+			"strategy_id", d.StrategyID, "user_id", sc.UserID, "err", err)
+	}
 	msg := notify.BuildMessage(sc, d, mode, lang)
 	for _, ch := range channels {
 		if !ch.IsEnabled {

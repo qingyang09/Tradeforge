@@ -348,6 +348,9 @@ func (f *fakeStore) CreateUser(_ context.Context, u storage.User) error {
 			return storage.ErrEmailTaken
 		}
 	}
+	if u.PreferredLang == "" {
+		u.PreferredLang = "zh" // mirrors storage.Store.CreateUser's own normalization
+	}
 	f.users[u.ID] = u
 	return nil
 }
@@ -367,4 +370,14 @@ func (f *fakeStore) GetUser(_ context.Context, id string) (storage.User, error) 
 		return storage.User{}, fmt.Errorf("账号 %s：%w", id, errNotFound)
 	}
 	return u, nil
+}
+
+func (f *fakeStore) SetUserPreferredLang(_ context.Context, userID, lang string) error {
+	u, ok := f.users[userID]
+	if !ok {
+		return fmt.Errorf("账号 %s：%w", userID, errNotFound)
+	}
+	u.PreferredLang = lang
+	f.users[userID] = u
+	return nil
 }

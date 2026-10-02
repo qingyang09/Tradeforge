@@ -91,10 +91,14 @@ type Store interface {
 	DeleteBrokerProfile(ctx context.Context, userID, id string) error
 
 	// CreateUser/GetUserByEmail/GetUser support account signup/login (see
-	// handlers_auth.go).
+	// handlers_auth.go). SetUserPreferredLang persists a logged-in user's
+	// language-toggle choice to their account (see lang.go's handleSetLang),
+	// so it follows them across devices and so cmd/notifier can later send
+	// their alerts in their own language.
 	CreateUser(ctx context.Context, u storage.User) error
 	GetUserByEmail(ctx context.Context, email string) (storage.User, error)
 	GetUser(ctx context.Context, id string) (storage.User, error)
+	SetUserPreferredLang(ctx context.Context, userID, lang string) error
 
 	// SaveNotificationChannel/ListNotificationChannels/GetNotificationChannel/
 	// SetNotificationChannelEnabled/DeleteNotificationChannel support the

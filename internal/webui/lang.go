@@ -32,6 +32,17 @@ func resolveLang(r *http.Request) i18n.Lang {
 // redirects back to the referring page (or / if there is none). GET
 // /lang/en and GET /lang/zh both route here, with lang fixed per
 // registration in Routes().
+//
+// This route sits outside requireAuth (it must work pre-login too, see
+// Routes()'s doc comment), so there's no requireAuth-injected session in the
+// request context to read via currentUserID -- when a session cookie is
+// present and still valid, it's looked up directly against s.sessions
+// instead, and the choice is persisted to that account via
+// SetUserPreferredLang. An anonymous visitor (no session, or an invalid/
+// expired one) just gets the cookie set, same as always. This is a
+// best-effort, fire-and-forget persist: a failure here is logged and still
+// lets the cookie-set/redirect proceed, since the viewer's own browser
+// already has the choice applied either way.
 func (s *Server) handleSetLang(lang i18n.Lang) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		http.SetCookie(w, &http.Cookie{
@@ -41,6 +52,13 @@ func (s *Server) handleSetLang(lang i18n.Lang) http.HandlerFunc {
 			Expires:  time.Now().Add(langCookieTTL),
 			SameSite: http.SameSiteLaxMode,
 		})
+		if c, err := r.Cookie(sessionCookieName); err == nil {
+			if data, ok := s.sessions.lookup(c.Value); ok {
+				if err := s.store.SetUserPreferredLang(r.Context(), data.UserID, string(lang)); err != nil {
+					s.logger.Warn("failed to persist language preference to account", "user_id", data.UserID, "err", err)
+				}
+			}
+		}
 		redirectTo := r.Referer()
 		if redirectTo == "" {
 			redirectTo = "/"

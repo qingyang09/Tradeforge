@@ -1,0 +1,12 @@
+-- A user's standing UI language preference (en/zh), default 'zh' since the
+-- existing user base is Chinese-speaking. The webui's language toggle
+-- (internal/webui/lang.go's handleSetLang) writes here whenever a logged-in
+-- user switches languages, and finishLogin reads it back to set the tf_lang
+-- cookie on login so the preference follows the account across devices/
+-- browsers, not just the one browser that happens to hold the cookie.
+--
+-- This also unlocks cmd/notifier sending alerts in the recipient's own
+-- language -- a background process has no per-request cookie to read, so it
+-- looks this column up per strategy owner instead (see
+-- cmd/notifier/dispatch.go's handleDecision).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS preferred_lang TEXT NOT NULL DEFAULT 'zh';

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -34,6 +35,7 @@ type fakeNotifierStore struct {
 	strategies map[string]types.StrategyConfig          // strategyID -> config
 	channels   map[string][]storage.NotificationChannel // userID -> channels
 	delivered  map[string]bool                          // decisionID+"|"+channelID -> sent
+	users      map[string]storage.User                  // userID -> account
 
 	deletedChannels []string
 	deliveries      []recordedDelivery
@@ -48,6 +50,7 @@ func newFakeNotifierStore() *fakeNotifierStore {
 		strategies: map[string]types.StrategyConfig{},
 		channels:   map[string][]storage.NotificationChannel{},
 		delivered:  map[string]bool{},
+		users:      map[string]storage.User{},
 	}
 }
 
@@ -81,6 +84,16 @@ func (f *fakeNotifierStore) RecordDelivery(_ context.Context, decisionID, channe
 		f.delivered[decisionID+"|"+channelID] = true
 	}
 	return nil
+}
+
+func (f *fakeNotifierStore) GetUser(_ context.Context, id string) (storage.User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	u, ok := f.users[id]
+	if !ok {
+		return storage.User{}, fmt.Errorf("account %s: %w", id, storage.ErrNotFound)
+	}
+	return u, nil
 }
 
 func (f *fakeNotifierStore) DeleteNotificationChannel(_ context.Context, _ string, id string) error {
@@ -137,18 +150,20 @@ func (f *fakeTelegramSender) count() int {
 }
 
 type fakeWebhookSender struct {
-	mu   sync.Mutex
-	sent []string
-	err  error
+	mu       sync.Mutex
+	sent     []string
+	payloads []notify.WebhookPayload
+	err      error
 }
 
-func (f *fakeWebhookSender) SendWebhook(_ context.Context, url, _ string, _ notify.WebhookPayload) error {
+func (f *fakeWebhookSender) SendWebhook(_ context.Context, url, _ string, payload notify.WebhookPayload) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
 		return f.err
 	}
 	f.sent = append(f.sent, url)
+	f.payloads = append(f.payloads, payload)
 	return nil
 }
 
@@ -290,6 +305,59 @@ func TestHandleDecisionSendsToAllEnabledChannels(t *testing.T) {
 	}
 	if telegram.count() != 0 {
 		t.Errorf("a disabled channel should not send, but sent %d times", telegram.count())
+	}
+}
+
+// TestHandleDecisionUsesRecipientPreferredLanguage confirms a strategy
+// owner's stored preferred_lang (migrations/011_users_preferred_lang.sql)
+// actually drives which language handleDecision builds the alert in -- a
+// background process like cmd/notifier has no per-request cookie to resolve
+// a language from, so this stored account preference is the only signal it
+// has.
+func TestHandleDecisionUsesRecipientPreferredLanguage(t *testing.T) {
+	store := newFakeNotifierStore()
+	webhook := &fakeWebhookSender{}
+	senders := testSenders(&fakeEmailSender{}, &fakeTelegramSender{}, webhook, &fakeWebPushSender{})
+
+	store.strategies["s1"] = testStrategyConfig("s1", "u1", types.StateLive)
+	store.users["u1"] = storage.User{ID: "u1", PreferredLang: "en"}
+	store.channels["u1"] = []storage.NotificationChannel{
+		encryptedChannel(t, "u1", "webhook", "webhook", `{"url":"https://example.com/hook"}`),
+	}
+
+	handleDecision(context.Background(), store, senders, "", testDecision("s1", true), quietLogger())
+
+	if len(webhook.payloads) != 1 {
+		t.Fatalf("expected exactly one webhook payload, got %d", len(webhook.payloads))
+	}
+	if !strings.Contains(webhook.payloads[0].Title, "[Live]") {
+		t.Errorf("user u1 prefers English, expected the title to contain \"[Live]\", got %q", webhook.payloads[0].Title)
+	}
+}
+
+// TestHandleDecisionDefaultsLanguageForUnknownUser confirms a failed
+// preferred-language lookup (no stored account, e.g. a user record that's
+// gone missing) falls back to i18n.DefaultLang rather than dropping the
+// alert or erroring out -- same "degrade, don't fail" principle as every
+// other isolation point in this file.
+func TestHandleDecisionDefaultsLanguageForUnknownUser(t *testing.T) {
+	store := newFakeNotifierStore()
+	webhook := &fakeWebhookSender{}
+	senders := testSenders(&fakeEmailSender{}, &fakeTelegramSender{}, webhook, &fakeWebPushSender{})
+
+	store.strategies["s1"] = testStrategyConfig("s1", "u1", types.StateLive)
+	// Deliberately no store.users["u1"] entry.
+	store.channels["u1"] = []storage.NotificationChannel{
+		encryptedChannel(t, "u1", "webhook", "webhook", `{"url":"https://example.com/hook"}`),
+	}
+
+	handleDecision(context.Background(), store, senders, "", testDecision("s1", true), quietLogger())
+
+	if len(webhook.payloads) != 1 {
+		t.Fatalf("expected exactly one webhook payload, got %d", len(webhook.payloads))
+	}
+	if !strings.Contains(webhook.payloads[0].Title, "[实盘]") {
+		t.Errorf("an unknown user should fall back to i18n.DefaultLang (zh), expected the title to contain \"[实盘]\", got %q", webhook.payloads[0].Title)
 	}
 }
 

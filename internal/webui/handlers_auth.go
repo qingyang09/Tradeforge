@@ -93,7 +93,12 @@ func (s *Server) handleSignupSubmit(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	u := storage.User{ID: idgen.NewUUID(), Email: email, PasswordHash: hash}
+	// Seed the new account's language preference from whatever language
+	// they're currently browsing in, rather than always starting from
+	// storage's own "zh" default -- someone signing up with the English
+	// toggle already on shouldn't have their account silently reset to
+	// Chinese on next login from a fresh browser.
+	u := storage.User{ID: idgen.NewUUID(), Email: email, PasswordHash: hash, PreferredLang: string(lang)}
 	if err := s.store.CreateUser(r.Context(), u); err != nil {
 		if errors.Is(err, storage.ErrEmailTaken) {
 			s.renderStandalone(w, r, "signup_page", signupData{Error: types.Msg("webui.auth.signup.email_taken"), Lang: lang})
@@ -105,7 +110,18 @@ func (s *Server) handleSignupSubmit(w http.ResponseWriter, r *http.Request) {
 	s.finishLogin(w, r, u)
 }
 
-// finishLogin creates the session, sets the cookie, and redirects to the dashboard -- both a successful login and a successful signup share this exact finishing step.
+// finishLogin creates the session, sets the cookie, and redirects to the
+// dashboard -- both a successful login and a successful signup share this
+// exact finishing step.
+//
+// It also sets the tf_lang cookie from the account's own stored preference,
+// so the language choice follows the account across devices/browsers rather
+// than being stuck to whichever single browser happened to hold the cookie
+// (see lang.go's handleSetLang, which is what wrote this preference in the
+// first place). This intentionally overrides whatever tf_lang this browser
+// already had -- the account's standing preference is treated as more
+// authoritative than a pre-login guess made by a browser that may never have
+// seen this account before.
 func (s *Server) finishLogin(w http.ResponseWriter, r *http.Request, u storage.User) {
 	token, err := s.sessions.create(u.ID, u.Email)
 	if err != nil {
@@ -119,6 +135,13 @@ func (s *Server) finishLogin(w http.ResponseWriter, r *http.Request, u storage.U
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 		Expires:  time.Now().Add(sessionTTL),
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     langCookieName,
+		Value:    string(i18n.ParseLang(u.PreferredLang)),
+		Path:     "/",
+		Expires:  time.Now().Add(langCookieTTL),
+		SameSite: http.SameSiteLaxMode,
 	})
 	http.Redirect(w, r, "/", http.StatusFound)
 }
