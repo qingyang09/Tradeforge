@@ -7,6 +7,7 @@ import (
 	"tradeforge/internal/modules/newssentiment"
 	"tradeforge/internal/modules/poc"
 	"tradeforge/internal/modules/supportresistance"
+	"tradeforge/internal/modules/trendlinepullback"
 	"tradeforge/internal/modules/volumebreakout"
 )
 
@@ -22,6 +23,7 @@ var (
 	_ SignalModule = (*newssentiment.Module)(nil)
 	_ SignalModule = (*fakeout.Module)(nil)
 	_ SignalModule = (*poc.Module)(nil)
+	_ SignalModule = (*trendlinepullback.Module)(nil)
 )
 
 // NewDefaultRegistry returns a registry preloaded with all built-in modules.
@@ -39,5 +41,6 @@ func NewDefaultRegistry() *Registry {
 	r.Register(newssentiment.NewDefault())
 	r.Register(fakeout.New())
 	r.Register(poc.New())
+	r.Register(trendlinepullback.New())
 	return r
 }

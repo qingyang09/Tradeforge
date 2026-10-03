@@ -12,7 +12,7 @@ import (
 
 func TestDefaultRegistryContainsAllModules(t *testing.T) {
 	r := NewDefaultRegistry()
-	want := []string{"cvd_orderflow", "fakeout", "macd_rsi", "news_sentiment", "poc", "support_resistance", "volume_breakout"}
+	want := []string{"cvd_orderflow", "fakeout", "macd_rsi", "news_sentiment", "poc", "support_resistance", "trendline_pullback", "volume_breakout"}
 	got := r.Names()
 	if len(got) != len(want) {
 		t.Fatalf("registered modules = %v, want %v", got, want)
