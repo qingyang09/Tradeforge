@@ -392,5 +392,6 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/preview/support-resistance/{symbol}", s.requireAuth(s.handleAPIPreviewSupportResistance))
 	mux.HandleFunc("GET /api/preview/fakeout/{symbol}", s.requireAuth(s.handleAPIPreviewFakeout))
 	mux.HandleFunc("GET /api/preview/poc/{symbol}", s.requireAuth(s.handleAPIPreviewPOC))
+	mux.HandleFunc("GET /api/preview/trendline-pullback/{symbol}", s.requireAuth(s.handleAPIPreviewTrendlinePullback))
 	return mux
 }

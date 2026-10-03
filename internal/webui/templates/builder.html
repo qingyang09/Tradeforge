@@ -451,13 +451,20 @@
     fakeoutRangeLabel: {{t "webui.builder.js.fakeout_range_label"}},
     pocNotFound: {{t "webui.builder.js.poc_not_found"}},
     pocStatus: {{t "webui.builder.js.poc_status"}},
+    tlNotFound: {{t "webui.builder.js.tl_not_found"}},
+    tlStatusLong: {{t "webui.builder.js.tl_status_long"}},
+    tlStatusShort: {{t "webui.builder.js.tl_status_short"}},
+    tlTrendlineLabel: {{t "webui.builder.js.tl_trendline_label"}},
+    tlTestMarkerLong: {{t "webui.builder.js.tl_test_marker_long"}},
+    tlTestMarkerShort: {{t "webui.builder.js.tl_test_marker_short"}},
     moduleHints: {
       volume_breakout: {{t "webui.builder.js.module_hint_volume_breakout"}},
       macd_rsi: {{t "webui.builder.js.module_hint_macd_rsi"}},
       cvd_orderflow: {{t "webui.builder.js.module_hint_cvd_orderflow"}},
       support_resistance: {{t "webui.builder.js.module_hint_support_resistance"}},
       fakeout: {{t "webui.builder.js.module_hint_fakeout"}},
-      poc: {{t "webui.builder.js.module_hint_poc"}}
+      poc: {{t "webui.builder.js.module_hint_poc"}},
+      trendline_pullback: {{t "webui.builder.js.module_hint_trendline_pullback"}}
     }
   };
 
@@ -490,6 +497,8 @@
   var fakeoutPreviewTimer = null;
   var pocPreviewLines = [];     // poc preview reference lines
   var pocPreviewTimer = null;
+  var tlPreviewLines = [];      // trendline_pullback preview: the drawn line series + the tested-point marker
+  var tlPreviewTimer = null;
 
   var els = {
     timeframeSelect: document.getElementById("timeframe-select"),
@@ -709,6 +718,7 @@
         refreshSupportResistancePreview();
         refreshFakeoutPreview();
         refreshPOCPreview();
+        refreshTrendlinePullbackPreview();
         Object.keys(subpanes).forEach(refreshSubpaneSeries);
       })
       .catch(function (err) {
@@ -1208,6 +1218,76 @@
     pocPreviewTimer = setTimeout(refreshPOCPreview, 400);
   }
 
+  // ---------- trendline_pullback: the preview goes through the real Go
+  // module. Unlike support_resistance/fakeout/poc, what's drawn here is a
+  // diagonal line, not a horizontal one -- createPriceLine can only draw
+  // horizontal lines, so this uses a line series instead (the same
+  // lightweight-charts primitive the MACD/RSI and CVD sub-panes already use
+  // for their curves), given exactly three points (trendline_start,
+  // trendline_end, trendline_at_test) that are collinear by construction, so
+  // the series draws as one straight line extended through to the test. The
+  // actual tested extreme (a real candle's price, not the trendline's own
+  // value there) is marked separately via createTimeMarker -- the small gap
+  // between the marker and the line is exactly what trendline_tolerance
+  // bounds, and is worth being able to see, not papered over by snapping the
+  // line onto the candle. ----------
+
+  var tlPreviewGen = 0; // same purpose as srPreviewGen: prevents duplicate/overlapping requests from leaving ghost lines on the chart
+
+  function refreshTrendlinePullbackPreview() {
+    var myGen = ++tlPreviewGen;
+    var mod = state.modules.find(function (m) { return m.name === "trendline_pullback"; });
+    if (!mod || !state.candles.length) {
+      tlPreviewLines.forEach(function (key) { removeDragLine(key); });
+      tlPreviewLines = [];
+      return;
+    }
+
+    var suffix = tfSuffix(mod);
+    fetch("/api/preview/trendline-pullback/" + encodeURIComponent(SYMBOL) + "?" + previewQuery(mod).toString())
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (myGen !== tlPreviewGen) return; // stale response, discard
+        tlPreviewLines.forEach(function (key) { removeDragLine(key); });
+        tlPreviewLines = [];
+        if (!data || !data.pattern || !data.trendline_start || !data.trendline_end || !data.trendline_at_test) {
+          setPreviewStatus("trendline_pullback", tf1(TF_I18N.tlNotFound, { suffix: suffix }), "not-found");
+          return;
+        }
+        var isLong = data.pattern === "uptrend_pullback";
+        var color = isLong ? "#80cbc4" : "#ef9a9a";
+
+        var lineKey = "tl_preview_line";
+        var lineSeries = mainChart.addLineSeries({
+          color: color, lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Dashed,
+          title: TF_I18N.tlTrendlineLabel + suffix, priceLineVisible: false, lastValueVisible: false
+        });
+        lineSeries.setData([
+          { time: data.trendline_start.time, value: data.trendline_start.price },
+          { time: data.trendline_end.time, value: data.trendline_end.price },
+          { time: data.trendline_at_test.time, value: data.trendline_at_test.price }
+        ]);
+        tlPreviewLines.push(lineKey);
+        dragLines[lineKey] = { reposition: function () {}, setPrice: function () {}, destroy: function () { mainChart.removeSeries(lineSeries); } };
+
+        if (data.tested_point) {
+          var markerKey = "tl_preview_test_marker";
+          var markerLabel = tf1(isLong ? TF_I18N.tlTestMarkerLong : TF_I18N.tlTestMarkerShort, { price: data.tested_point.price }) + suffix;
+          createTimeMarker(markerKey, mainChart, els.mainChartEl, data.tested_point.time, color, markerLabel);
+          tlPreviewLines.push(markerKey);
+        }
+
+        var statusTemplate = isLong ? TF_I18N.tlStatusLong : TF_I18N.tlStatusShort;
+        setPreviewStatus("trendline_pullback", tf1(statusTemplate, { price: (data.tested_point || data.trendline_at_test).price, suffix: suffix }), "hit");
+      })
+      .catch(function () { /* a preview failure doesn't affect building the strategy itself; silent is fine */ });
+  }
+
+  function scheduleTrendlinePullbackPreview() {
+    if (tlPreviewTimer) clearTimeout(tlPreviewTimer);
+    tlPreviewTimer = setTimeout(refreshTrendlinePullbackPreview, 400);
+  }
+
   // ---------- Sub-panes (MACD/RSI, CVD): the curves themselves are computed
   // live in the browser, for display reference only -- entirely independent
   // of the platform's real signal computation (which goes through the Go
@@ -1379,6 +1459,7 @@
     if (mod.name === "support_resistance") scheduleSupportResistancePreview();
     if (mod.name === "fakeout") scheduleFakeoutPreview();
     if (mod.name === "poc") schedulePOCPreview();
+    if (mod.name === "trendline_pullback") scheduleTrendlinePullbackPreview();
     if (mod.name === "macd_rsi" || mod.name === "cvd_orderflow") refreshSubpaneSeries(subpaneKeyFor(mod.name));
   }
 
@@ -1492,6 +1573,7 @@
     refreshSupportResistancePreview();
     refreshFakeoutPreview();
     refreshPOCPreview();
+    refreshTrendlinePullbackPreview();
     state.modules.forEach(function (m) {
       if (m.name === "macd_rsi") { ensureSubpane(subpaneKeyFor(m.name), TF_I18N.macdRsiSubpaneTitle); refreshSubpaneSeries(subpaneKeyFor(m.name)); }
       if (m.name === "cvd_orderflow") { ensureSubpane(subpaneKeyFor(m.name), TF_I18N.cvdSubpaneTitle); refreshSubpaneSeries(subpaneKeyFor(m.name)); }
@@ -1534,7 +1616,7 @@
   var TIMEFRAME_OPTIONS = ["1m", "5m", "15m", "1h", "4h", "1d"];
 
   // Modules with a live preview worth showing "what's currently computed" for, on their module card.
-  var PREVIEW_STATUS_MODULES = ["support_resistance", "fakeout", "poc"];
+  var PREVIEW_STATUS_MODULES = ["support_resistance", "fakeout", "poc", "trendline_pullback"];
 
   // setPreviewStatus writes the preview's computed result as text into the
   // matching module card; kind drives a small color distinction

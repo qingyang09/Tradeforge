@@ -12,6 +12,7 @@ import (
 	"tradeforge/internal/modules/fakeout"
 	"tradeforge/internal/modules/poc"
 	"tradeforge/internal/modules/supportresistance"
+	"tradeforge/internal/modules/trendlinepullback"
 	"tradeforge/pkg/types"
 )
 
@@ -383,6 +384,124 @@ func (s *Server) handleAPIPreviewPOC(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, apiPOCPreview{
 		Available: true, Price: price, Volume: volume, IsApproximate: true, WindowStart: windowStart,
 	})
+}
+
+// apiTrendlinePullbackPivot is one point on the chart (a swing point, or the
+// pullback's own tested extreme), in the same time/price representation as
+// apiCandle so the frontend can position it directly.
+type apiTrendlinePullbackPivot struct {
+	Time  int64   `json:"time"`
+	Price float64 `json:"price"`
+}
+
+// apiTrendlinePullbackPreview is the data returned by the trendline_pullback
+// preview. Pattern is empty when no qualifying pattern was found right now
+// (either direction) -- the builder then draws nothing, the same "don't draw
+// a misleading line" judgment as apiPOCPreview.Available. When non-empty,
+// TrendlineStart/TrendlineEnd are the two confirmed swing points the
+// trendline connects; TrendlineAtTest is that same trendline extrapolated to
+// TestedPoint's candle, so the builder can draw one straight line through
+// all three of TrendlineStart/TrendlineEnd/TrendlineAtTest (exactly
+// collinear by construction). TestedPoint is the pullback/rally's own actual
+// extreme that was checked against the trendline -- deliberately a separate
+// point rather than reused for the line's end, since its price is real
+// candle data, not the trendline's value; the small gap between
+// TrendlineAtTest and TestedPoint at the same point in time is exactly what
+// trendline_tolerance bounds, and is worth being able to see on the chart,
+// not papered over by snapping the line onto the candle.
+type apiTrendlinePullbackPreview struct {
+	Pattern         string                     `json:"pattern,omitempty"`
+	Direction       string                     `json:"direction,omitempty"`
+	TrendlineStart  *apiTrendlinePullbackPivot `json:"trendline_start,omitempty"`
+	TrendlineEnd    *apiTrendlinePullbackPivot `json:"trendline_end,omitempty"`
+	TrendlineAtTest *apiTrendlinePullbackPivot `json:"trendline_at_test,omitempty"`
+	TestedPoint     *apiTrendlinePullbackPivot `json:"tested_point,omitempty"`
+}
+
+// handleAPIPreviewTrendlinePullback runs the real trendline_pullback module,
+// returning the swing structure and tested point for the builder to draw as
+// a single extended trendline, when a pattern is currently confirmed.
+func (s *Server) handleAPIPreviewTrendlinePullback(w http.ResponseWriter, r *http.Request) {
+	symbol := strings.ToUpper(r.PathValue("symbol"))
+	if !looksLikeSymbol(symbol) {
+		http.NotFound(w, r)
+		return
+	}
+	lang := resolveLang(r)
+	tf, limit, err := parseTimeframeAndLimit(r, lang)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	tm := trendlinepullback.New()
+	params, err := parseModuleParams(r, tm.RequiredParams(), lang)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	candles, err := s.okxClient.FetchCandles(r.Context(), symbol, tf, limit)
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+
+	sig, err := tm.Evaluate(r.Context(),
+		types.MarketData{Symbol: symbol, Timeframe: tf, Candles: candles}, params)
+	if err != nil {
+		http.Error(w, i18n.Render(lang, types.Msg("webui.api.invalid_params", "error", err.Error())), http.StatusBadRequest)
+		return
+	}
+
+	pattern, _ := sig.Raw["pattern"].(string)
+	if pattern == "" {
+		writeJSON(w, apiTrendlinePullbackPreview{})
+		return
+	}
+
+	startKey, endKey, testKey := "trend_low_prev", "trend_low_last", "tested_low"
+	if pattern == "downtrend_rally" {
+		startKey, endKey, testKey = "trend_high_prev", "trend_high_last", "tested_high"
+	}
+	testedPoint := trendlinePullbackPivotFromRaw(sig.Raw[testKey], candles)
+	var trendlineAtTest *apiTrendlinePullbackPivot
+	if testedPoint != nil {
+		if priceStr, ok := sig.Raw["trendline_price_at_test"].(string); ok {
+			if price, err := strconv.ParseFloat(priceStr, 64); err == nil {
+				trendlineAtTest = &apiTrendlinePullbackPivot{Time: testedPoint.Time, Price: price}
+			}
+		}
+	}
+	writeJSON(w, apiTrendlinePullbackPreview{
+		Pattern:         pattern,
+		Direction:       string(sig.Direction),
+		TrendlineStart:  trendlinePullbackPivotFromRaw(sig.Raw[startKey], candles),
+		TrendlineEnd:    trendlinePullbackPivotFromRaw(sig.Raw[endKey], candles),
+		TrendlineAtTest: trendlineAtTest,
+		TestedPoint:     testedPoint,
+	})
+}
+
+// trendlinePullbackPivotFromRaw resolves one of trendlinepullback's Raw
+// pivot entries (shape {"index": int, "price": string}) into a chart-ready
+// point, looking the index up against the exact candle slice that was
+// passed into Evaluate so Time lines up with apiCandle.Time.
+func trendlinePullbackPivotFromRaw(v any, candles []types.Candle) *apiTrendlinePullbackPivot {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil
+	}
+	idx, ok := m["index"].(int)
+	if !ok || idx < 0 || idx >= len(candles) {
+		return nil
+	}
+	priceStr, _ := m["price"].(string)
+	price, err := strconv.ParseFloat(priceStr, 64)
+	if err != nil {
+		return nil
+	}
+	return &apiTrendlinePullbackPivot{Time: candles[idx].OpenTime.Unix(), Price: price}
 }
 
 // parseModuleParams parses out the query params in the request that share a
